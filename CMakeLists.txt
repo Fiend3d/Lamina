@@ -231,6 +231,7 @@ add_library(lamina_model STATIC src/model/inference.cpp src/model/cuda_projectio
 target_link_libraries(lamina_model PUBLIC strata_artifact)
 if(LAMINA_ENABLE_CUDA)
   add_library(lamina_cuda_kernels STATIC src/kernels/cuda/native_mmvq.cu src/kernels/cuda/iq_kernels.cu)
+  set_target_properties(lamina_cuda_kernels PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
   target_include_directories(lamina_cuda_kernels PRIVATE include third_party/ggml)
   target_compile_options(lamina_cuda_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>)
   target_link_libraries(lamina_cuda_kernels PUBLIC CUDA::cudart)
