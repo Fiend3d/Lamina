@@ -5,17 +5,22 @@ The input contract is pinned to Unsloth `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` revisio
 256 routed experts and 8 selected per token. The GGUF header contains 733 tensors and uses `qwen35moe` metadata.
 
 Completed: a C++ architecture guard and GGUF inspector; a Python tensor inventory and shape validator; a resumable,
-opt-in downloader with pinned checksum; a sibling `Lamina-data` tensor index; and a CPU-only CMake build path.
+opt-in downloader with pinned checksum; a sibling `Lamina-data` tensor index; a scalar C++ Qwen3.6 single-token
+execution graph that reads quantized GGUF weights directly; and a tokenizer-backed text client with a limited
+OpenAI-compatible chat endpoint.
 
-The inherited Strata execution engine is Qwen3.8-specific. It expects a 48-layer gated-residual model and an attention
-indexer, neither of which exists in this Qwen3.6 artifact. The remaining native port requires:
+The inherited Strata CUDA execution engine is Qwen3.8-specific. It expects a 48-layer gated-residual model and an
+attention indexer, neither of which exists in this Qwen3.6 artifact. The scalar path implements Qwen3.6's ordinary
+residuals, 30 recurrent DeltaNet layers, 10 gated full-attention layers with partial RoPE, top-eight softmax routing,
+and shared experts. The published GGUF has only F32, Q8_0, Q4_K, Q5_K and Q6_K tensors; all five types are decoded.
 
-1. A Qwen3.6 weight loader and expert layout for the published Q4_K/Q5_K/Q6_K/Q8_0 mix.
-2. A 40-layer execution graph with Qwen3.6 DeltaNet state, full attention with its gate and partial RoPE, and the
-   correct residual and normalization order.
-3. Eight-way softmax routing, routed and shared expert math, cache placement, and prompt prefill.
-4. Text tokenizer and chat template integration, a terminal client, and `/v1/chat/completions`.
-5. Windows and Linux CUDA compile checks and reference-logit validation on capable NVIDIA hardware.
+The remaining native port requires:
 
-Until those tasks are done, no Lamina executable can generate Qwen3.6 text. The old Strata binaries and scripts are
-retained only as source material for the port.
+1. GPU projection kernels, efficient quantized expert staging, and batched prompt prefill.
+2. Full-model logit and generation comparison with the official reference on capable hardware.
+3. CUDA compilation and runtime checks on Windows and Linux.
+4. Streaming API responses, sampling, multimodal inputs, and complete OpenAI compatibility if needed.
+
+`lamina-infer` and `lamina.py` expose the scalar path for development. Their generated output remains unvalidated
+until it is checked against reference logits; useful 35B throughput also needs the CUDA work. The old Strata binaries
+and scripts are retained only as source material for the port.

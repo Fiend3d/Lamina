@@ -225,6 +225,11 @@ target_link_libraries(strata_artifact INTERFACE strata_warnings)
 add_executable(lamina-gguf src/artifact/gguf_reader.cpp)
 target_link_libraries(lamina-gguf PRIVATE strata_artifact)
 
+add_library(lamina_model STATIC src/model/inference.cpp)
+target_link_libraries(lamina_model PUBLIC strata_artifact)
+add_executable(lamina-infer src/model/infer_main.cpp)
+target_link_libraries(lamina-infer PRIVATE lamina_model)
+
 # The copied Strata engine below this point still executes Qwen3.8. Keep it
 # available for porting, but never place its binaries in a normal Lamina build.
 option(LAMINA_BUILD_LEGACY "Build unported Strata reference targets" OFF)

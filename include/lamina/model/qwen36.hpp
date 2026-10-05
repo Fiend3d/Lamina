@@ -70,6 +70,9 @@ inline std::string check_qwen36_tensors(const strata::GgufFile& file) {
         if (!strata::block_geometry(tensor.type, block_elements, block_bytes) ||
             tensor.elements() % static_cast<uint64_t>(block_elements))
             return "unsupported tensor encoding for " + tensor.name;
+        if (tensor.type != 0 && tensor.type != 8 && tensor.type != 12 &&
+            tensor.type != 13 && tensor.type != 14)
+            return "tensor encoding is not implemented by Lamina for " + tensor.name;
     }
     return {};
 }
