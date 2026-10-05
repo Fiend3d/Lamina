@@ -117,7 +117,17 @@ CudaProjection::CudaProjection() : impl_(std::make_unique<Impl>()) {
     // Leave a quarter of currently free VRAM for CUDA modules, other work and
     // the activation buffers. The mapped 22 GB GGUF never needs to fit here.
     impl_->cache_limit = free_bytes - free_bytes / 4;
-    if (const char* setting = std::getenv("LAMINA_CUDA_CACHE_MB")) {
+#ifdef _MSC_VER
+    char* raw_setting = nullptr;
+    size_t setting_length = 0;
+    if (_dupenv_s(&raw_setting, &setting_length, "LAMINA_CUDA_CACHE_MB"))
+        throw std::runtime_error("cannot read LAMINA_CUDA_CACHE_MB");
+    const std::unique_ptr<char, decltype(&std::free)> setting_storage(raw_setting, &std::free);
+    const char* setting = setting_storage.get();
+#else
+    const char* setting = std::getenv("LAMINA_CUDA_CACHE_MB");
+#endif
+    if (setting) {
         size_t mib = 0;
         const char* end = setting + std::char_traits<char>::length(setting);
         const auto parsed = std::from_chars(setting, end, mib);

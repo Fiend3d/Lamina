@@ -1,5 +1,8 @@
 # Qwen3.6 port status
 
+For the file map, exact validation sequence and GPU performance work plan, see
+[`DEVELOPER_HANDOFF.md`](DEVELOPER_HANDOFF.md).
+
 The input contract is pinned to Unsloth `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` revision
 `a483e9e6cbd595906af30beda3187c2663a1118c`. It has 40 layers, with full attention every fourth layer,
 256 routed experts and 8 selected per token. The GGUF header contains 733 tensors and uses `qwen35moe` metadata.
@@ -14,7 +17,8 @@ quantizer and MMVQ kernels for Q8_0, Q4_K, Q5_K and Q6_K matrices, uploading sel
 up to 75% of free VRAM at startup. `LAMINA_CUDA_CACHE_MB` can lower that limit (for example, 6144 on a 16 GB card
 to exercise a 6 GiB weight-cache budget). An allocation failure evicts cached weights and retries. F32 operations,
 DeltaNet state, attention, and MoE routing still run on
-the CPU. The CUDA path has not been compiled or numerically checked on NVIDIA hardware in this workspace.
+the CPU. The hybrid target compiled in Linux CUDA 12.6 CI; it has not been compiled with Windows CUDA or
+numerically checked on NVIDIA hardware.
 On a CUDA machine, run `python -m tools.reference_prefix --layers 40 --engine PATH --cuda --max-diff 0.01`
 to compare its hidden state against the independent NumPy equations. The tolerance is a starting diagnostic value,
 not an established parity bound; inspect any routing or next-token mismatch before relying on generation.

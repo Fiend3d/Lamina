@@ -38,6 +38,7 @@ private:
     int context_;
     int layers_;
     int position_ = 0;
+    unsigned cpu_workers_ = 1;
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;
     std::unique_ptr<CudaProjection> cuda_;

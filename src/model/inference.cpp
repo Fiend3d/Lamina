@@ -4,7 +4,9 @@
 #include "strata/artifact/dequant.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -54,6 +56,24 @@ std::string layer_name(int layer, const char* suffix) {
 
 Inference::Inference(const std::string& path, int context, int layers, bool cuda)
     : file_(path), context_(context), layers_(layers) {
+    const unsigned available = std::thread::hardware_concurrency();
+    cpu_workers_ = std::min(8u, available ? available : 1u);
+#ifdef _MSC_VER
+    char* raw_setting = nullptr;
+    size_t setting_length = 0;
+    if (_dupenv_s(&raw_setting, &setting_length, "LAMINA_CPU_THREADS"))
+        throw std::runtime_error("cannot read LAMINA_CPU_THREADS");
+    const std::unique_ptr<char, decltype(&std::free)> setting_storage(raw_setting, &std::free);
+    const char* setting = setting_storage.get();
+#else
+    const char* setting = std::getenv("LAMINA_CPU_THREADS");
+#endif
+    if (setting) {
+        const char* end = setting + std::char_traits<char>::length(setting);
+        const auto parsed = std::from_chars(setting, end, cpu_workers_);
+        if (parsed.ec != std::errc{} || parsed.ptr != end || cpu_workers_ < 1 || cpu_workers_ > 64)
+            throw std::invalid_argument("LAMINA_CPU_THREADS must be 1..64");
+    }
     if (context < 1 || context > 32768) throw std::invalid_argument("context must be 1..32768");
     if (layers < 1 || layers > 40) throw std::invalid_argument("layers must be 1..40");
     if (layers == 40 && file_.file_size() != 22134528992ULL)
@@ -137,9 +157,8 @@ std::vector<float> Inference::matvec(const strata::TensorInfo& t, const std::vec
         return cuda_->matvec(t, file_.tensor_data(t), x, expert);
     std::vector<float> out(rows);
     const int64_t first = expert < 0 ? 0 : expert * rows;
-    const unsigned available = std::thread::hardware_concurrency();
     const unsigned workers = static_cast<uint64_t>(rows) * x.size() >= 4'000'000
-        ? std::min(4u, available ? available : 1u) : 1u;
+        ? std::min(cpu_workers_, static_cast<unsigned>(rows)) : 1u;
     std::vector<std::exception_ptr> failures(workers);
     auto work = [&](unsigned worker) {
         try {

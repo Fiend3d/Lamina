@@ -11,10 +11,12 @@ The Qwen3.6 execution graph now has a scalar C++ path. It reads the published GG
 attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. A two-token, full-model check matched an
 independent NumPy implementation of the Qwen layer equations and selected the same next token and logit. Broader
 generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
-be slow. Large scalar projections use up to four CPU threads; on the Ryzen 5 7520U here, a cached 40-layer
-hidden-state pass improved from 7.65 to 3.22 seconds. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
-MMVQ kernels; its state updates and routing still run on the CPU. This hybrid path has not yet been compiled or run
-on CUDA hardware. The inherited Strata GPU execution graph still implements Qwen3.8 and is not used by Lamina.
+be slow. Large scalar projections use up to eight CPU threads (`LAMINA_CPU_THREADS` sets 1..64). On a Ryzen 5 7520U,
+a matched warm-cache 40-layer pass took 4.46 seconds with one worker and 2.98 with eight. A four-token decode sample
+gave 0.395 later tokens/s with eight workers. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
+MMVQ kernels; its state updates and routing still run on the CPU. The hybrid path [compiles in Linux CUDA 12.6 CI](https://github.com/Fiend3d/Lamina/actions/runs/37366756905),
+but has not been run on NVIDIA hardware or compiled with Windows CUDA. The inherited Strata GPU execution graph
+still implements Qwen3.8 and is not used by Lamina.
 
 ## Build and inspect
 
@@ -72,3 +74,6 @@ implements text-only, non-streaming `POST /v1/chat/completions`, greedy decoding
 
 The original Strata setup and README are preserved under `ref/` solely as porting references. They still describe a
 different model.
+
+Developers continuing the port should start with [the developer handoff](docs/DEVELOPER_HANDOFF.md). It maps active
+code, exact validation, the unported GPU work, and performance gates.
