@@ -11,8 +11,9 @@ The Qwen3.6 execution graph now has a scalar C++ path. It reads the published GG
 attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. A two-token, full-model check matched an
 independent NumPy implementation of the Qwen layer equations and selected the same next token and logit. Broader
 generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
-be very slow; the CUDA path remains outstanding. The inherited Strata GPU code still implements Qwen3.8 and is not
-used by Lamina.
+be very slow. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
+MMVQ kernels; its state updates and routing still run on the CPU. This hybrid path has not yet been compiled or run
+on CUDA hardware. The inherited Strata GPU execution graph still implements Qwen3.8 and is not used by Lamina.
 
 ## Build and inspect
 
@@ -22,6 +23,12 @@ The default build needs CMake 3.24+, a C++20 compiler, and no GPU toolkit:
 cmake -S . -B build
 cmake --build build --target lamina-gguf lamina-infer
 ```
+
+On a machine with the CUDA toolkit and an Ampere or newer NVIDIA GPU, configure with
+`-DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80` and run `python lamina.py chat --cuda ...`.
+The flag is explicit: a default build stays CPU-only, and a CPU-only binary reports an error if `--cuda` is used.
+The hybrid path keeps a 512 MiB device weight cache and transfers activations for each projection. It is an
+experimental step toward a full GPU engine, with no verified speedup or model parity yet.
 
 The model is kept in `../Lamina-data/models`, outside the source tree. Downloads are explicit:
 

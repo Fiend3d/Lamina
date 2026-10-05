@@ -9,6 +9,11 @@ opt-in downloader with pinned checksum; a sibling `Lamina-data` tensor index; a 
 execution graph that reads quantized GGUF weights directly; and a tokenizer-backed text client with a limited
 OpenAI-compatible chat endpoint.
 
+An opt-in hybrid CUDA projection path is wired into that scalar graph. It uses Strata's native Q8_1 activation
+quantizer and MMVQ kernels for Q8_0, Q4_K, Q5_K and Q6_K matrices, uploading selected expert slices and caching
+at most 512 MiB of weights on the device. F32 operations, DeltaNet state, attention, and MoE routing still run on
+the CPU. The CUDA path has not been compiled or numerically checked on NVIDIA hardware in this workspace.
+
 The inherited Strata CUDA execution engine is Qwen3.8-specific. It expects a 48-layer gated-residual model and an
 attention indexer, neither of which exists in this Qwen3.6 artifact. The scalar path implements Qwen3.6's ordinary
 residuals, 30 recurrent DeltaNet layers, 10 gated full-attention layers with partial RoPE, top-eight softmax routing,
@@ -24,7 +29,8 @@ normalization, and the output projection. Reproduce with
 
 The remaining native port requires:
 
-1. GPU projection kernels, efficient quantized expert staging, and batched prompt prefill.
+1. Compile and numerically compare the hybrid CUDA path on NVIDIA hardware; move DeltaNet, attention, routing,
+   expert staging, and prompt prefill to the GPU for useful throughput.
 2. Broader prompt and generation comparison with the official Transformers model on capable hardware.
 3. CUDA compilation and runtime checks on Windows and Linux.
 4. Streaming API responses, sampling, multimodal inputs, and complete OpenAI compatibility if needed.

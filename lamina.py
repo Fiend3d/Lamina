@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Text-only Lamina client for the native scalar inference executable."""
+"""Text-only Lamina client for the native inference executable."""
 
 from __future__ import annotations
 
@@ -56,7 +56,9 @@ def chat_prompt(messages: list[dict]) -> str:
 
 
 class Engine:
-    def __init__(self, model: Path, tokenizer: Path, executable: Path):
+    def __init__(
+        self, model: Path, tokenizer: Path, executable: Path, cuda: bool = False
+    ):
         from tokenizers import Tokenizer
 
         if not model.is_file():
@@ -71,6 +73,7 @@ class Engine:
             raise FileNotFoundError(f"engine missing: {executable}; build lamina-infer")
         self.model = model
         self.executable = executable
+        self.cuda = cuda
         self.tokenizer = Tokenizer.from_file(str(tokenizer))
 
     def completion(
@@ -88,7 +91,12 @@ class Engine:
         if not prompt_ids or len(prompt_ids) + max_tokens > 32768:
             raise ValueError("prompt and response exceed the 32768-token context")
         process = subprocess.Popen(
-            [str(self.executable), str(self.model), "--interactive"],
+            [
+                str(self.executable),
+                str(self.model),
+                *(["--cuda"] if self.cuda else []),
+                "--interactive",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -222,11 +230,14 @@ def main() -> int:
         "--tokenizer", type=Path, default=DATA / "tokenizer" / "tokenizer.json"
     )
     parser.add_argument("--engine", type=Path, default=default_engine())
+    parser.add_argument(
+        "--cuda", action="store_true", help="use the hybrid CUDA projection path"
+    )
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    engine = Engine(args.model, args.tokenizer, args.engine)
+    engine = Engine(args.model, args.tokenizer, args.engine, cuda=args.cuda)
     if args.command == "serve":
         HTTPServer((args.host, args.port), make_handler(engine)).serve_forever()
         return 0

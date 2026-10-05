@@ -1,0 +1,28 @@
+name: Lamina CUDA compile
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/lamina/model/**'
+      - 'src/model/**'
+      - 'src/kernels/cuda/native_mmvq.cu'
+      - 'src/kernels/cuda/iq_kernels.cu'
+      - '.github/workflows/lamina-cuda-build.yml'
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends g++ ninja-build python3-pip
+          python3 -m pip install 'cmake>=3.24,<4'
+      - name: Configure CUDA
+        run: cmake -S . -B build-cuda -G Ninja -DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80
+      - name: Compile Lamina
+        run: cmake --build build-cuda --target lamina-infer lamina-gguf lamina-cuda-check

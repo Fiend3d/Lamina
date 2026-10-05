@@ -4,16 +4,21 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace lamina::model {
 
+class CudaProjection;
+
 // Scalar, streaming reference implementation. Its state is per conversation;
 // GGUF weights remain memory mapped and only selected expert rows are touched.
 class Inference {
 public:
-    explicit Inference(const std::string& path, int context = 32768, int layers = 40);
+    explicit Inference(const std::string& path, int context = 32768, int layers = 40,
+                       bool cuda = false);
+    ~Inference();
     std::vector<float> step(int token);
     // Development diagnostic: return the residual stream before final norm.
     std::vector<float> step_hidden(int token);
@@ -35,6 +40,7 @@ private:
     int position_ = 0;
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;
+    std::unique_ptr<CudaProjection> cuda_;
 
     const strata::TensorInfo& tensor(const std::string& name) const;
     void row(const strata::TensorInfo& t, int64_t index, float* out) const;

@@ -63,11 +63,46 @@ class ClientTest(unittest.TestCase):
         engine.tokenizer = Tokenizer()
         engine.model = Path("model.gguf")
         engine.executable = Path("lamina-infer")
+        engine.cuda = False
         process = Process()
         with patch("lamina.subprocess.Popen", return_value=process):
             result = engine.completion([{"role": "user", "content": "Hi"}], 2)
         self.assertEqual(result, ("Hello", 2, 1, "stop"))
         self.assertEqual(process.stdin.writes, ["+1\n", "2\n", "5\n"])
+
+    def test_cuda_option_reaches_native_engine(self):
+        engine = object.__new__(Engine)
+        engine.tokenizer = type(
+            "Tokenizer",
+            (),
+            {
+                "encode": lambda self, *args, **kwargs: type(
+                    "Encoding", (), {"ids": [1]}
+                )(),
+                "decode": lambda self, *args, **kwargs: "",
+            },
+        )()
+        engine.model = Path("model.gguf")
+        engine.executable = Path("lamina-infer")
+        engine.cuda = True
+        with patch("lamina.subprocess.Popen") as start:
+            process = start.return_value
+            process.stdin = type(
+                "Input",
+                (),
+                {
+                    "write": lambda self, value: None,
+                    "flush": lambda self: None,
+                    "close": lambda self: None,
+                },
+            )()
+            process.stdout.readline.return_value = "248046\n"
+            process.poll.return_value = 0
+            engine.completion([{"role": "user", "content": "Hi"}], 1)
+        self.assertEqual(
+            start.call_args.args[0],
+            ["lamina-infer", "model.gguf", "--cuda", "--interactive"],
+        )
 
     def test_qwen_text_template(self):
         self.assertEqual(

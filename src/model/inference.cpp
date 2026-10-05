@@ -1,4 +1,5 @@
 #include "lamina/model/inference.hpp"
+#include "lamina/model/cuda_projection.hpp"
 #include "lamina/model/qwen36.hpp"
 #include "strata/artifact/dequant.hpp"
 
@@ -49,7 +50,7 @@ std::string layer_name(int layer, const char* suffix) {
 }
 }  // namespace
 
-Inference::Inference(const std::string& path, int context, int layers)
+Inference::Inference(const std::string& path, int context, int layers, bool cuda)
     : file_(path), context_(context), layers_(layers) {
     if (context < 1 || context > 32768) throw std::invalid_argument("context must be 1..32768");
     if (layers < 1 || layers > 40) throw std::invalid_argument("layers must be 1..40");
@@ -83,7 +84,10 @@ Inference::Inference(const std::string& path, int context, int layers)
             linear_[layer].recurrent.resize(VALUE_HEADS * HEAD_DIM * HEAD_DIM);
         }
     }
+    if (cuda) cuda_ = std::make_unique<CudaProjection>();
 }
+
+Inference::~Inference() = default;
 
 const strata::TensorInfo& Inference::tensor(const std::string& name) const {
     const auto* t = file_.find(name);
@@ -127,6 +131,8 @@ std::vector<float> Inference::matvec(const strata::TensorInfo& t, const std::vec
     const int64_t rows = static_cast<int64_t>(t.shape[1]);
     if (expert >= 0 && expert >= static_cast<int64_t>(t.shape[2]))
         throw std::out_of_range("expert index");
+    if (cuda_ && cuda_->supports(t.type))
+        return cuda_->matvec(t, file_.tensor_data(t), x, expert);
     std::vector<float> out(rows), weights(x.size());
     const int64_t first = expert < 0 ? 0 : expert * rows;
     for (int64_t r = 0; r < rows; ++r) {

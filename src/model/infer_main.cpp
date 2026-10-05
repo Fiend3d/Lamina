@@ -13,21 +13,24 @@
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: lamina-infer <model.gguf> <token-id> [token-id ...]\n"
-                             "       lamina-infer <model.gguf> --interactive\n"
+                             "       lamina-infer <model.gguf> [--cuda] --interactive\n"
                              "       lamina-infer <model.gguf> --prefix <layers> <token-id> [token-id ...]\n"
-                             "Runs the scalar reference path and prints the highest-logit token.\n");
+                             "--cuda uses the hybrid GPU projection path when built with CUDA.\n");
         return 2;
     }
     try {
-        if (argc >= 5 && std::string(argv[2]) == "--prefix") {
+        const bool cuda = std::string(argv[2]) == "--cuda";
+        const int first = cuda ? 3 : 2;
+        if (argc <= first) throw std::invalid_argument("missing token or mode");
+        if (argc >= first + 3 && std::string(argv[first]) == "--prefix") {
             int layers = 0;
-            const std::string layer_arg = argv[3];
+            const std::string layer_arg = argv[first + 1];
             const char* layer_end = layer_arg.data() + layer_arg.size();
             if (std::from_chars(layer_arg.data(), layer_end, layers).ec != std::errc{})
                 throw std::invalid_argument("invalid layer count");
-            lamina::model::Inference model(argv[1], 32768, layers);
+            lamina::model::Inference model(argv[1], 32768, layers, cuda);
             std::vector<float> hidden;
-            for (int i = 4; i < argc; ++i) {
+            for (int i = first + 2; i < argc; ++i) {
                 int token = -1;
                 const char* end = argv[i] + std::char_traits<char>::length(argv[i]);
                 if (std::from_chars(argv[i], end, token).ec != std::errc{} || token < 0)
@@ -37,8 +40,8 @@ int main(int argc, char** argv) {
             for (float value : hidden) std::printf("%.9g\n", value);
             return 0;
         }
-        lamina::model::Inference model(argv[1]);
-        if (argc == 3 && std::string(argv[2]) == "--interactive") {
+        lamina::model::Inference model(argv[1], 32768, 40, cuda);
+        if (argc == first + 1 && std::string(argv[first]) == "--interactive") {
             // A leading '+' consumes a prompt token without computing logits;
             // the final prompt token and generated tokens have no prefix.
             std::string line;
@@ -62,7 +65,7 @@ int main(int argc, char** argv) {
             }
             return 0;
         }
-        for (int i = 2; i < argc; ++i) {
+        for (int i = first; i < argc; ++i) {
             int token = -1;
             const char* end = argv[i] + std::char_traits<char>::length(argv[i]);
             if (std::from_chars(argv[i], end, token).ec != std::errc{} || token < 0)
