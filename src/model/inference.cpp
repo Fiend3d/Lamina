@@ -59,21 +59,20 @@ Inference::Inference(const std::string& path, int context, int layers)
     if (!arch_error.empty()) throw std::runtime_error(arch_error);
     const auto tensor_error = check_qwen36_tensors(file_);
     if (!tensor_error.empty()) throw std::runtime_error(tensor_error);
-    if (layers < 40) {
-        // A cropped GGUF is useful for checking the first layers. Check every
-        // accessed payload before mmap reads; the directory alone is not enough.
-        for (const auto& t : file_.tensors()) {
-            if (t.name.rfind("blk.", 0) == 0) {
-                const size_t dot = t.name.find('.', 4);
-                const int layer = std::stoi(t.name.substr(4, dot - 4));
-                if (layer >= layers) continue;
-            }
-            int block_elements = 0, block_bytes = 0;
-            strata::block_geometry(t.type, block_elements, block_bytes);
-            const uint64_t size = t.elements() / block_elements * block_bytes;
-            if (file_.data_start() + t.offset + size > file_.file_size())
-                throw std::runtime_error("cropped GGUF lacks payload for " + t.name);
+    // A cropped GGUF is useful for checking a layer prefix. Check every
+    // accessed payload before mmap reads; the directory alone is not enough.
+    for (const auto& t : file_.tensors()) {
+        if (t.name.rfind("blk.", 0) == 0) {
+            const size_t dot = t.name.find('.', 4);
+            const int layer = std::stoi(t.name.substr(4, dot - 4));
+            if (layer >= layers) continue;
         }
+        int block_elements = 0, block_bytes = 0;
+        strata::block_geometry(t.type, block_elements, block_bytes);
+        const uint64_t size = t.elements() / block_elements * block_bytes;
+        if (t.offset > file_.file_size() - file_.data_start() ||
+            size > file_.file_size() - file_.data_start() - t.offset)
+            throw std::runtime_error("GGUF lacks payload for " + t.name);
     }
     for (int layer = 0; layer < layers_; ++layer) {
         if (layer % 4 == 3) {

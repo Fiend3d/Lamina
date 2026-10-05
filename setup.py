@@ -44,6 +44,7 @@ def download(target: Path) -> None:
     if offset > SIZE:
         raise ValueError(f"Partial download is larger than the pinned model: {partial}")
     failures = 0
+    next_report = offset + 512 * 1024 * 1024
     while offset < SIZE:
         start = offset
         request = urllib.request.Request(URL, headers={"Range": f"bytes={offset}-"} if offset else {})
@@ -61,6 +62,9 @@ def download(target: Path) -> None:
                         offset += len(block)
                         if offset > SIZE:
                             raise RuntimeError("Model server sent more data than the pinned file size")
+                        if offset >= next_report:
+                            print(f"Downloaded {offset / 1e9:.1f}/{SIZE / 1e9:.1f} GB", flush=True)
+                            next_report = offset + 512 * 1024 * 1024
             if offset == start:
                 raise OSError("Model server returned no bytes")
             if offset < SIZE:

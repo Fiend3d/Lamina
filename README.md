@@ -7,11 +7,12 @@ in this repository.
 
 ## Current status
 
-The Qwen3.6 execution graph now has an experimental scalar C++ path. It reads the published GGUF directly and has
-DeltaNet, full attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. Its output has **not yet
-been checked against reference logits**, so it should not be treated as a validated inference engine. It dequantizes
-matrix rows on the CPU for each token and will be very slow. The CUDA path remains outstanding. The inherited Strata
-GPU code still implements Qwen3.8 and is not used by Lamina.
+The Qwen3.6 execution graph now has a scalar C++ path. It reads the published GGUF directly and has DeltaNet, full
+attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. A two-token, full-model check matched an
+independent NumPy implementation of the Qwen layer equations and selected the same next token and logit. Broader
+generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
+be very slow; the CUDA path remains outstanding. The inherited Strata GPU code still implements Qwen3.8 and is not
+used by Lamina.
 
 ## Build and inspect
 
