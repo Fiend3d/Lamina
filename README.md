@@ -40,12 +40,12 @@ For text prompts, install `requirements.txt` and point the client at the build d
 
 ```sh
 python -m pip install -r requirements.txt
-python lamina.py chat --engine build/lamina-infer --prompt "Hello" --max-tokens 32
-python lamina.py serve --engine build/lamina-infer --host 127.0.0.1 --port 8000
+python lamina.py chat --prompt "Hello" --max-tokens 32
+python lamina.py serve --host 127.0.0.1 --port 8000
 ```
 
-On Windows the executable is `build/lamina-infer.exe` (or `build-lamina/lamina-infer.exe` for this workspace's
-configured build). The API implements text-only, non-streaming `POST /v1/chat/completions`, greedy decoding with
+On Windows, pass `--engine build/Release/lamina-infer.exe` if your build is in a different location. The API
+implements text-only, non-streaming `POST /v1/chat/completions`, greedy decoding with
 `temperature: 0`, and `GET /v1/models`. Large prompts and generated responses will be very slow on CPU.
 
 The original Strata setup and README are preserved under `ref/` solely as porting references. They still describe a

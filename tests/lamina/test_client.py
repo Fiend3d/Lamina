@@ -42,6 +42,13 @@ class ClientTest(unittest.TestCase):
                     {"Content-Type": "application/json"}))
             self.assertEqual(error.exception.code, 400)
             error.exception.close()
+            for invalid in ([], {"messages": [], "top_p": 0.9}):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(urllib.request.Request(
+                        url, json.dumps(invalid).encode(),
+                        {"Content-Type": "application/json"}))
+                self.assertEqual(error.exception.code, 400)
+                error.exception.close()
         finally:
             server.shutdown()
             server.server_close()

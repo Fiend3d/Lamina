@@ -19,6 +19,13 @@ MODEL_NAME = "Qwen3.6-35B-A3B-UD-Q4_K_M"
 STOP_IDS = {248044, 248046}
 
 
+def default_engine() -> Path:
+    name = "lamina-infer.exe" if sys.platform == "win32" else "lamina-infer"
+    candidates = [ROOT / "build" / "Release" / name, ROOT / "build" / name,
+                  ROOT / "build-lamina" / name]
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
 def chat_prompt(messages: list[dict]) -> str:
     if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "user":
         raise ValueError("messages must end with a user message")
@@ -114,14 +121,20 @@ def make_handler(engine: Engine):
                 if length < 1 or length > 1024 * 1024:
                     raise ValueError("request body must be 1..1048576 bytes")
                 body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("request body must be an object")
                 if body.get("stream", False):
                     raise ValueError("streaming responses are not supported")
                 if body.get("temperature", 0) != 0:
                     raise ValueError("only greedy temperature=0 is supported")
+                if body.get("top_p", 1) != 1 or body.get("n", 1) != 1:
+                    raise ValueError("only top_p=1 and n=1 are supported")
+                if "tools" in body or "tool_choice" in body:
+                    raise ValueError("tool calling is not supported")
                 if body.get("model", MODEL_NAME) != MODEL_NAME:
                     raise ValueError("unknown model")
                 text, prompt_count, completion_count, finish = engine.completion(
-                    body["messages"], body.get("max_tokens", 128))
+                    body["messages"], body.get("max_tokens", body.get("max_completion_tokens", 128)))
                 self.reply(200, {
                     "id": "chatcmpl-" + uuid.uuid4().hex,
                     "object": "chat.completion", "created": int(time.time()), "model": MODEL_NAME,
@@ -153,7 +166,7 @@ def main() -> int:
     parser.add_argument("--prompt", help="user prompt for chat mode")
     parser.add_argument("--model", type=Path, default=DATA / "models" / FILENAME)
     parser.add_argument("--tokenizer", type=Path, default=DATA / "tokenizer" / "tokenizer.json")
-    parser.add_argument("--engine", type=Path, default=ROOT / "build-lamina" / ("lamina-infer.exe" if sys.platform == "win32" else "lamina-infer"))
+    parser.add_argument("--engine", type=Path, default=default_engine())
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
