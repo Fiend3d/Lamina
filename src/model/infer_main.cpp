@@ -14,10 +14,29 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: lamina-infer <model.gguf> <token-id> [token-id ...]\n"
                              "       lamina-infer <model.gguf> --interactive\n"
+                             "       lamina-infer <model.gguf> --prefix <layers> <token-id> [token-id ...]\n"
                              "Runs the scalar reference path and prints the highest-logit token.\n");
         return 2;
     }
     try {
+        if (argc >= 5 && std::string(argv[2]) == "--prefix") {
+            int layers = 0;
+            const std::string layer_arg = argv[3];
+            const char* layer_end = layer_arg.data() + layer_arg.size();
+            if (std::from_chars(layer_arg.data(), layer_end, layers).ec != std::errc{})
+                throw std::invalid_argument("invalid layer count");
+            lamina::model::Inference model(argv[1], 32768, layers);
+            std::vector<float> hidden;
+            for (int i = 4; i < argc; ++i) {
+                int token = -1;
+                const char* end = argv[i] + std::char_traits<char>::length(argv[i]);
+                if (std::from_chars(argv[i], end, token).ec != std::errc{} || token < 0)
+                    throw std::invalid_argument("invalid token id");
+                hidden = model.step_hidden(token);
+            }
+            for (float value : hidden) std::printf("%.9g\n", value);
+            return 0;
+        }
         lamina::model::Inference model(argv[1]);
         if (argc == 3 && std::string(argv[2]) == "--interactive") {
             std::string line;

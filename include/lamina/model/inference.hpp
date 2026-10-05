@@ -13,8 +13,10 @@ namespace lamina::model {
 // GGUF weights remain memory mapped and only selected expert rows are touched.
 class Inference {
 public:
-    explicit Inference(const std::string& path, int context = 32768);
+    explicit Inference(const std::string& path, int context = 32768, int layers = 40);
     std::vector<float> step(int token);
+    // Development diagnostic: return the residual stream before final norm.
+    std::vector<float> step_hidden(int token);
     int position() const { return position_; }
 
 private:
@@ -29,6 +31,7 @@ private:
 
     strata::GgufFile file_;
     int context_;
+    int layers_;
     int position_ = 0;
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;

@@ -49,15 +49,33 @@ std::string layer_name(int layer, const char* suffix) {
 }
 }  // namespace
 
-Inference::Inference(const std::string& path, int context) : file_(path), context_(context) {
+Inference::Inference(const std::string& path, int context, int layers)
+    : file_(path), context_(context), layers_(layers) {
     if (context < 1 || context > 32768) throw std::invalid_argument("context must be 1..32768");
-    if (file_.file_size() != 22134528992ULL)
+    if (layers < 1 || layers > 40) throw std::invalid_argument("layers must be 1..40");
+    if (layers == 40 && file_.file_size() != 22134528992ULL)
         throw std::runtime_error("GGUF size differs from the pinned Qwen3.6 UD-Q4_K_M artifact");
     const auto arch_error = strata::check_architecture(file_);
     if (!arch_error.empty()) throw std::runtime_error(arch_error);
     const auto tensor_error = check_qwen36_tensors(file_);
     if (!tensor_error.empty()) throw std::runtime_error(tensor_error);
-    for (int layer = 0; layer < 40; ++layer) {
+    if (layers < 40) {
+        // A cropped GGUF is useful for checking the first layers. Check every
+        // accessed payload before mmap reads; the directory alone is not enough.
+        for (const auto& t : file_.tensors()) {
+            if (t.name.rfind("blk.", 0) == 0) {
+                const size_t dot = t.name.find('.', 4);
+                const int layer = std::stoi(t.name.substr(4, dot - 4));
+                if (layer >= layers) continue;
+            }
+            int block_elements = 0, block_bytes = 0;
+            strata::block_geometry(t.type, block_elements, block_bytes);
+            const uint64_t size = t.elements() / block_elements * block_bytes;
+            if (file_.data_start() + t.offset + size > file_.file_size())
+                throw std::runtime_error("cropped GGUF lacks payload for " + t.name);
+        }
+    }
+    for (int layer = 0; layer < layers_; ++layer) {
         if (layer % 4 == 3) {
             attention_[layer].keys.reserve(static_cast<size_t>(std::min(context, 1024)) * 512);
             attention_[layer].values.reserve(static_cast<size_t>(std::min(context, 1024)) * 512);
@@ -253,12 +271,12 @@ std::vector<float> Inference::moe(int layer, const std::vector<float>& x) {
     return output;
 }
 
-std::vector<float> Inference::step(int token_id) {
+std::vector<float> Inference::step_hidden(int token_id) {
     if (position_ >= context_) throw std::out_of_range("context length exceeded");
     if (token_id < 0 || token_id >= 248320) throw std::out_of_range("token id");
     std::vector<float> x(HIDDEN);
     row(tensor("token_embd.weight"), token_id, x.data());
-    for (int layer = 0; layer < 40; ++layer) {
+    for (int layer = 0; layer < layers_; ++layer) {
         auto normalized = x;
         const auto input_norm = vec(tensor(layer_name(layer, "attn_norm.weight")));
         rms(normalized.data(), input_norm.data(), HIDDEN);
@@ -270,11 +288,15 @@ std::vector<float> Inference::step(int token_id) {
         auto feed_forward = moe(layer, normalized);
         for (int j = 0; j < HIDDEN; ++j) x[j] += feed_forward[j];
     }
+    ++position_;
+    return x;
+}
+
+std::vector<float> Inference::step(int token_id) {
+    auto x = step_hidden(token_id);
     const auto output_norm = vec(tensor("output_norm.weight"));
     rms(x.data(), output_norm.data(), HIDDEN);
-    auto logits = matvec(tensor("output.weight"), x);
-    ++position_;
-    return logits;
+    return matvec(tensor("output.weight"), x);
 }
 
 }  // namespace lamina::model

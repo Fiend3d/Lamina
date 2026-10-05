@@ -45,6 +45,7 @@ def download(target: Path) -> None:
         raise ValueError(f"Partial download is larger than the pinned model: {partial}")
     failures = 0
     while offset < SIZE:
+        start = offset
         request = urllib.request.Request(URL, headers={"Range": f"bytes={offset}-"} if offset else {})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
@@ -60,6 +61,8 @@ def download(target: Path) -> None:
                         offset += len(block)
                         if offset > SIZE:
                             raise RuntimeError("Model server sent more data than the pinned file size")
+            if offset == start:
+                raise OSError("Model server returned no bytes")
             if offset < SIZE:
                 print(f"Model stream ended at {offset}/{SIZE}; resuming", file=sys.stderr)
             failures = 0
