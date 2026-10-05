@@ -6,9 +6,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 
 namespace lamina::model {
 namespace {
@@ -133,12 +135,31 @@ std::vector<float> Inference::matvec(const strata::TensorInfo& t, const std::vec
         throw std::out_of_range("expert index");
     if (cuda_ && cuda_->supports(t.type))
         return cuda_->matvec(t, file_.tensor_data(t), x, expert);
-    std::vector<float> out(rows), weights(x.size());
+    std::vector<float> out(rows);
     const int64_t first = expert < 0 ? 0 : expert * rows;
-    for (int64_t r = 0; r < rows; ++r) {
-        row(t, first + r, weights.data());
-        out[r] = dot(weights.data(), x.data(), static_cast<int>(x.size()));
-    }
+    const unsigned available = std::thread::hardware_concurrency();
+    const unsigned workers = static_cast<uint64_t>(rows) * x.size() >= 4'000'000
+        ? std::min(4u, available ? available : 1u) : 1u;
+    std::vector<std::exception_ptr> failures(workers);
+    auto work = [&](unsigned worker) {
+        try {
+            std::vector<float> weights(x.size());
+            const int64_t begin = rows * worker / workers;
+            const int64_t end = rows * (worker + 1) / workers;
+            for (int64_t r = begin; r < end; ++r) {
+                row(t, first + r, weights.data());
+                out[r] = dot(weights.data(), x.data(), static_cast<int>(x.size()));
+            }
+        } catch (...) {
+            failures[worker] = std::current_exception();
+        }
+    };
+    std::vector<std::jthread> threads;
+    threads.reserve(workers - 1);
+    for (unsigned i = 1; i < workers; ++i) threads.emplace_back(work, i);
+    work(0);
+    for (auto& thread : threads) thread.join();
+    for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
     return out;
 }
 

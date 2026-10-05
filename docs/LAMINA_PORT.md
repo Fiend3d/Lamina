@@ -11,7 +11,9 @@ OpenAI-compatible chat endpoint.
 
 An opt-in hybrid CUDA projection path is wired into that scalar graph. It uses Strata's native Q8_1 activation
 quantizer and MMVQ kernels for Q8_0, Q4_K, Q5_K and Q6_K matrices, uploading selected expert slices and caching
-at most 512 MiB of weights on the device. F32 operations, DeltaNet state, attention, and MoE routing still run on
+up to 75% of free VRAM at startup. `LAMINA_CUDA_CACHE_MB` can lower that limit (for example, 6144 on a 16 GB card
+to exercise a 6 GiB weight-cache budget). An allocation failure evicts cached weights and retries. F32 operations,
+DeltaNet state, attention, and MoE routing still run on
 the CPU. The CUDA path has not been compiled or numerically checked on NVIDIA hardware in this workspace.
 On a CUDA machine, run `python -m tools.reference_prefix --layers 40 --engine PATH --cuda --max-diff 0.01`
 to compare its hidden state against the independent NumPy equations. The tolerance is a starting diagnostic value,

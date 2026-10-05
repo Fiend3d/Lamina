@@ -11,7 +11,8 @@ The Qwen3.6 execution graph now has a scalar C++ path. It reads the published GG
 attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. A two-token, full-model check matched an
 independent NumPy implementation of the Qwen layer equations and selected the same next token and logit. Broader
 generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
-be very slow. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
+be slow. Large scalar projections use up to four CPU threads; on the Ryzen 5 7520U here, a cached 40-layer
+hidden-state pass improved from 7.65 to 3.22 seconds. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
 MMVQ kernels; its state updates and routing still run on the CPU. This hybrid path has not yet been compiled or run
 on CUDA hardware. The inherited Strata GPU execution graph still implements Qwen3.8 and is not used by Lamina.
 
@@ -27,8 +28,21 @@ cmake --build build --target lamina-gguf lamina-infer
 On a machine with the CUDA toolkit and an Ampere or newer NVIDIA GPU, configure with
 `-DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80` and run `python lamina.py chat --cuda ...`.
 The flag is explicit: a default build stays CPU-only, and a CPU-only binary reports an error if `--cuda` is used.
-The hybrid path keeps a 512 MiB device weight cache and transfers activations for each projection. It is an
+The hybrid path keeps an LRU device weight cache sized to 75% of free VRAM at startup and transfers activations for
+each projection. On a 16 GB card, set `LAMINA_CUDA_CACHE_MB=6144` to test a roughly 8 GB-card-sized cache budget;
+an actual 8 GB card chooses its limit automatically. This setting caps the cache, not all CUDA allocations. It is an
 experimental step toward a full GPU engine, with no verified speedup or model parity yet.
+
+Measure decode speed with one persistent process, first at the automatic cache limit, then with a 6 GiB cap to
+approximate an 8 GB card's weight budget:
+
+```sh
+python -m tools.benchmark --engine build-cuda/lamina-infer --cuda --tokens 4
+python -m tools.benchmark --engine build-cuda/lamina-infer --cuda --cache-mb 6144 --tokens 4
+```
+
+On Windows, use `build-cuda/Release/lamina-infer.exe`. The benchmark reports the first token separately from later
+tokens. A 6 GiB cache cap on a 16 GB card does not reproduce an 8 GB card's bandwidth or exact free memory.
 
 The model is kept in `../Lamina-data/models`, outside the source tree. Downloads are explicit:
 

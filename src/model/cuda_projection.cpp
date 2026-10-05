@@ -8,6 +8,8 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <charconv>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 
@@ -17,7 +19,7 @@ void check(cudaError_t status, const char* action) {
     if (status != cudaSuccess)
         throw std::runtime_error(std::string("CUDA ") + action + ": " + cudaGetErrorString(status));
 }
-constexpr size_t CACHE_LIMIT = 512ULL * 1024 * 1024;
+constexpr size_t MIB = 1024ULL * 1024;
 }
 
 struct CudaProjection::Impl {
@@ -28,6 +30,7 @@ struct CudaProjection::Impl {
     };
     std::unordered_map<std::string, Entry> weights;
     size_t cached_bytes = 0;
+    size_t cache_limit = 0;
     uint64_t clock = 0;
     cudaStream_t stream = nullptr;
     float* input = nullptr;
@@ -65,6 +68,16 @@ struct CudaProjection::Impl {
         }
     }
 
+    bool evict_oldest() {
+        if (weights.empty()) return false;
+        const auto oldest = std::min_element(weights.begin(), weights.end(),
+            [](const auto& a, const auto& b) { return a.second.used < b.second.used; });
+        check(cudaFree(oldest->second.device), "evict weight");
+        cached_bytes -= oldest->second.bytes;
+        weights.erase(oldest);
+        return true;
+    }
+
     void* weight(const strata::TensorInfo& tensor, const uint8_t* data,
                  int64_t expert, size_t bytes) {
         const std::string key = tensor.name + "#" + std::to_string(expert);
@@ -72,15 +85,12 @@ struct CudaProjection::Impl {
             found->second.used = ++clock;
             return found->second.device;
         }
-        while (cached_bytes + bytes > CACHE_LIMIT && !weights.empty()) {
-            const auto oldest = std::min_element(weights.begin(), weights.end(),
-                [](const auto& a, const auto& b) { return a.second.used < b.second.used; });
-            check(cudaFree(oldest->second.device), "evict weight");
-            cached_bytes -= oldest->second.bytes;
-            weights.erase(oldest);
-        }
+        while (bytes > cache_limit - std::min(cached_bytes, cache_limit) && evict_oldest()) {}
         void* device = nullptr;
-        check(cudaMalloc(&device, bytes), "allocate weight");
+        auto status = cudaMalloc(&device, bytes);
+        while (status == cudaErrorMemoryAllocation && evict_oldest())
+            status = cudaMalloc(&device, bytes);
+        check(status, "allocate weight");
         try {
             check(cudaMemcpy(device, data, bytes, cudaMemcpyHostToDevice), "upload weight");
             weights.emplace(key, Entry{device, bytes, ++clock});
@@ -101,6 +111,21 @@ CudaProjection::CudaProjection() : impl_(std::make_unique<Impl>()) {
     check(cudaGetDeviceProperties(&device, 0), "inspect device");
     if (device.major < 8)
         throw std::runtime_error("Lamina CUDA projections require an Ampere or newer GPU");
+    check(cudaSetDevice(0), "select device");
+    size_t free_bytes = 0, total_bytes = 0;
+    check(cudaMemGetInfo(&free_bytes, &total_bytes), "inspect free memory");
+    // Leave a quarter of currently free VRAM for CUDA modules, other work and
+    // the activation buffers. The mapped 22 GB GGUF never needs to fit here.
+    impl_->cache_limit = free_bytes - free_bytes / 4;
+    if (const char* setting = std::getenv("LAMINA_CUDA_CACHE_MB")) {
+        size_t mib = 0;
+        const char* end = setting + std::char_traits<char>::length(setting);
+        const auto parsed = std::from_chars(setting, end, mib);
+        if (parsed.ec != std::errc{} || parsed.ptr != end || mib == 0 ||
+            mib > impl_->cache_limit / MIB)
+            throw std::invalid_argument("LAMINA_CUDA_CACHE_MB must be 1..75% of free VRAM in MiB");
+        impl_->cache_limit = mib * MIB;
+    }
     check(cudaStreamCreateWithFlags(&impl_->stream, cudaStreamNonBlocking), "create stream");
 }
 CudaProjection::~CudaProjection() = default;
