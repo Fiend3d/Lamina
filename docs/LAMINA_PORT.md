@@ -13,6 +13,9 @@ An opt-in hybrid CUDA projection path is wired into that scalar graph. It uses S
 quantizer and MMVQ kernels for Q8_0, Q4_K, Q5_K and Q6_K matrices, uploading selected expert slices and caching
 at most 512 MiB of weights on the device. F32 operations, DeltaNet state, attention, and MoE routing still run on
 the CPU. The CUDA path has not been compiled or numerically checked on NVIDIA hardware in this workspace.
+On a CUDA machine, run `python -m tools.reference_prefix --layers 40 --engine PATH --cuda --max-diff 0.01`
+to compare its hidden state against the independent NumPy equations. The tolerance is a starting diagnostic value,
+not an established parity bound; inspect any routing or next-token mismatch before relying on generation.
 
 The inherited Strata CUDA execution engine is Qwen3.8-specific. It expects a 48-layer gated-residual model and an
 attention indexer, neither of which exists in this Qwen3.6 artifact. The scalar path implements Qwen3.6's ordinary

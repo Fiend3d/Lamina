@@ -28,10 +28,14 @@ parser.add_argument(
 )
 parser.add_argument("--engine", type=Path, default=root / "build" / "lamina-infer")
 parser.add_argument("--layers", type=int, default=4)
+parser.add_argument("--cuda", action="store_true", help="compare the hybrid CUDA path")
+parser.add_argument("--max-diff", type=float, default=1e-5)
 parser.add_argument("--verbose", action="store_true")
 args = parser.parse_args()
 if not 1 <= args.layers <= 40:
     parser.error("--layers must be 1..40")
+if args.max_diff <= 0:
+    parser.error("--max-diff must be positive")
 path = args.model
 gg = GGUFFile(path)
 by_name = {t.name: t for t in gg.tensors}
@@ -186,6 +190,7 @@ result = subprocess.run(
     [
         str(args.engine.resolve()),
         str(path.resolve()),
+        *(["--cuda"] if args.cuda else []),
         "--prefix",
         str(args.layers),
         "42",
@@ -204,14 +209,20 @@ print("max_abs_diff", float(np.max(np.abs(x - cpp))))
 print("mean_abs_diff", float(np.mean(np.abs(x - cpp))))
 print("reference", x[:8])
 print("native", cpp[:8])
-if np.max(np.abs(x - cpp)) >= 1e-5:
+if np.max(np.abs(x - cpp)) >= args.max_diff:
     raise RuntimeError("native prefix differs from independent NumPy calculation")
 if args.layers == 40:
     normalized = rms(x, values("output_norm.weight"))
     logits = mat("output.weight", normalized)
     reference_next = int(np.argmax(logits))
     run = subprocess.run(
-        [str(args.engine.resolve()), str(path.resolve()), "42", "43"],
+        [
+            str(args.engine.resolve()),
+            str(path.resolve()),
+            *(["--cuda"] if args.cuda else []),
+            "42",
+            "43",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -229,7 +240,7 @@ if args.layers == 40:
     print("native_next", native_next, "native_logit", native_logit)
     if (
         native_next != reference_next
-        or abs(native_logit - logits[reference_next]) >= 1e-3
+        or abs(native_logit - logits[reference_next]) >= max(1e-3, args.max_diff)
     ):
         raise RuntimeError(
             "native final logits differ from independent NumPy calculation"
