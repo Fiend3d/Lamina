@@ -4,9 +4,8 @@
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
 # claim something the tree does not have, which is worse than an absent target.
 #
-# CUDA targets arrive in Phase 2.  The kernels need sm_80 or newer (tf32 mma, bf16 math) and the guard
-# below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
-# and is wrong about its own performance, which is the worst of both outcomes.
+# Lamina's opt-in CUDA target reuses Strata's GGUF MMVQ kernels for projections.
+# The complete inherited Strata CUDA engine remains behind LAMINA_BUILD_LEGACY.
 cmake_minimum_required(VERSION 3.24)
 project(lamina VERSION 0.1.0 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its

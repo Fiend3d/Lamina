@@ -97,6 +97,10 @@ CudaProjection::CudaProjection() : impl_(std::make_unique<Impl>()) {
     int count = 0;
     check(cudaGetDeviceCount(&count), "count devices");
     if (count < 1) throw std::runtime_error("CUDA requested but no NVIDIA device is available");
+    cudaDeviceProp device{};
+    check(cudaGetDeviceProperties(&device, 0), "inspect device");
+    if (device.major < 8)
+        throw std::runtime_error("Lamina CUDA projections require an Ampere or newer GPU");
     check(cudaStreamCreateWithFlags(&impl_->stream, cudaStreamNonBlocking), "create stream");
 }
 CudaProjection::~CudaProjection() = default;
