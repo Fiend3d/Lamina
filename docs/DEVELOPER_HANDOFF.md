@@ -1,164 +1,219 @@
 # Lamina developer handoff
 
-Read this before changing inference code. Lamina targets the pinned Qwen3.6-35B-A3B
-UD-Q4_K_M GGUF. It is a native Strata port in progress, with a correct but slow
-CPU path and a hybrid CUDA path that runs the whole token chain (norms, residuals,
-DeltaNet, attention, router and MoE) on the GPU. The hybrid passes the 40-layer
-parity gate but is launch-bound, not yet Strata-class: do not report it
-as a fast GPU engine until the remaining device-resident work below is done and
-measured throughput supports that claim.
+Start here. Lamina targets the pinned Qwen3.6-35B-A3B UD-Q4_K_M GGUF,
+architecture `qwen35moe`. Strata baseline is
+`6f32ec070f23ced9f50e704d854d775da52591ab`. Model, tokenizer, mmproj,
+environment and toolchain assets belong in `../Lamina-data`.
+The inherited Qwen3.8 graph in `src/core/` and `src/prefill/` is source material,
+not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
 
-## What runs today
+## Active implementation
 
-| Path | State | Evidence | Performance |
-| --- | --- | --- | --- |
-| Scalar C++ | Full 40-layer text graph runs | Two tokens checked against independent NumPy across all layers; same next token | About 0.395 later tokens/s in a four-token notebook sample |
-| Hybrid CUDA | Whole token chain on the GPU: hidden state, RMS norms, residuals, DeltaNet, attention (device KV cache, partial RoPE, GQA), device router top-8 and MoE all stay in VRAM; only the router's 8 ids/weights and the final hidden state touch the host. Dense weights are pinned resident; each DeltaNet layer's pre-MoE sequence is a captured CUDA graph; the router uses a mapped-pinned doorbell; the MoE uses grouped MMVQ with a block-hoisted Q4_K kernel | Windows CUDA 13.4, RTX 4060 Ti; isolated projection and elementwise suites pass; independent 40-layer check max diff `1.14e-6`, next token 20, logit 9.544323 | i5-12400F + RTX 4060 Ti: 120-token token-ID run median 0.043 s (19.6 later tokens/s). `LAMINA_PROFILE=1` reports ~38 ms GPU-busy per step, of which the MoE is ~26 ms; the accurate FP32 quantized decode is the wall |
-| Inherited Strata CUDA engine | Qwen3.8-specific source only | Different 48-layer graph and routing; not a Lamina target | Not applicable |
+- `tools/lamina_model.py`, `include/lamina/model/qwen36.hpp`: pinned checksum,
+  file size, metadata and tensor shape/offset contract; 40 layers, 30 DeltaNet,
+  10 gated full-attention, 256 experts/top-eight, ordinary residuals.
+- `src/model/inference.cpp`: native Qwen3.6 scalar and CUDA layer graph,
+  layer-major causal text/image prefill, physical versus mRoPE positions,
+  reset and output logits. Prefill chunks are bounded to 2048 columns.
+- `src/model/cuda_projection.cpp`: allocation-accounted VRAM budget, separate
+  expert weight-cache target, constant-time LRU, stream-ordered pinned upload
+  ring, stable dense/shared weights, CUDA DeltaNet and dynamic MoE graphs.
+  Decode graphs read updated device pointer tables; graph keys do not depend
+  on selected expert weight addresses. Never free/reuse a weight while a
+  queued kernel can read it. Weight uploads/reuse are on the inference stream.
+- `src/kernels/cuda/native_mmvq.cu`: inherited generic quantized kernels plus
+  accurate FP32-activation grouped/device-table/column adapters. Q8 activation
+  quantization is not enabled because it failed full-model accuracy.
+- Batched prefill uses native FP32 column reductions below 16 columns and,
+  optionally, a single dequantized matrix scratch plus strict FP32 cuBLAS GEMM
+  for larger groups. TF32 is disabled. `LAMINA_PREFILL_BLAS` CMake option is
+  off in default hardware-free builds and on in the Windows CUDA helper.
+  `LAMINA_PREFILL_BLAS=0` runtime environment selects the native fallback.
+  cuBLAS workspace is explicitly 8 MiB; matrix scratch is bounded/reused.
+- `native_gdn_preprocess.cu`, `native_gdn.cu`: causal convolution and recurrent
+  state retained across prefill chunks; recurrence traverses columns on GPU.
+- `src/model/cuda_kernels.cu`: norms, routing, expert gathers/scatters and
+  original-slot FP32 combination, interleaved [11,11,10] mRoPE, causal batched
+  attention and history-tile softmax merge. Fused prefill reuses shared KV
+  across eight query warps, preserves 128-key reduction order and updates
+  the running accumulator directly. All up to 2048 query columns share one
+  history sweep; the accumulator is at most 32.25 MiB. No batch partial
+  matrix is allocated. Decode stages 2048 history tokens per tile.
+- Host KV uses two bounded pinned/device slots and a separate nonblocking
+  transfer stream. Per-slot copy/consumer events protect pinned-memory and
+  device-buffer reuse; compute waits on copy completion. FP32 staging is
+  16 MiB pinned plus 16 MiB device in total, halved for FP16.
+- Optional `--kv-type f16` packs only KV into IEEE half; projections, queries,
+  softmax and value accumulation remain FP32. Both host/device KV support it.
+  FP32 remains the default and keeps the unchanged 1e-5 reference gate.
+  FP16 is lossy and may change expert routing; do not apply the FP32 model
+  parity claim to it. `lamina-kv-precision-check` tests host/device, reset,
+  decode/image continuity and reports FP32 drift.
+- GPU KV is default at up to 32K. Above 32K, auto selects complete host
+  history (FP32 by default); 128K needs about 5 GiB for the ten attention layers, plus model
+  pages and other buffers. GPU staging remains bounded. No sliding window or
+  history truncation. Prefill scratch is freed before decode, preserving KV,
+  convolution and recurrent state and restoring the expert-cache budget.
+- `src/model/cpu_experts.cpp`: persistent worker pool and CPU dequantization
+  for optional `LAMINA_EXPERT_POLICY=cpu-miss`; FP64 reductions preserve
+  accuracy. Default `stream` sends misses to the GPU. CPU policy needs its
+  own measured evidence before choosing it for a machine.
+- `src/model/infer_main.cpp`, `sampling.hpp`: persistent native protocol,
+  RESET/SAMPLE/BATCH/PREFILL/IMAGE, seeded sampling, prefix diagnostics.
+- `tools/lamina_chat.py`, `lamina_protocol.py`, `lamina_vision.py`, `lamina.py`:
+  official pinned chat template, native resident process, CPU mtmd image
+  encoder, serialized HTTP API, SSE/usage/reasoning, tools, stop handling,
+  JSON/schema validation, disconnect recovery and preflight context checks.
+  Tool/JSON output is validated after generation, not grammar-constrained.
+  Linux runtime, video and a web UI are outside this implementation.
+- `tools/bootstrap_cuda.py`, `build_windows.py`, `lamina_assets.py`: verified
+  portable CUDA 13.3 including cuBLAS, Release MSVC/Ninja build, runtime DLLs,
+  pinned template/tokenizer config and F16 mmproj. Vision uses pinned llama.cpp
+  revision from `third_party/ggml/VERSION.txt`, CPU only.
 
-The scalar measurement used an AMD Ryzen 5 7520U with a warm file cache. The
-hybrid numbers above used an Intel Core i5-12400F (64 GB RAM) with a warm file
-cache and the whole 20.6 GiB GGUF memory-mapped from `../Lamina-data`.
+## Validation commands
 
-A race fixed during this work: the weight cache uploaded quantized blocks with a
-**synchronous pageable `cudaMemcpy` on the legacy stream** while the projections
-ran on a **non-blocking stream**, so a queued projection could read a
-partially-uploaded weight. Weight uploads now use `cudaMemcpyAsync` on the
-kernel stream. Any new device-resident work must keep every host/device transfer
-ordered with the stream the kernels use.
-It is not a GPU performance estimate. The 22.1 GB GGUF is memory mapped from
-`../Lamina-data`; an 8 GB GPU does not need to hold the whole file, but its
-throughput and even successful execution still require testing.
-The scalar path defaults to at most eight workers for large projections;
-`LAMINA_CPU_THREADS=1..64` overrides it. A matched warm-cache 40-layer pass
-took 4.46 seconds with one worker and 2.98 seconds with eight on this notebook.
+Hardware-free defaults (Windows executable paths shown):
 
-## Repository map and sources of truth
-
-- `tools/lamina_model.py`: pinned GGUF URL, revision, 22,134,528,992-byte size,
-  SHA-256, metadata, tensor names, shapes and offset checks. This is the input
-  contract. `include/lamina/model/qwen36.hpp` independently checks the same
-  tensor layout in C++.
-- `setup.py`: resumable model download, pinned tokenizer download and sibling
-  `Lamina-data` index. Never commit the model or generated index to the source
-  tree.
-- `src/model/inference.cpp`: Qwen3.6 token graph, GGUF row decoding, CPU
-  projections, 30 recurrent DeltaNet layers, 10 full-attention layers, top-eight
-  experts, shared expert, residuals and final logits.
-- `src/model/cuda_projection.cpp`: hybrid projection adapter. It uses a direct
-  FP32-activation path in Strata's `src/kernels/cuda/native_mmvq.cu` for Q8_0,
-  Q4_K, Q5_K and Q6_K, an LRU weight cache sized to 75% of free VRAM, and
-  blocking activation/result transfers with explicit device synchronization.
-  `LAMINA_CUDA_CACHE_MB` lowers the cache limit. The CUDA-only
-  `lamina-cuda-projection-check` target compares selected tensors with scalar
-  dequantized matvecs. `LAMINA_PROFILE=1` prints per-token total, CUDA-matvec,
-  CPU-matvec and remaining graph time; a sample showed ~218 ms of CUDA matvecs
-  in a ~270 ms token step.
-- `src/model/infer_main.cpp`: token-ID CLI, interactive text-client protocol,
-  and `--prefix` hidden-state diagnostic. `lamina.py` applies the tokenizer and
-  text chat template, then calls this binary. `tools/benchmark.py` measures
-  multiple tokens in one process.
-- `tools/reference_prefix.py`: independent NumPy and gguf-py calculation for
-  tokens 42 and 43. Use it before and after changing layer math. It checks the
-  final hidden state and, with 40 layers, the selected next token and logit.
-- `src/core/`, most of `src/kernels/`, `src/prefill/`, `ref/`: inherited Strata
-  implementation and references. These still assume Qwen3.8 unless explicitly
-  ported and validated. `LAMINA_BUILD_LEGACY` is off by default.
-
-Model equations and GGUF conversion orientation: the [Qwen model config](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/config.json),
-[Transformers Qwen3.5 MoE implementation](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py),
-and [llama.cpp Qwen converter](https://github.com/ggml-org/llama.cpp/blob/master/conversion/qwen.py).
-Those upstream files may change; the pinned GGUF bytes and local checks define
-this build's supported input.
-
-## Build and validate
-
-Use CMake 3.24+, a C++20 compiler, Python and sufficient disk space. On
-Windows, executable paths below add `Release/` and `.exe` with a multi-config
-generator. The CPU build needs no CUDA toolkit.
-
-```sh
-python -m pip install -r requirements.txt
-python setup.py --download
-python setup.py --tokenizer
-python setup.py --index
+```powershell
 cmake -S . -B build
-cmake --build build --config Release --target lamina-gguf lamina-infer
+cmake --build build --config Release --target lamina-gguf lamina-infer lamina-sampling-check
 python -m unittest discover -s tests/lamina
-build/lamina-gguf ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --check
-python lamina.py chat --engine build/lamina-infer --prompt "Hi" --max-tokens 1
+build/Release/lamina-sampling-check.exe
+build/Release/lamina-gguf.exe ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --check
 ```
 
-The download validates the entire model checksum and may take a long time. To
-check exact layer math, install `requirements-reference.txt` and run:
+Install `requirements.txt`, `requirements-build.txt`, `requirements-reference.txt`
+and `requirements-benchmark.txt` in `../Lamina-data/venv`. Build the CUDA path
+with `python -m tools.build_windows --vision`. For other GPUs/toolkits configure
+CMake with `LAMINA_ENABLE_CUDA=ON`, suitable `CMAKE_CUDA_ARCHITECTURES`, and
+optionally `LAMINA_PREFILL_BLAS=ON` (requires cuBLAS development files).
 
-```sh
-python -m pip install -r requirements-reference.txt
-python -m tools.reference_prefix --layers 4 --engine build/lamina-infer
-python -m tools.reference_prefix --layers 40 --engine build/lamina-infer
+```powershell
+build-cuda/lamina-cuda-elementwise-check.exe
+build-cuda/lamina-cuda-attention-check.exe
+build-cuda/lamina-cuda-projection-check.exe ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+build-cuda/lamina-prefill-check.exe ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+build-cuda/lamina-kv-precision-check.exe ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+build-cuda/lamina-cuda-attention-check.exe --benchmark
+$env:OPENBLAS_NUM_THREADS='1'
+python -m tools.reference_prefix --layers 40 --engine build-cuda/lamina-infer.exe --cuda --batched --tokens 42 43 44 45 --max-context 131072 --kv-cache host
+python -m tools.runtime_check
 ```
 
-The known full-graph check on tokens 42 and 43 had maximum hidden-value
-difference `1.0023523324687034e-6`, next token ID `20` in both paths, and
-native logit `9.544323`. This checks the scalar math for that input, not general
-generation quality or GPU parity.
+Keep the independent reference's default `1e-5` tolerance. The 2026-10-06
+four-token independent check passed at `3.59125275e-6`, next token 369 in both
+implementations, native logit 12.448531 versus reference 12.448533724.
+The batched state suite checks 4/40 layers, host/device caches, causal chunk
+boundaries, decode after prefill, reset, image mRoPE and following text. All
+pass; largest difference `8.85501504e-6`. Seventeen-column projection checks
+cover native/GEMM adapters with relative L2 below `1e-6`. Attention tests
+include 131,072 positions and a nonzero value only at the oldest position,
+plus batched causal masking. The attention test also compares FP16 storage
+against an independent scalar reference with explicitly rounded inputs.
+These are independent scalar tests, not a full
+128K model-generation test. Seventeen Python tests and sampling checks pass.
 
-For CUDA kernel checks, configure `-DLAMINA_ENABLE_CUDA=ON` and an appropriate
-`CMAKE_CUDA_ARCHITECTURES`, build `lamina-cuda-projection-check`, and run it with
-the pinned model path. The toolkit-only job in
-`.github/workflows/lamina-cuda-build.yml` [passed on Linux with CUDA 12.6](https://github.com/Fiend3d/Lamina/actions/runs/37366756905);
-it cannot run inference without a GPU. On an NVIDIA machine, start with a
-four-layer check, then all 40 layers:
+## Measurements and validation boundaries
 
-```sh
-cmake -S . -B build-cuda -DLAMINA_ENABLE_CUDA=ON
-cmake --build build-cuda --config Release --target lamina-infer
-python -m tools.reference_prefix --layers 4 --engine build-cuda/lamina-infer --cuda --max-diff 0.01
-python -m tools.reference_prefix --layers 40 --engine build-cuda/lamina-infer --cuda --max-diff 0.01
+Machine: RTX 4060 8188 MiB, driver 610.88, Ryzen 7 1700X (8c/16t), 64 GiB RAM,
+PCIe Gen3 x8, Windows, Release CUDA 13.3. ComfyUI was stopped before testing.
+NVML peaks are sampled total GPU memory including desktop, not process-only
+VRAM. Warm mapped-file cache is used. Do not compare the previous i5/4060 Ti
+19.6 tokens/s number as though it were measured on this machine.
+
+Exact commands, hardware, timings, peaks and executable hashes are in
+`bench/results/2026-10-06-rtx4060-8gb/`. The baseline comparison uses the
+original Lamina Release build at commit `81c0c41808442ba8a31c787f42a3b5a448b2d1c8`,
+not the inherited Qwen3.8 Strata engine.
+
+The following measurements precede the attention/KV update.
+
+| Run | First token | Later tokens/s | Peak total GPU MiB |
+| --- | ---: | ---: | ---: |
+| Original Lamina, three-run matched median | 1.437-1.477 s | 13.260 | 6635.91 |
+| New Lamina, three-run matched median | 1.542-1.574 s | 14.129 | 6641.79 |
+| Final host-query 1024 binary, matched 120 | 3.665 s | 14.078 | 6771.33 |
+| 4096 prompt, chunk 1024, host KV | 35.923 s | 12.062 | 6982.00 |
+| 4096 prompt, chunk 2048, host KV | 26.783 s | 11.080 | 6982.00 |
+| 32736 prompt, chunk 1024, device KV | 351.465 s | 10.870 | 7661.67 |
+| 131040 prompt, chunk 1024, host KV | 3115.672 s | 0.689 | 6980.10 |
+
+The matched 120 outputs are identical. Median short decode improved 6.55%;
+MoE graphs recorded 4760 replays/40 initial misses. The final binary's different
+startup measurement is retained with its own hash; the three-run comparison
+predates only host-KV query grouping and an expert-count guard. The client now
+defaults to 2048-token chunks, selected from the measured 4K comparison. Both
+full-context tests used explicit 1024-token chunks. Context stress repeats token 42;
+it establishes capacity and timing, not semantic retrieval or general quality.
+The 128K run used 17.28 GiB peak process RAM and retained complete FP32 KV history.
+Its 51 min 56 s first-token wait and 0.689 tokens/s are substantial limitations,
+not evidence of Strata-class performance. The original Debug result is excluded.
+
+```powershell
+python -m tools.benchmark --engine build-cuda/lamina-infer.exe --cuda --input-tokens bench/results/2026-10-06-rtx4060-8gb/teacher-forced-120.txt --tokens 120 --quiet --json bench/results/2026-10-06-rtx4060-8gb/final-current-matched.json
+python -m tools.benchmark --engine build-cuda/lamina-infer.exe --cuda --prompt-tokens 4096 --chunk 2048 --tokens 16 --max-context 131072 --kv-cache host --quiet --json bench/results/2026-10-06-rtx4060-8gb/final-prefill-4096-chunk2048.json
+python -m tools.benchmark --engine build-cuda/lamina-infer.exe --cuda --prompt-tokens 32736 --chunk 1024 --tokens 16 --max-context 32768 --kv-cache auto --quiet --json bench/results/2026-10-06-rtx4060-8gb/context-32k.json
+python -m tools.benchmark --engine build-cuda/lamina-infer.exe --cuda --prompt-tokens 131040 --chunk 1024 --tokens 16 --max-context 131072 --kv-cache host --quiet --json bench/results/2026-10-06-rtx4060-8gb/context-128k.json
 ```
 
-`0.01` is a diagnostic starting tolerance, not a proven error bound. Inspect
-per-layer output and expert choices if it fails. Recheck next-token IDs and
-actual text prompts. Do not weaken the parity gate merely to make it pass.
+Run GPU measurements one at a time. The real API suite passes 11 requests,
+including SSE UTF-8/usage, seeded repeat, reset, reasoning, JSON schema,
+forced tools, OCR, multiple images and recovery after disconnect.
+The isolated largest-angle rotary check covers positions 0/32767/65536/131071
+against analytic double-precision sin/cos, max error9.13e-7. This isolates the
+first frequency; it is not an all-frequency/full-model 128K numerical reference.
 
-## Performance work in order
+The optional CPU-miss policy also passed the independent 40-layer check
+(maximum difference `3.33945929e-6`, next token 369). Set
+`LAMINA_EXPERT_POLICY=cpu-miss`, `LAMINA_CPU_THREADS=8`,
+`LAMINA_CUDA_CACHE_MB=2200` and `OPENBLAS_NUM_THREADS=1`, then run:
 
-1. **Keep the full-graph parity gate.** The device MoE and GPU router path
-   passes on RTX 4060 Ti: maximum hidden difference `1.73e-6`, next token 20 and
-   native logit 9.544323. Do not weaken this gate.
-2. **Measured state (i5-12400F + RTX 4060 Ti).** `LAMINA_PROFILE=1` reports
-   `device gpu_busy_ms` (CUDA-event time across the whole device chain) of
-   ~26 ms/step, of which the MoE is ~16 ms and the DeltaNet+attention+norms are 
-   ~12 ms. The expert cache hit rate is ~0.93 with ~5 GB resident of the 11 GB
-   limit; dense and shared weights are pinned. `LAMINA_DEV_PROFILE=1` splits the
-   MoE into router and kernels.
-3. **The MoE's accurate decode is the wall (next, biggest win).** The direct
-   FP32-activation MMVQ path decodes one quantized element at a time (~30 cycles
-   per element measured) because it must not quantize the activation: the Q8_1
-   `native_mmvq` path is ~4x cheaper but shifting the MoE to it moved the 40
-   layer hidden-state error to `0.127` (same top-1 token here, logit 9.601 vs
-   9.544). Speed therefore needs a hand-written accurate FP32-decode GEMV —
-   e.g. a proper block/multi-row tiling with `__dp4a`-style integer weight codes
-   and exact per-group scales, or a two-level scheme that keeps the activation
-   in FP32 — rather than more launch or transfer tuning. The grouped Q4_K kernel
-   in `src/kernels/cuda/native_mmvq.cu` (`native_mmvq_f32_q4k_grouped_kernel`) is
-   the template; Q5_K/Q6_K down projections and the Q8_0 DeltaNet projections are
-   still on the generic per-element path.
-4. **Capture more graphs.** DeltaNet layers already replay a captured pre-MoE
-   graph. The MoE cannot be captured while its expert weights change each token;
-   capturing it needs the Strata design: a fixed resident expert set, graphs per
-   layer, and a CPU pool for misses, with a mapped-pinned doorbell. Attention can
-   be captured once its position and KV-append offset are read from device memory.
-5. **Overlap CPU and GPU experts.** The cache holds ~93% of requested experts;
-   split each layer at the router and compute the misses on a CPU pool
-   concurrently, as Strata's `src/core/session.cpp` does, for a larger card or a
-   smaller VRAM budget. Measure hit rate, bytes transferred and peak VRAM.
-6. **Add prompt prefill and broader validation.** Decode-only token loops make
-   prompt processing slow. Preserve causal DeltaNet/attention state while
-   batching prefill. Compare several prompts and generated tokens with an
-   official Transformers reference before promising useful output quality.
+```powershell
+python -m tools.reference_prefix --layers 40 --engine build-cuda/lamina-infer.exe --cuda --tokens 42 43 44 45 --max-context 131072 --kv-cache host
+```
 
-The next developer should report separately: build success, numerical parity,
-text quality, first-token time, later tokens/s, and peak VRAM. A passing build
-or a single matching token is not evidence of fast or broadly correct
-inference.
+The normal-cache CPU-miss benchmark reached 6.459 tokens/s; the forced
+2200 MiB cache reached 3.908. GPU streaming remains the faster default.
+
+### Attention/KV update
+
+`bench/results/2026-10-06-attention/VALIDATION.md` records the current update.
+The saved pre-update binary is SHA256 `e2623cb10cd09d4e9580863c4e4c62ec93633518632bd0b1a24ec170864c613d`;
+the fused/FP16 binary is `152b597382051d3a3888228f6157fd9496ceb14718f41fd85c2ecd2a1a672b89`.
+Comparison is to the completed first port, not original Lamina or Strata.
+Single matched 16K/2048-chunk host-KV runs: FP32 first-token time 125.814 ->
+104.682 s; later throughput 4.657 -> 6.560 tokens/s; sampled total GPU peaks
+7249.75 -> 7250.30 MiB. FP16 host/device first-token times are 102.498/102.045 s,
+later throughput 9.675/16.673 tokens/s, peaks 7252.52/7221.90 MiB.
+Short matched 120-token decode is unchanged at 13.932 -> 13.933 tokens/s.
+All FP32 comparisons and the sampled FP16 predictions agree.
+
+The independent four-token 40-layer FP32 check remains 3.59125275e-6; the
+full-layer/image state gate remains 8.85501504e-6. The isolated legacy/fused
+attention benchmark is bit-identical and about 2x faster, but excludes model,
+weight streaming and host transfers. Both FP32/FP16 pass 11 real API checks.
+FP16 host/device/reset/image results agree exactly. Against FP32, the 64-token
+sample's hidden drift is max 0.081905365, relative L2 0.0137232212. FP16 is
+experimental and lossy; its sequential/batched rounding can exceed the FP32
+1e-5 model gate. Do not relax that gate or call FP16 generation equivalent.
+The CLI rejects FP16 on CPU before loading optional tokenizer dependencies.
+A 4-layer/4097-varied-token/2048-chunk transfer test also matches host/device
+exactly in both FP32 and FP16, including decode, exercising both slots and
+slot-zero reuse. Seventeen Python tests pass in the sibling venv.
+
+The updated full 128K FP16 device profile completed: 131040 prompt + 16
+response tokens, explicit 2048-token chunks, first token 1736.531 s, later
+7.212 tokens/s, peak total GPU 7304.03 MiB, peak process RAM 12591.10 MiB.
+All KV history is retained. This differs in precision and chunk size from the
+earlier FP32 host run; do not claim an equal-precision speedup from that pair.
+Prefill still takes 28 min 57 s. Exact command/hash/hardware are in
+`fused-f16-device-128k.json` in the attention-update measurement directory.
+
+Broader comparisons against official Transformers on capable hardware,
+semantic long-context retrieval and Linux GPU runtime remain unverified.
+Build success alone does not establish correctness, quality or speed.
+Model equations follow the pinned
+[Qwen config](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/config.json),
+Transformers `qwen3_5_moe` and llama.cpp `conversion/qwen.py` orientation.
+The NumPy reference uses independent gguf-py dequantization.

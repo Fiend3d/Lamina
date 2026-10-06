@@ -1,0 +1,9 @@
+prefill state parity failed
+layers=4 cache=host type=f16 tokens=1025 chunk=1024
+prefill max_abs_diff=3.94880772e-07
+decode after prefill max_abs_diff=6.55651093e-07
+reset after prefill max_abs_diff=1.1920929e-07
+image mRoPE prefill max_abs_diff=2.50339508e-06
+text after image max_abs_diff=2.68220901e-07
+layers=40 cache=host type=f16 tokens=64 chunk=32
+prefill max_abs_diff=0.000198364258

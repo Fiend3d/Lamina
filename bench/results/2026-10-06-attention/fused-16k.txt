@@ -1,0 +1,3 @@
+first token: 104.682 s
+later throughput: 6.560 tokens/s
+peak total GPU MiB: 7250.296875

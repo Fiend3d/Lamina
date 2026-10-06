@@ -42,6 +42,18 @@ void native_mmvq_f32_grouped(int ggml_type, const void* const* weights,
                              const float* const* inputs, float* const* outputs,
                              const int* n_outs, int count, int total_rows, int n_in, void* stream);
 
+struct NativeF32Grouped {
+    const void* weights[64];
+    const float* inputs[64];
+    float* outputs[64];
+    int n_outs[64];
+    int count;
+};
+// Reads the pointer table on the device at execution time. Captured expert
+// graphs can therefore replay after routing or weight-cache addresses change.
+void native_mmvq_f32_grouped_table(int ggml_type, const NativeF32Grouped* table,
+                                   int count, int total_rows, int n_in, void* stream);
+
 // Layout for ncols > 1. false: llama.cpp's generic multi-column table (upstream), equal to ncols == 1 to
 // float rounding, speed not yet measured. true (default): the ncols == 1 layout, every column bitwise equal to a
 // single-column call. Set before
@@ -125,6 +137,13 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 // and launch helpers; only the
 // capability query returns false.
 bool native_mmvq_supported(int ggml_type) noexcept;
+// Lamina: multiple FP32 activation columns without activation quantization.
+// x/y are column-major batches of contiguous n_in/n_out rows.
+void native_mmvq_f32_columns(int ggml_type, const void* weights, const float* x,
+                             float* y, int n_in, int n_out, int ncols, void* stream);
+// Decode into a bounded FP32 scratch matrix for full-precision SGEMM prefill.
+void native_mmvq_dequant_f32(int ggml_type, const void* weights, float* out,
+                            int n_in, int n_out, void* stream);
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);

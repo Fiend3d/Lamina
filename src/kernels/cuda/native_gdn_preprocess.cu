@@ -114,6 +114,45 @@ __global__ void out_norm(const float* __restrict__ input, const float* __restric
 }
 
 struct Span { const void* pointer; size_t bytes; };
+__global__ void conv_columns(float* history, const float* input, const float* weights,
+                              float* output, int columns) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= 8192) return;
+    float taps[4], values[4] = {history[c*3], history[c*3+1], history[c*3+2], 0.0f};
+#pragma unroll
+    for (int t = 0; t < 4; ++t) taps[t] = weights[c*4+t];
+    for (int col = 0; col < columns; ++col) {
+        values[3] = input[size_t(col)*8192+c];
+        float sum = 0.0f;
+#pragma unroll
+        for (int t = 0; t < 4; ++t) sum += values[t] * taps[t];
+        sum = __fadd_rn(sum, 0.0f);
+        output[size_t(col)*8192+c] = sum / (1.0f + expf(-sum));
+#pragma unroll
+        for (int t = 0; t < 3; ++t) values[t] = values[t+1];
+    }
+#pragma unroll
+    for (int t = 0; t < 3; ++t) history[c*3+t] = values[t];
+}
+
+__global__ void l2_columns(float* input) {
+    const int j = threadIdx.x;
+    input += size_t(blockIdx.y) * 8192 + size_t(blockIdx.x) * 128;
+    const float value = j < 128 ? input[j] : 0.0f;
+    float partial = j < 128 ? value * value : 0.0f;
+    __shared__ float sums[32];
+    partial = norm_sum(partial, sums);
+    const float scale = rsqrtf(partial / 128 + 1e-6f / 128);
+    if (j < 128) input[j] = __fmaf_rn(__fmul_rn(scale, value), 1.0f / sqrtf(128.0f), 0.0f);
+}
+
+__global__ void gate_columns(const float* alpha, const float* dt, const float* a,
+                              float* gate, int count) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const float value = __fadd_rn(alpha[i], dt[i % 32]);
+    gate[i] = (value > 20.0f ? value : log1pf(expf(value))) * a[i % 32];
+}
 void valid(Span span) {
     const auto address = reinterpret_cast<uintptr_t>(span.pointer);
     if (!span.pointer || address % sizeof(float) || span.bytes > UINTPTR_MAX - address)
@@ -196,4 +235,18 @@ void native_gdn_out_norm(const float* output, const float* z, const float* gamma
     out_norm<<<unsigned(heads), 256, 0, static_cast<cudaStream_t>(stream)>>>(output, z, gamma, destination, epsilon);
     check_launch();
 }
+void native_gdn_preprocess_columns(float* history, const float* qkv, const float* conv,
+                                    float* convolved, const float* alpha, float* beta,
+                                    const float* dt, const float* a, float* gate,
+                                    int columns, void* stream) {
+    if (!stream || columns < 1 || columns > 2048 || !history || !qkv || !conv || !convolved ||
+        !alpha || !beta || !dt || !a || !gate) throw std::invalid_argument("invalid GDN preprocessing columns");
+    auto s = static_cast<cudaStream_t>(stream);
+    conv_columns<<<32, 256, 0, s>>>(history, qkv, conv, convolved, columns);
+    l2_columns<<<dim3(32, columns), 256, 0, s>>>(convolved);
+    beta_sigmoid<<<(columns*32+255)/256, 256, 0, s>>>(beta, columns*32);
+    gate_columns<<<(columns*32+255)/256, 256, 0, s>>>(alpha, dt, a, gate, columns*32);
+    check_launch();
+}
+
 } // namespace strata::kernels

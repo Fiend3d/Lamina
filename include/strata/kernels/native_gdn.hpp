@@ -18,5 +18,10 @@ bool native_gdn_enabled();
 void native_gdn_step(float* state, const float* q, const float* k, const float* v,
                      const float* gate, const float* beta, float* output,
                      const GdnShapes& shapes, void* stream);
+// Lamina causal prefill: q/k/v are views into [columns,8192] convolved QKV,
+// gates are [columns,32], and output is [columns,4096]. State stays in registers
+// across the column loop, with the same warp reduction as single-token decode.
+void native_gdn_step_columns(float* state, const float* qkv, const float* gate,
+                              const float* beta, float* output, int columns, void* stream);
 
 } // namespace strata::kernels

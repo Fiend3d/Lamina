@@ -1,0 +1,11 @@
+.127.0.0.1 - - [06/Oct/2026 21:28:25] "POST /v1/chat/completions HTTP/1.1" 200 -
+127.0.0.1 - - [06/Oct/2026 21:28:25] "POST /v1/chat/completions HTTP/1.1" 200 -
+127.0.0.1 - - [06/Oct/2026 21:28:25] "POST /v1/chat/completions HTTP/1.1" 400 -
+127.0.0.1 - - [06/Oct/2026 21:28:25] "POST /v1/chat/completions HTTP/1.1" 400 -
+...............Model stream ended at 5/10; resuming
+.
+----------------------------------------------------------------------
+Ran 17 tests in 0.158s
+
+OK
+Verified model: C:\Users\RENDER~1\AppData\Local\Temp\tmpjekepyqy\model.gguf

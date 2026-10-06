@@ -33,5 +33,11 @@ void native_gdn_gate(const float* alpha, const float* dt, const float* ssm_a,
 void native_gdn_out_norm(const float* output, const float* z, const float* gamma,
                          float* destination, int64_t heads, int64_t cols,
                          float epsilon, void* stream);
+// Qwen3.6 batched convolution, q/k L2 normalization and per-head gates. FP32
+// store boundaries and reductions match the single-token preprocessing.
+void native_gdn_preprocess_columns(float* history, const float* qkv, const float* conv,
+                                    float* convolved, const float* alpha, float* beta,
+                                    const float* dt, const float* a, float* gate,
+                                    int columns, void* stream);
 
 } // namespace strata::kernels

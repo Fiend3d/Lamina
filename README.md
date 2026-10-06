@@ -1,85 +1,134 @@
 # Lamina
 
-Lamina is a native port of [Strata](https://github.com/Niko1221/Strata) for
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). The source baseline is Strata commit
-`6f32ec070f23ced9f50e704d854d775da52591ab`. Strata is MIT-licensed; its license and third-party notices remain
-in this repository.
+Lamina is a native [Strata](https://github.com/Niko1221/Strata) port for
+Qwen3.6-35B-A3B, pinned to Strata commit `6f32ec070f23ced9f50e704d854d775da52591ab`.
+Upstream MIT licenses and attribution are preserved. The inherited Qwen3.8
+execution graph is not used for Lamina inference.
 
-## Current status
+The native engine supports text and images, persistent CLI/API sessions, causal
+batched prefill, sampling, streaming, reasoning and tool calls. The default
+context is 32,768 tokens; 131,072 tokens uses a complete FP32 KV cache in system
+RAM with bounded GPU staging. Model weights are memory-mapped and experts are
+streamed through a bounded GPU cache. An 8 GB GPU does not hold the 22.1 GB model.
 
-The Qwen3.6 execution graph now has a scalar C++ path. It reads the published GGUF directly and has DeltaNet, full
-attention, routed experts, a text CLI, and a limited OpenAI chat endpoint. A two-token, full-model check matched an
-independent NumPy implementation of the Qwen layer equations and selected the same next token and logit. Broader
-generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
-be slow. Large scalar projections use up to eight CPU threads (`LAMINA_CPU_THREADS` sets 1..64). On a Ryzen 5 7520U,
-a matched warm-cache 40-layer pass took 4.46 seconds with one worker and 2.98 with eight. A four-token decode sample
-gave 0.395 later tokens/s with eight workers. On an RTX 4060 Ti, the hybrid CUDA path keeps the whole token chain in
-VRAM: the hidden state, RMS norms, residuals, the DeltaNet layer (via the linked `native_gdn` kernels), attention
-(device KV cache, partial RoPE, GQA) and the device router top-8 plus MoE all stay on the GPU; only the router's eight
-ids/weights and the final hidden state touch the host. Dense and shared weights are pinned resident, each DeltaNet
-layer's pre-MoE sequence is a captured CUDA graph, the router uses a mapped-pinned doorbell, and the MoE uses grouped
-MMVQ with a block-hoisted Q4_K kernel. The independent 40-layer check passes with maximum hidden-state difference
-`1.14e-6`, matching next token 20 and logit 9.544323. On an i5-12400F the whole 20.6 GiB GGUF is memory-mapped and the
-expert cache reaches a 0.93 hit rate; a 120-token token-ID run measured a median 0.043 s (19.6 later tokens/s).
-Profiling shows ~26 ms of GPU-busy time per step, ~16 ms of it in the MoE. That is the accurate direct-FP32-activation
-MMVQ decode (the Q8_1 path is ~4x cheaper but moves the 40-layer error to 0.127), so the remaining work is a
-hand-written accurate FP32-decode GEMV and capturing the MoE/expert streaming like Strata. The inherited Strata GPU
-execution graph still implements Qwen3.8 and is not used by Lamina. A weight-cache race was also fixed: uploads now use
-`cudaMemcpyAsync` on the kernel stream instead of a synchronous pageable copy on the legacy stream.
+## Windows quick start
 
-## Build and inspect
+Requires Python 3.11+, Visual Studio 2022 C++ tools, CMake and an NVIDIA driver.
+Use the sibling data directory for the environment, model and toolchain:
 
-The default build needs CMake 3.24+, a C++20 compiler, and no GPU toolkit:
+```powershell
+python -m venv ../Lamina-data/venv
+../Lamina-data/venv/Scripts/python.exe -m pip install -r requirements.txt -r requirements-build.txt -r requirements-reference.txt -r requirements-benchmark.txt
+../Lamina-data/venv/Scripts/python.exe setup.py --download
+../Lamina-data/venv/Scripts/python.exe setup.py --tokenizer
+../Lamina-data/venv/Scripts/python.exe setup.py --index
+../Lamina-data/venv/Scripts/python.exe -m tools.lamina_assets
+../Lamina-data/venv/Scripts/python.exe -m tools.bootstrap_cuda
+../Lamina-data/venv/Scripts/python.exe -m tools.build_windows --vision
+```
+
+The helper builds Release CUDA for this machine's RTX 4060 (SM 89), installs
+runtime DLLs beside the binary, and builds the pinned CPU image encoder. CUDA
+redistribution checksums and licenses are verified/preserved. The image encoder
+uses CPU RAM so it does not compete for the text engine's VRAM.
+
+```powershell
+../Lamina-data/venv/Scripts/python.exe lamina.py chat --prompt "Hello" --max-tokens 64
+../Lamina-data/venv/Scripts/python.exe lamina.py chat --image ../Lamina-data/validation/ocr-0.png --prompt "Read this image"
+../Lamina-data/venv/Scripts/python.exe lamina.py serve --vision --max-context 131072 --kv-cache host
+```
+
+The server binds to `127.0.0.1:8000`. Endpoints are `/health`, `/v1/models` and
+`POST /v1/chat/completions`. Requests support `stream`, `stream_options.include_usage`,
+`temperature`, `top_p`, `top_k`, `seed`, `stop`, `max_tokens`, thinking controls,
+function tools/tool choice, and text/image content. JSON object/schema requests
+are prompted and validated before delivery; this is not grammar-constrained
+decoding. Tool/schema responses are buffered for validation. Other completions
+stream UTF-8 content and separate `reasoning_content`. Requests are serialized
+through one resident engine. Disconnecting during inference stops that request's
+native process; the next request starts a fresh process.
+
+128K is a capacity option, with slower prefill and decode than short contexts.
+The context limit includes prompt, expanded image tokens and generated tokens.
+There is no KV history truncation. This machine has 64 GB RAM; RAM-backed caches
+and mapped model pages need ample system memory. `--vram-limit-mb` bounds engine
+CUDA allocations; automatic sizing leaves GPU headroom and includes scratch/KV.
+`--prefill-chunk` defaults to 2048 (maximum 2048). `--cpu` selects scalar inference.
+`--expert-policy cpu-miss` is an optional CPU miss path; GPU streaming is default.
+
+`--kv-type f16` enables experimental, lossy FP16 KV storage with FP32 attention
+accumulation. It halves KV memory and transfer bytes. For 128K the cache is
+about 2.5 GiB instead of 5 GiB; `--kv-cache device` can keep that cache on this
+GPU while reducing expert residency. `auto` retains its conservative host-KV
+choice above 32K. FP32 remains the default. FP16 can change routing and output;
+a 64-token sample showed 1.37% relative hidden-state drift against FP32.
+That sample does not establish generation quality at long contexts.
+
+## Measured on this machine
+
+RTX 4060 8 GB, Ryzen 7 1700X, 64 GB RAM, Release CUDA 13.3.
+The following FP32 capacity runs precede the attention/KV update:
+
+| Run | First token | Later tokens/s | Peak total GPU memory |
+| --- | ---: | ---: | ---: |
+| Short matched decode (three-run median) | 1.54-1.57 s | 14.13 | 6642 MiB |
+| 32K capacity: 32,736 prompt + 16 response tokens | 351.47 s | 10.87 | 7662 MiB |
+| 128K capacity: 131,040 prompt + 16 response tokens | 3115.67 s | 0.689 | 6980 MiB |
+
+Short decode is 6.55% faster than the original Lamina Release build on the
+same machine. These results do not establish Strata-class performance.
+The 128K FP32 RAM-backed mode meets the capacity target but has substantial
+latency on this hardware. Peaks include the desktop and are sampled with NVML.
+Context runs use repeated token 42 as a capacity stress, not a retrieval-quality
+benchmark. Exact commands, hardware, executable hashes and validation are in
+[the measurement record](bench/results/2026-10-06-rtx4060-8gb/VALIDATION.md).
+
+The attention/KV update was measured against the saved, completed port binary
+on the same machine, with 2048-token chunks:
+
+| 16K prompt mode | First token | Later tokens/s | Peak total GPU memory |
+| --- | ---: | ---: | ---: |
+| Previous FP32 host KV | 125.81 s | 4.66 | 7250 MiB |
+| Updated FP32 host KV | 104.68 s | 6.56 | 7250 MiB |
+| Updated FP16 host KV (lossy) | 102.50 s | 9.68 | 7253 MiB |
+| Updated FP16 device KV (lossy) | 102.04 s | 16.67 | 7222 MiB |
+
+These are single matched runs. FP32 16K first-token time fell 16.8%, and later
+throughput rose 40.9%, with identical continuations. Matched short decode
+remained 13.93 tokens/s before/after; all 120 predictions agreed in FP32 and
+FP16. Both precision modes passed 11 real API checks. Full benchmark commands,
+hashes, precision differences and boundaries are in the
+[attention update record](bench/results/2026-10-06-attention/VALIDATION.md).
+
+The full 128K FP16 GPU-cache run (131040 prompt + 16 generated tokens) completed
+at **28 min 57 s to first token, 7.21 later tokens/s**, with **7304 MiB peak total
+GPU memory** and 12591 MiB process RAM. This changes precision and uses 2048-token
+chunks; it is a capacity stress, not a retrieval-quality benchmark. Prefill still
+has substantial latency. To select this experimental profile:
+
+```powershell
+../Lamina-data/venv/Scripts/python.exe lamina.py serve --vision --max-context 131072 --kv-cache device --kv-type f16
+```
+
+## Build and validate
+
+The default CMake build needs no CUDA toolkit:
 
 ```sh
 cmake -S . -B build
-cmake --build build --target lamina-gguf lamina-infer
+cmake --build build --config Release --target lamina-gguf lamina-infer lamina-sampling-check
+python -m unittest discover -s tests/lamina
 ```
 
-To build the CUDA hybrid engine and projection checks on an Ampere or newer NVIDIA GPU, configure with
-`-DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89`, then build `lamina-infer` and
-`lamina-cuda-projection-check`. Validate with both the isolated projection suite and the independent 40-layer reference
-check before relying on a new CUDA build.
+On Windows, inspector output is `build/Release/lamina-gguf.exe`. Pass the model
+path and `--check`. CUDA checks, the independent 40-layer reference, and measured
+performance commands are in [the developer handoff](docs/DEVELOPER_HANDOFF.md).
+See [port status](docs/LAMINA_PORT.md) for validation boundaries and
+[RTX 4060 measurements](bench/results/2026-10-06-rtx4060-8gb/) for exact hardware,
+commands, first-token time, later throughput and sampled peak total GPU memory.
+The earlier RTX 4060 Ti result is a different machine and is not a performance
+promise for this RTX 4060/Ryzen 1700X system.
 
-Measure decode speed with one persistent process, first at the automatic cache limit, then with a 6 GiB cap to
-approximate an 8 GB card's weight budget:
-
-```sh
-python -m tools.benchmark --engine build-cuda/lamina-infer --cuda --tokens 4
-python -m tools.benchmark --engine build-cuda/lamina-infer --cuda --cache-mb 6144 --tokens 4
-```
-
-On Windows, use `build-cuda/Release/lamina-infer.exe`. The benchmark reports the first token separately from later
-tokens. A 6 GiB cache cap on a 16 GB card does not reproduce an 8 GB card's bandwidth or exact free memory.
-
-The model is kept in `../Lamina-data/models`, outside the source tree. Downloads are explicit:
-
-```sh
-python setup.py --download
-python setup.py --tokenizer
-python setup.py --index
-build/lamina-gguf ../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --check
-```
-
-On Windows, use `build/lamina-gguf.exe`. `setup.py --data-dir PATH` overrides the sibling data directory.
-The pinned input is Unsloth's `UD-Q4_K_M` GGUF at revision
-`a483e9e6cbd595906af30beda3187c2663a1118c`; setup checks its size, SHA-256, metadata, tensors, and offsets.
-The tensor index goes under `../Lamina-data/packs`.
-
-For text prompts, install `requirements.txt` and point the client at the build directory:
-
-```sh
-python -m pip install -r requirements.txt
-python lamina.py chat --prompt "Hello" --max-tokens 32
-python lamina.py serve --host 127.0.0.1 --port 8000
-```
-
-On Windows, pass `--engine build/Release/lamina-infer.exe` if your build is in a different location. The API
-implements text-only, non-streaming `POST /v1/chat/completions`, greedy decoding with
-`temperature: 0`, and `GET /v1/models`. Large prompts and generated responses will be very slow on CPU.
-
-The original Strata setup and README are preserved under `ref/` solely as porting references. They still describe a
-different model.
-
-Developers continuing the port should start with [the developer handoff](docs/DEVELOPER_HANDOFF.md). It maps active
-code, exact validation, the unported GPU work, and performance gates.
+Model assets are pinned in `tools/lamina_model.py` and `tools/lamina_assets.py`;
+all downloads live under `../Lamina-data`. Original Strata documentation in
+`ref/` is retained as porting source material.

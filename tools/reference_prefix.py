@@ -29,6 +29,11 @@ parser.add_argument(
 parser.add_argument("--engine", type=Path, default=root / "build" / "lamina-infer")
 parser.add_argument("--layers", type=int, default=4)
 parser.add_argument("--cuda", action="store_true", help="compare the hybrid CUDA path")
+parser.add_argument("--batched", action="store_true", help="check layer-major causal prefill")
+parser.add_argument("--tokens", type=int, nargs="+", default=[42, 43])
+parser.add_argument("--max-context", type=int, default=32768)
+parser.add_argument("--kv-cache", choices=("auto", "host", "device"), default="auto")
+parser.add_argument("--vram-limit-mb", type=int, default=0)
 parser.add_argument("--max-diff", type=float, default=1e-5)
 parser.add_argument("--verbose", action="store_true")
 args = parser.parse_args()
@@ -106,7 +111,7 @@ mem = {
 }
 keys = {layer: [] for layer in range(args.layers) if layer % 4 == 3}
 vals = {layer: [] for layer in range(args.layers) if layer % 4 == 3}
-for pos, token in enumerate([42, 43]):
+for pos, token in enumerate(args.tokens):
     t = by_name["token_embd.weight"]
     block, size = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType[t.type_name]]
     start = gg.data_start + t.offset + token * (2048 // block) * size
@@ -191,10 +196,10 @@ result = subprocess.run(
         str(args.engine.resolve()),
         str(path.resolve()),
         *(["--cuda"] if args.cuda else []),
-        "--prefix",
+        "--max-context", str(args.max_context), "--kv-cache", args.kv_cache, "--vram-limit-mb", str(args.vram_limit_mb),
+        "--batch-prefix" if args.batched else "--prefix",
         str(args.layers),
-        "42",
-        "43",
+        *map(str, args.tokens),
     ],
     check=True,
     capture_output=True,
@@ -220,8 +225,8 @@ if args.layers == 40:
             str(args.engine.resolve()),
             str(path.resolve()),
             *(["--cuda"] if args.cuda else []),
-            "42",
-            "43",
+            "--max-context", str(args.max_context), "--kv-cache", args.kv_cache, "--vram-limit-mb", str(args.vram_limit_mb),
+            *map(str, args.tokens),
         ],
         check=True,
         capture_output=True,

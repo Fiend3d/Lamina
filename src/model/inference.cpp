@@ -82,10 +82,11 @@ void l2(float* x, int n) {
     const float scale = 1.0f / std::sqrt(dot(x, x, n) + EPS);
     for (int i = 0; i < n; ++i) x[i] *= scale;
 }
-void rope(float* x, int position, float base) {
+void rope(float* x, const std::array<int, 3>& positions, float base) {
     // GGUF's text RoPE has 64 rotary coordinates in each 256-wide head.
     for (int i = 0; i < 32; ++i) {
-        const float theta = position / std::pow(base, 2.0f * i / 64.0f);
+        const int axis = i % 3 == 1 && i < 33 ? 1 : i % 3 == 2 && i < 30 ? 2 : 0;
+        const float theta = positions[axis] / std::pow(base, 2.0f * i / 64.0f);
         const float c = std::cos(theta), s = std::sin(theta);
         const float a = x[i], b = x[i + 32];
         x[i] = a * c - b * s;
@@ -97,7 +98,8 @@ std::string layer_name(int layer, const char* suffix) {
 }
 }  // namespace
 
-Inference::Inference(const std::string& path, int context, int layers, bool cuda)
+Inference::Inference(const std::string& path, int context, int layers, bool cuda,
+                     const std::string& kv_cache, size_t vram_limit_mb, const std::string& kv_type)
     : file_(path), context_(context), layers_(layers) {
     const unsigned available = std::thread::hardware_concurrency();
     cpu_workers_ = std::min(8u, available ? available : 1u);
@@ -117,7 +119,11 @@ Inference::Inference(const std::string& path, int context, int layers, bool cuda
         if (parsed.ec != std::errc{} || parsed.ptr != end || cpu_workers_ < 1 || cpu_workers_ > 64)
             throw std::invalid_argument("LAMINA_CPU_THREADS must be 1..64");
     }
-    if (context < 1 || context > 32768) throw std::invalid_argument("context must be 1..32768");
+    if (context < 1 || context > 131072) throw std::invalid_argument("context must be 1..131072");
+    if (kv_type != "f32" && kv_type != "f16") throw std::invalid_argument("kv-type must be f32 or f16");
+    if (!cuda && kv_type != "f32") throw std::invalid_argument("f16 KV requires CUDA");
+    if (kv_cache != "auto" && kv_cache != "device" && kv_cache != "host")
+        throw std::invalid_argument("kv-cache must be auto, device or host");
     if (layers < 1 || layers > 40) throw std::invalid_argument("layers must be 1..40");
     if (layers == 40 && file_.file_size() != 22134528992ULL)
         throw std::runtime_error("GGUF size differs from the pinned Qwen3.6 UD-Q4_K_M artifact");
@@ -149,10 +155,23 @@ Inference::Inference(const std::string& path, int context, int layers, bool cuda
             linear_[layer].recurrent.resize(VALUE_HEADS * HEAD_DIM * HEAD_DIM);
         }
     }
-    if (cuda) cuda_ = std::make_unique<CudaProjection>();
+    if (cuda) cuda_ = std::make_unique<CudaProjection>(vram_limit_mb,
+        kv_cache == "host" || (kv_cache == "auto" && context > 32768), kv_type == "f16");
 }
 
 Inference::~Inference() = default;
+
+void Inference::reset() {
+    position_ = 0;
+    rope_position_ = 0;
+    rope_positions_.fill(0);
+    for (auto& state : linear_) {
+        std::fill(state.conv.begin(), state.conv.end(), 0.0f);
+        std::fill(state.recurrent.begin(), state.recurrent.end(), 0.0f);
+    }
+    for (auto& state : attention_) { state.keys.clear(); state.values.clear(); }
+    if (cuda_) cuda_->reset();
+}
 
 const strata::TensorInfo& Inference::tensor(const std::string& name) const {
     const auto* t = file_.find(name);
@@ -378,12 +397,12 @@ std::vector<float> Inference::full_attention(int layer, const std::vector<float>
     for (int h = 0; h < 16; ++h) {
         float* query = q.data() + h * 512;
         rms(query, q_norm.data(), 256);
-        rope(query, position_, rope_base);
+        rope(query, rope_positions_, rope_base);
     }
     for (int h = 0; h < 2; ++h) {
         float* key = k.data() + h * 256;
         rms(key, k_norm.data(), 256);
-        rope(key, position_, rope_base);
+        rope(key, rope_positions_, rope_base);
     }
     auto& cache = attention_[layer];
     cache.keys.insert(cache.keys.end(), k.begin(), k.end());
@@ -479,6 +498,16 @@ std::vector<float> Inference::moe(int layer, const std::vector<float>& x) {
     return cpu_path();
 }
 
+std::vector<float> Inference::moe_columns(int layer, const std::vector<float>& x, int columns) {
+    const auto get = [&](const char* name) -> const strata::TensorInfo& { return tensor(layer_name(layer, name)); };
+    MoeWeights routed, shared;
+    moe_weights(layer, routed, shared);
+    const auto& router = get("ffn_gate_inp.weight");
+    const auto& gate = get("ffn_gate_inp_shexp.weight");
+    return cuda_->moe_columns(x, columns, router, file_.tensor_data(router), gate,
+                              file_.tensor_data(gate), routed, shared);
+}
+
 GdnWeights Inference::gdn_weights(int layer) const {
     const auto ptr = [&](const char* suffix) {
         const strata::TensorInfo& t = tensor(layer_name(layer, suffix));
@@ -545,10 +574,8 @@ bool Inference::device_chain_supported() {
     return true;
 }
 
-std::vector<float> Inference::step_hidden_device(int token_id) {
-    std::vector<float> x(HIDDEN);
-    row(tensor("token_embd.weight"), token_id, x.data());
-    cuda_->hidden_upload(x);
+std::vector<float> Inference::step_hidden_device(const std::vector<float>& embedding) {
+    cuda_->hidden_upload(embedding);
     float rope_base = 10000000.0f;
     if (const auto* meta = file_.get("qwen35moe.rope.freq_base"))
         rope_base = static_cast<float>(meta->num());
@@ -559,7 +586,7 @@ std::vector<float> Inference::step_hidden_device(int token_id) {
         const auto mixer_start = std::chrono::steady_clock::now();
         if (layer % 4 == 3) {
             cuda_->hidden_rms(input_norm, file_.tensor_data(input_norm), EPS);
-            cuda_->attention_into_mix(layer, attention_weights(layer), position_, rope_base);
+            cuda_->attention_into_mix(layer, attention_weights(layer), position_, rope_base, rope_positions_);
             cuda_->add_hidden_mix();
             cuda_->hidden_rms(post_norm, file_.tensor_data(post_norm), EPS);
         } else {
@@ -590,7 +617,75 @@ std::vector<float> Inference::step_hidden_device(int token_id) {
     return cuda_->hidden_download();
 }
 
+std::vector<float> Inference::prefill_hidden(const std::vector<int>& tokens) {
+    if (tokens.empty() || tokens.size() > 2048 || tokens.size() > size_t(context_ - position_) ||
+        !std::all_of(tokens.begin(), tokens.end(), [](int id) { return id >= 0 && id < 248320; }))
+        throw std::invalid_argument("prefill requires 1..2048 valid tokens within context");
+    const int columns = int(tokens.size());
+    std::vector<float> hidden(size_t(columns) * HIDDEN);
+    std::vector<std::array<int, 3>> positions(columns);
+    for (int c = 0; c < columns; ++c)
+        row(tensor("token_embd.weight"), tokens[c], hidden.data() + size_t(c) * HIDDEN);
+    for (int c = 0; c < columns; ++c) positions[c].fill(rope_position_ + c);
+    return prefill_embeddings(hidden, positions);
+}
+
+std::vector<float> Inference::prefill_embeddings(const std::vector<float>& embeddings,
+                                                const std::vector<std::array<int, 3>>& positions) {
+    const int columns = int(positions.size());
+    if (columns < 1 || columns > 2048 || columns > context_ - position_ || embeddings.size() != size_t(columns) * HIDDEN ||
+        !std::all_of(embeddings.begin(), embeddings.end(), [](float x) { return std::isfinite(x); }) ||
+        !std::all_of(positions.begin(), positions.end(), [](const auto& p) { return *std::min_element(p.begin(), p.end()) >= 0; }))
+        throw std::invalid_argument("invalid prefill embeddings or positions");
+    if (!cuda_ || !device_chain_supported() || columns == 1) {
+        std::vector<float> last;
+        for (int c = 0; c < columns; ++c) {
+            std::vector<float> embedding(embeddings.begin() + size_t(c) * HIDDEN, embeddings.begin() + size_t(c + 1) * HIDDEN);
+            last = step_hidden_embedding(embedding, positions[c]);
+        }
+        return last;
+    }
+    auto hidden = embeddings;
+    float rope_base = 10000000.0f;
+    if (const auto* meta = file_.get("qwen35moe.rope.freq_base")) rope_base = float(meta->num());
+    for (int layer = 0; layer < layers_; ++layer) {
+        const auto& input_norm = tensor(layer_name(layer, "attn_norm.weight"));
+        auto normalized = cuda_->normalize_columns(input_norm, file_.tensor_data(input_norm), hidden, columns, EPS);
+        auto mixed = layer % 4 == 3
+            ? cuda_->attention_columns(layer, normalized, columns, attention_weights(layer), position_, rope_position_, rope_base, positions)
+            : cuda_->delta_net_columns(layer, normalized, columns, gdn_weights(layer));
+        for (size_t i = 0; i < hidden.size(); ++i) hidden[i] += mixed[i];
+        const auto& post_norm = tensor(layer_name(layer, "post_attention_norm.weight"));
+        normalized = cuda_->normalize_columns(post_norm, file_.tensor_data(post_norm), hidden, columns, EPS);
+        auto experts = moe_columns(layer, normalized, columns);
+        for (size_t i = 0; i < hidden.size(); ++i) hidden[i] += experts[i];
+    }
+    position_ += columns;
+    rope_positions_ = positions.back();
+    rope_position_ = *std::max_element(rope_positions_.begin(), rope_positions_.end()) + 1;
+    return std::vector<float>(hidden.end() - HIDDEN, hidden.end());
+}
+
 std::vector<float> Inference::step_hidden(int token_id) {
+    if (token_id < 0 || token_id >= 248320) throw std::out_of_range("token id");
+    std::vector<float> embedding(HIDDEN);
+    row(tensor("token_embd.weight"), token_id, embedding.data());
+    rope_positions_.fill(rope_position_);
+    return forward_hidden(std::move(embedding));
+}
+
+std::vector<float> Inference::step_hidden_embedding(const std::vector<float>& embedding,
+                                                   const std::array<int, 3>& positions) {
+    if (embedding.size() != HIDDEN ||
+        !std::all_of(embedding.begin(), embedding.end(), [](float v) { return std::isfinite(v); }) ||
+        *std::min_element(positions.begin(), positions.end()) < 0)
+        throw std::invalid_argument("invalid image embedding or position");
+    rope_positions_ = positions;
+    return forward_hidden(embedding);
+}
+
+std::vector<float> Inference::forward_hidden(std::vector<float> x) {
+    if (cuda_) cuda_->finish_prefill();
     const bool profile = profile_enabled();
     const auto step_start = std::chrono::steady_clock::now();
     g_cpu_matvec_ms = 0.0;
@@ -603,13 +698,9 @@ std::vector<float> Inference::step_hidden(int token_id) {
     g_attn_scores_ms = 0.0;
     g_device_moe_ms = 0.0;
     if (position_ >= context_) throw std::out_of_range("context length exceeded");
-    if (token_id < 0 || token_id >= 248320) throw std::out_of_range("token id");
-    std::vector<float> x;
     if (cuda_ && device_chain_supported()) {
-        x = step_hidden_device(token_id);
+        x = step_hidden_device(x);
     } else {
-        x.assign(HIDDEN, 0.0f);
-        row(tensor("token_embd.weight"), token_id, x.data());
         for (int layer = 0; layer < layers_; ++layer) {
             auto normalized = x;
             const auto input_norm = vec(tensor(layer_name(layer, "attn_norm.weight")));
@@ -624,12 +715,13 @@ std::vector<float> Inference::step_hidden(int token_id) {
         }
     }
     ++position_;
+    rope_position_ = *std::max_element(rope_positions_.begin(), rope_positions_.end()) + 1;
     if (profile) {
         const double total = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - step_start).count();
         std::fprintf(stderr, "profile token=%d total_ms=%.3f cuda_matvec_ms=%.3f cpu_matvec_ms=%.3f "
                              "graph_other_ms=%.3f deltanet_ms=%.3f attention_ms=%.3f moe_ms=%.3f "
-                             "dn_conv_ms=%.3f dn_recur_ms=%.3f attn_scores_ms=%.3f device_moe_ms=%.3f\\n",
+                             "dn_conv_ms=%.3f dn_recur_ms=%.3f attn_scores_ms=%.3f device_moe_ms=%.3f\n",
                      position_, total, g_cuda_matvec_ms, g_cpu_matvec_ms,
                      std::max(0.0, total - g_cuda_matvec_ms - g_cpu_matvec_ms),
                      g_deltanet_ms, g_attention_ms, g_moe_ms,
@@ -638,7 +730,7 @@ std::vector<float> Inference::step_hidden(int token_id) {
             const auto stats = cuda_->stats();
             std::fprintf(stderr,
                          "  cache hits=%llu misses=%llu hit_rate=%.3f uploaded_mb=%.1f "
-                         "evicted_mb=%.1f resident_mb=%.1f limit_mb=%.1f\n",
+                         "evicted_mb=%.1f resident_mb=%.1f limit_mb=%.1f allocated_mb=%.1f budget_mb=%.1f graph_hits=%llu graph_misses=%llu cpu_experts=%llu\n",
                          static_cast<unsigned long long>(stats.hits),
                          static_cast<unsigned long long>(stats.misses),
                          (stats.hits + stats.misses)
@@ -646,14 +738,24 @@ std::vector<float> Inference::step_hidden(int token_id) {
                          double(stats.uploaded_bytes) / 1048576.0,
                          double(stats.evicted_bytes) / 1048576.0,
                          double(stats.resident_bytes) / 1048576.0,
-                         double(stats.cache_limit) / 1048576.0);
+                         double(stats.cache_limit) / 1048576.0,
+                         double(stats.allocated_bytes) / 1048576.0,
+                         double(stats.memory_limit) / 1048576.0,
+                         static_cast<unsigned long long>(stats.graph_hits),
+                         static_cast<unsigned long long>(stats.graph_misses),
+                         static_cast<unsigned long long>(stats.cpu_experts));
         }
     }
     return x;
 }
 
 std::vector<float> Inference::step(int token_id) {
-    auto x = step_hidden(token_id);
+    return logits(step_hidden(token_id));
+}
+
+std::vector<float> Inference::logits(std::vector<float> x) {
+    if (cuda_) cuda_->finish_prefill();
+    if (x.size() != HIDDEN) throw std::invalid_argument("invalid hidden state for logits");
     const auto output_norm = vec(tensor("output_norm.weight"));
     rms(x.data(), output_norm.data(), HIDDEN);
     return matvec(tensor("output.weight"), x);

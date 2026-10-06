@@ -3,6 +3,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -59,18 +60,30 @@ struct AttnWeights {
     const uint8_t* out_data = nullptr;
 };
 
-// Optional hybrid backend: GGUF matrix-vector projections run on CUDA with
-// full-precision activations; Qwen3.6 state and routing remain on the CPU.
+// Qwen3.6 CUDA backend with FP32 activations, bounded weight residency and
+// device or RAM-backed FP32 attention caches.
 class CudaProjection {
 public:
-    CudaProjection();
+    explicit CudaProjection(size_t vram_limit_mb = 0, bool host_kv = false, bool half_kv = false);
     ~CudaProjection();
     CudaProjection(const CudaProjection&) = delete;
     CudaProjection& operator=(const CudaProjection&) = delete;
 
     bool supports(uint32_t ggml_type) const;
+    // Return batch scratch to the memory budget before decoding; retain KV and recurrent state.
+    void finish_prefill();
     std::vector<float> matvec(const strata::TensorInfo& tensor, const uint8_t* data,
                               const std::vector<float>& x, int64_t expert);
+    std::vector<float> matvec_columns(const strata::TensorInfo& tensor, const uint8_t* data,
+                                      const std::vector<float>& x, int columns, int64_t expert = -1);
+    std::vector<float> normalize_columns(const strata::TensorInfo& gamma, const uint8_t* data,
+                                         const std::vector<float>& x, int columns, float epsilon);
+    std::vector<float> delta_net_columns(int layer, const std::vector<float>& x,
+                                         int columns, const GdnWeights& w);
+    std::vector<float> attention_columns(int layer, const std::vector<float>& x, int columns,
+                                         const AttnWeights& w, int position, int rope_position,
+                                         float rope_base,
+                                         const std::vector<std::array<int, 3>>& positions = {});
     std::vector<std::vector<float>> matvec_many(
         const std::vector<const strata::TensorInfo*>& tensors,
         const std::vector<const uint8_t*>& data, const std::vector<int64_t>& experts,
@@ -97,6 +110,10 @@ public:
     std::vector<float> moe(const std::vector<float>& x, const MoeWeights& routed,
                            const std::vector<int>& experts, const std::vector<float>& weights,
                            const MoeWeights& shared, float shared_weight);
+    std::vector<float> moe_columns(const std::vector<float>& x, int columns,
+                                    const strata::TensorInfo& router, const uint8_t* router_data,
+                                    const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
+                                    const MoeWeights& routed, const MoeWeights& shared);
 
     // True when every required projection is a supported quantized type and the
     // shapes form a valid Qwen3.6 expert block.
@@ -106,6 +123,7 @@ public:
     // The hidden state and every intermediate tensor stay in VRAM across a token;
     // only the router logits and the final result touch the host.
     void set_context(int max_context);
+    void reset();
     void hidden_upload(const std::vector<float>& x);
     std::vector<float> hidden_download();
     void mix_upload(const std::vector<float>& x);
@@ -115,7 +133,8 @@ public:
     void moe_into_mix(const strata::TensorInfo& router, const uint8_t* router_data,
                       const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
                       const MoeWeights& routed, const MoeWeights& shared);
-    void attention_into_mix(int layer, const AttnWeights& w, int position, float rope_base);
+    void attention_into_mix(int layer, const AttnWeights& w, int position, float rope_base,
+                             const std::array<int, 3>& rope_positions);
     bool supports_attention(const AttnWeights& w) const;
 
     // Runs a whole DeltaNet layer's pre-MoE sequence (input RMS norm, recurrence,
@@ -140,10 +159,16 @@ public:
         size_t evicted_bytes = 0;
         size_t resident_bytes = 0;
         size_t cache_limit = 0;
+        size_t allocated_bytes = 0;
+        size_t memory_limit = 0;
+        uint64_t graph_hits = 0, graph_misses = 0;
+        uint64_t cpu_experts = 0;
     };
     Stats stats() const;
 
 private:
+    void project_columns_device(const strata::TensorInfo& tensor, const uint8_t* data,
+                                 const float* x, float* y, int columns, int64_t expert);
     void delta_net_core(int layer, const float* x_dev, float* out_dev, const GdnWeights& w);
     void moe_core(const float* x_dev, float* out_dev, const MoeWeights& routed,
                   const std::vector<int>& experts, const std::vector<float>& weights,

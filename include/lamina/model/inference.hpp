@@ -18,12 +18,21 @@ namespace lamina::model {
 class Inference {
 public:
     explicit Inference(const std::string& path, int context = 32768, int layers = 40,
-                       bool cuda = false);
+                       bool cuda = false, const std::string& kv_cache = "auto",
+                       size_t vram_limit_mb = 0, const std::string& kv_type = "f32");
     ~Inference();
     std::vector<float> step(int token);
     // Development diagnostic: return the residual stream before final norm.
     std::vector<float> step_hidden(int token);
+    std::vector<float> prefill_hidden(const std::vector<int>& tokens);
+    std::vector<float> prefill_embeddings(const std::vector<float>& embeddings,
+                                          const std::vector<std::array<int, 3>>& positions);
+    std::vector<float> logits(std::vector<float> hidden);
+    std::vector<float> step_hidden_embedding(const std::vector<float>& embedding,
+                                            const std::array<int, 3>& positions);
+    void reset();
     int position() const { return position_; }
+    int rope_position() const { return rope_position_; }
 
 private:
     struct LinearState {
@@ -39,6 +48,8 @@ private:
     int context_;
     int layers_;
     int position_ = 0;
+    int rope_position_ = 0;
+    std::array<int, 3> rope_positions_{};
     unsigned cpu_workers_ = 1;
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;
@@ -56,10 +67,12 @@ private:
     std::vector<float> delta_net(int layer, const std::vector<float>& x);
     std::vector<float> full_attention(int layer, const std::vector<float>& x);
     std::vector<float> moe(int layer, const std::vector<float>& x);
+    std::vector<float> moe_columns(int layer, const std::vector<float>& x, int columns);
 
     // Device-resident token chain helpers.
     bool device_chain_supported();
-    std::vector<float> step_hidden_device(int token_id);
+    std::vector<float> step_hidden_device(const std::vector<float>& embedding);
+    std::vector<float> forward_hidden(std::vector<float> embedding);
     GdnWeights gdn_weights(int layer) const;
     AttnWeights attention_weights(int layer) const;
     void moe_weights(int layer, MoeWeights& routed, MoeWeights& shared) const;

@@ -48,6 +48,21 @@ bool check_projection(lamina::model::CudaProjection& cuda, const strata::GgufFil
     const auto* weights = file.tensor_data(*tensor) +
                           (expert < 0 ? 0 : static_cast<uint64_t>(expert) * n_out * row_bytes);
     const auto actual = cuda.matvec(*tensor, file.tensor_data(*tensor), input, expert);
+    // Seventeen columns exercise GEMM and the native full-tile/partial-tail fallback.
+    std::vector<float> columns(input.size() * 17);
+    for (int c = 0; c < 17; ++c)
+        for (size_t i = 0; i < input.size(); ++i) columns[size_t(c) * input.size() + i] = input[i] * float(c + 1) / 17;
+    const auto batched = cuda.matvec_columns(*tensor, file.tensor_data(*tensor), columns, 17, expert);
+    for (int c = 0; c < 17; ++c) {
+        std::vector<float> column(columns.begin() + size_t(c) * input.size(), columns.begin() + size_t(c + 1) * input.size());
+        const auto single = cuda.matvec(*tensor, file.tensor_data(*tensor), column, expert);
+        double sq = 0, norm = 0;
+        for (size_t r = 0; r < single.size(); ++r) {
+            sq += std::pow(double(batched[size_t(c) * n_out + r]) - single[r], 2);
+            norm += double(single[r]) * single[r];
+        }
+        if (std::sqrt(sq / std::max(norm, 1e-30)) >= 1e-6) throw std::runtime_error("column projection parity failed: " + name);
+    }
     double repeat_max = 0.0;
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto repeated = cuda.matvec(*tensor, file.tensor_data(*tensor), input, expert);

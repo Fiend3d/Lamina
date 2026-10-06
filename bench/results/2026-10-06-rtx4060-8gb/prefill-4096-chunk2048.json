@@ -1,0 +1,56 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--cuda",
+    "--interactive"
+  ],
+  "benchmark_arguments": {
+    "model": "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "engine": "build-cuda\\lamina-infer.exe",
+    "cuda": true,
+    "cache_mb": null,
+    "tokens": 8,
+    "input_tokens": null,
+    "prompt": null,
+    "prompt_tokens": 4096,
+    "max_context": null,
+    "kv_cache": null,
+    "vram_limit_mb": null,
+    "chunk": 2048,
+    "json": "bench\\results\\2026-10-06-rtx4060-8gb\\prefill-4096-chunk2048.json",
+    "quiet": true
+  },
+  "environment": {},
+  "first_token_seconds": 97.93604460009374,
+  "prompt_tokens": 4096,
+  "prefill_tokens_per_second": 41.823212451813475,
+  "later_tokens_per_second": 10.333085536620139,
+  "later_median_seconds": 0.07285670004785061,
+  "peak_total_gpu_mib": 7617.796875,
+  "idle_total_gpu_mib": 1431.1796875,
+  "peak_process_ram_mib": 10916.3046875,
+  "seconds_per_token": [
+    97.93604460009374,
+    0.29146980005316436,
+    0.08093699999153614,
+    0.09512009983882308,
+    0.07285670004785061,
+    0.05472599994391203,
+    0.04108020011335611,
+    0.041245799977332354
+  ],
+  "next_tokens": [
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42
+  ],
+  "native_stderr_tail": [],
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "driver": "610.88"
+}

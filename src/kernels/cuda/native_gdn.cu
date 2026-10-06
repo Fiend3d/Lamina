@@ -43,10 +43,11 @@ __device__ __forceinline__ float warp_sum(float value) {
     return value;
 }
 
+template<bool Multi>
 __global__ void __launch_bounds__(128, 2)
 step(float* __restrict__ state, const float* __restrict__ q, const float* __restrict__ k,
      const float* __restrict__ v, const float* __restrict__ gate, const float* __restrict__ beta,
-     float* __restrict__ output, int h_k, int h_v, float scale) {
+     float* __restrict__ output, int h_k, int h_v, float scale, int columns) {
     const int head = blockIdx.x;
     const int lane = threadIdx.x;
     const int col = blockIdx.z * blockDim.y + threadIdx.y;
@@ -56,15 +57,22 @@ step(float* __restrict__ state, const float* __restrict__ q, const float* __rest
     for (int r = 0; r < 4; ++r) {
         const int i = r * 32 + lane;
         s_shard[r] = state[(size_t(i) * h_v + head) * S + col];
-        k_reg[r] = k[q_head * S + i];
-        q_reg[r] = q[q_head * S + i];
     }
-    const float g_val = expf(gate[head]);
+    const int count = Multi ? columns : 1;
+    for (int token = 0; token < count; ++token) {
+    const size_t qkv_offset = size_t(token) * 8192;
+#pragma unroll
+    for (int r = 0; r < 4; ++r) {
+        const int i = r * 32 + lane;
+        k_reg[r] = k[qkv_offset + q_head * S + i];
+        q_reg[r] = q[qkv_offset + q_head * S + i];
+    }
+    const float g_val = expf(gate[size_t(token) * h_v + head]);
     float kv_shard = 0.0f;
 #pragma unroll
     for (int r = 0; r < 4; ++r) kv_shard += s_shard[r] * k_reg[r];
     const float kv_col = warp_sum(kv_shard);
-    const float delta_col = (v[head * S + col] - g_val * kv_col) * beta[head];
+    const float delta_col = (v[qkv_offset + head * S + col] - g_val * kv_col) * beta[size_t(token) * h_v + head];
     float attn_partial = 0.0f;
 #pragma unroll
     for (int r = 0; r < 4; ++r) {
@@ -72,7 +80,8 @@ step(float* __restrict__ state, const float* __restrict__ q, const float* __rest
         attn_partial += s_shard[r] * q_reg[r];
     }
     const float attn_col = warp_sum(attn_partial);
-    if (lane == 0) output[head * S + col] = attn_col * scale;
+    if (lane == 0) output[(size_t(token) * h_v + head) * S + col] = attn_col * scale;
+    }
 #pragma unroll
     for (int r = 0; r < 4; ++r) {
         const int i = r * 32 + lane;
@@ -114,8 +123,18 @@ void native_gdn_step(float* state, const float* q, const float* k, const float* 
             throw std::invalid_argument("native GDN requires aligned input spans disjoint from state and output");
     }
     const float scale = 1.0f / sqrtf(float(S));
-    step<<<dim3(unsigned(shape.h_v), 1, S / 4), dim3(32, 4), 0, static_cast<cudaStream_t>(stream)>>>(
-        state, q, k, v, gate, beta, output, int(shape.h_k), int(shape.h_v), scale);
+    step<false><<<dim3(unsigned(shape.h_v), 1, S / 4), dim3(32, 4), 0, static_cast<cudaStream_t>(stream)>>>(
+        state, q, k, v, gate, beta, output, int(shape.h_k), int(shape.h_v), scale, 1);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
+void native_gdn_step_columns(float* state, const float* qkv, const float* gate,
+                              const float* beta, float* output, int columns, void* stream) {
+    if (!stream || columns < 1 || columns > 2048 || !state || !qkv || !gate || !beta || !output)
+        throw std::invalid_argument("invalid GDN prefill spans");
+    step<true><<<dim3(32, 1, S / 4), dim3(32, 4), 0, static_cast<cudaStream_t>(stream)>>>(
+        state, qkv, qkv + 2048, qkv + 4096, gate, beta, output, 16, 32, 1.0f / sqrtf(float(S)), columns);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

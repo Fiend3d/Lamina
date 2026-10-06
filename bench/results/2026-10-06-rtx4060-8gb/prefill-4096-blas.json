@@ -1,0 +1,62 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--cuda",
+    "--interactive"
+  ],
+  "benchmark_arguments": {
+    "model": "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "engine": "build-cuda\\lamina-infer.exe",
+    "cuda": true,
+    "cache_mb": null,
+    "tokens": 8,
+    "input_tokens": null,
+    "prompt": null,
+    "prompt_tokens": 4096,
+    "max_context": null,
+    "kv_cache": null,
+    "vram_limit_mb": null,
+    "chunk": 2048,
+    "json": "bench\\results\\2026-10-06-rtx4060-8gb\\prefill-4096-blas.json",
+    "quiet": true,
+    "progress_file": null
+  },
+  "environment": {},
+  "first_token_seconds": 56.127435399917886,
+  "prompt_tokens": 4096,
+  "prefill_tokens_per_second": 72.97678881665048,
+  "later_tokens_per_second": 10.264817630155216,
+  "later_median_seconds": 0.07557099987752736,
+  "peak_total_gpu_mib": 7575.921875,
+  "idle_total_gpu_mib": 1431.3046875,
+  "peak_process_ram_mib": 11190.921875,
+  "seconds_per_token": [
+    56.127435399917886,
+    0.2717250999994576,
+    0.08195860008709133,
+    0.10964140016585588,
+    0.07557099987752736,
+    0.05657400004565716,
+    0.04400220001116395,
+    0.04246869985945523
+  ],
+  "next_tokens": [
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42,
+    42
+  ],
+  "native_stderr_tail": [],
+  "platform": "Windows-10-10.0.26100-SP0",
+  "python": "3.11.9",
+  "system_ram_mib": 65460.375,
+  "cpu": "AMD Ryzen 7 1700X Eight-Core Processor",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "driver": "610.88",
+  "gpu_total_mib": 8188.0
+}

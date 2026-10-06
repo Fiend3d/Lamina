@@ -1,0 +1,9 @@
+attention benchmark n=4096 columns=128 path=legacy gpu_ms=16.219477
+attention benchmark n=4096 columns=128 path=fused gpu_ms=8.331605
+attention benchmark parity n=4096 max_abs_diff=0
+attention benchmark n=16384 columns=128 path=legacy gpu_ms=61.814442
+attention benchmark n=16384 columns=128 path=fused gpu_ms=30.667435
+attention benchmark parity n=16384 max_abs_diff=0
+attention benchmark n=131072 columns=128 path=legacy gpu_ms=495.150787
+attention benchmark n=131072 columns=128 path=fused gpu_ms=242.145950
+attention benchmark parity n=131072 max_abs_diff=0
