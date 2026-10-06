@@ -25,6 +25,23 @@ namespace strata::kernels {
 // Input floats must be finite, and their block scales/sums representable in FP16.
 std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 
+// Direct FP32-activation matvec for Lamina. This avoids the Q8_1 activation
+// approximation used by MMVQ, which is not sufficiently accurate after the
+// Qwen3.6 recurrent/expert graph. Supports Q8_0, Q4_K, Q5_K and Q6_K weights.
+void native_mmvq_f32(int ggml_type, const void* weights, const float* x, float* y,
+                     int n_in, int n_out, void* stream);
+void native_mmvq_f32_many(int count, const int* types, const void* const* weights,
+                          float* const* outputs, const int* n_out, const float* x,
+                          int n_in, void* stream);
+
+// One launch for many same-format matrices that may have different rows and
+// different activation vectors: matrix i computes outputs[i][0:n_outs[i]] from
+// weights[i] and inputs[i]. Reduces the launch count of a MoE block. All
+// pointers are device arrays of length count; weights are raw GGUF blocks.
+void native_mmvq_f32_grouped(int ggml_type, const void* const* weights,
+                             const float* const* inputs, float* const* outputs,
+                             const int* n_outs, int count, int total_rows, int n_in, void* stream);
+
 // Layout for ncols > 1. false: llama.cpp's generic multi-column table (upstream), equal to ncols == 1 to
 // float rounding, speed not yet measured. true (default): the ncols == 1 layout, every column bitwise equal to a
 // single-column call. Set before

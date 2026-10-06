@@ -12,16 +12,21 @@ opt-in downloader with pinned checksum; a sibling `Lamina-data` tensor index; a 
 execution graph that reads quantized GGUF weights directly; and a tokenizer-backed text client with a limited
 OpenAI-compatible chat endpoint.
 
-An opt-in hybrid CUDA projection path is wired into that scalar graph. It uses Strata's native Q8_1 activation
-quantizer and MMVQ kernels for Q8_0, Q4_K, Q5_K and Q6_K matrices, uploading selected expert slices and caching
-up to 75% of free VRAM at startup. `LAMINA_CUDA_CACHE_MB` can lower that limit (for example, 6144 on a 16 GB card
-to exercise a 6 GiB weight-cache budget). An allocation failure evicts cached weights and retries. F32 operations,
-DeltaNet state, attention, and MoE routing still run on
-the CPU. The hybrid target compiled in Linux CUDA 12.6 CI; it has not been compiled with Windows CUDA or
-numerically checked on NVIDIA hardware.
-On a CUDA machine, run `python -m tools.reference_prefix --layers 40 --engine PATH --cuda --max-diff 0.01`
-to compare its hidden state against the independent NumPy equations. The tolerance is a starting diagnostic value,
-not an established parity bound; inspect any routing or next-token mismatch before relying on generation.
+The Strata-derived CUDA MMVQ kernels compile on Windows with CUDA 13.4. Lamina uses a direct FP32-activation
+matvec path for Q8_0, Q4_K, Q5_K, and Q6_K weights, avoiding Q8_1 activation quantization. An isolated projection
+suite matches scalar dequantized matvecs to approximately `1e-7` relative L2. The independent 40-layer reference
+check passes on an RTX 4060 Ti: maximum hidden-state difference `1.14e-6`, next token 20 and logit 9.544323.
+The whole token chain runs on the device: the hidden state, RMS norms, residuals, DeltaNet (`native_gdn` conv/L2/gate
+kernels plus `native_gdn_step` with the `(i*h_v+h)*S+j` state layout and a SiLU closing norm), attention (device KV
+cache, `attn_norm_rope`, `attn_decode`) and the router+MoE (dense FP32 GEMV, `router_topk`, `dot_sigmoid`, grouped
+expert MMVQ, SwiGLU, `moe_combine`). Only the router's eight ids/weights and the final hidden state touch the host.
+Dense/shared weights are pinned resident, the DeltaNet pre-MoE sequence is a captured CUDA graph per layer, the router
+uses a mapped-pinned doorbell, and a block-hoisted Q4_K grouped kernel accelerates the gate/up projections. Weight
+uploads use `cudaMemcpyAsync` on the kernel stream; a synchronous pageable copy on the legacy stream had raced the
+projections and corrupted one expert's output. On an i5-12400F + RTX 4060 Ti a 120-token token-ID benchmark measured a 
+median 0.043 s (19.6 later tokens/s) with ~26 ms of GPU-busy time per step. The accurate direct-FP32-activation MMVQ
+decode is the remaining wall (~16 ms in the MoE); the Q8_1 path is ~4x cheaper but too inaccurate (0.127 hidden error),
+so the next work is an accurate FP32-decode GEMV and graph-captured expert streaming like Strata.
 
 The inherited Strata CUDA execution engine is Qwen3.8-specific. It expects a 48-layer gated-residual model and an
 attention indexer, neither of which exists in this Qwen3.6 artifact. The scalar path implements Qwen3.6's ordinary
@@ -38,11 +43,14 @@ normalization, and the output projection. Reproduce with
 
 The remaining native port requires:
 
-1. Compile and numerically compare the hybrid CUDA path on NVIDIA hardware; move DeltaNet, attention, routing,
-   expert staging, and prompt prefill to the GPU for useful throughput.
-2. Broader prompt and generation comparison with the official Transformers model on capable hardware.
-3. CUDA compilation and runtime checks on Windows and Linux.
-4. Streaming API responses, sampling, multimodal inputs, and complete OpenAI compatibility if needed.
+1. Write an accurate, high-throughput FP32-activation quantized GEMV. The MoE's direct-decode kernels are the wall
+   (~16 ms of a ~26 ms GPU-busy step); they decode one element at a time. Also finish the grouped kernels (Q5_K/Q6_K
+   down, Q8_0 DeltaNet) and capture the MoE with a fixed resident expert set (Strata's doorbell + CPU pool). Prompt
+   prefill is still unbatched.
+2. Fuse compatible weight projections further and optimize transfers without regressing the verified 40-layer parity gate.
+3. Broader prompt and generation comparison with the official Transformers model on capable hardware.
+4. CUDA runtime checks on Linux as well as the now-verified Windows path.
+5. Streaming API responses, sampling, multimodal inputs, and complete OpenAI compatibility if needed.
 
 `lamina-infer` and `lamina.py` expose the scalar path. The two-token numerical check validates its model equations;
 broader generation quality and useful 35B throughput still need the work above. The old Strata binaries and scripts

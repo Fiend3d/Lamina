@@ -763,6 +763,305 @@ __device__ __forceinline__ float small_q8_dot(const IQ4NLBlock* __restrict__ w,
     return d * sumi;
 }
 
+__device__ __forceinline__ float q4_k_value(const Q4KBlock* block, int i) {
+    const int group = i / 64;
+    const int within = i % 64;
+    const uint8_t* scale = block->scales;
+    uint8_t d, m;
+    const int si = group * 2 + within / 32;
+    if (si < 4) {
+        d = scale[si] & 63;
+        m = scale[si + 4] & 63;
+    } else {
+        d = (scale[si + 4] & 0x0f) | ((scale[si - 4] >> 6) << 4);
+        m = (scale[si + 4] >> 4) | ((scale[si] >> 6) << 4);
+    }
+    const uint8_t packed = block->qs[group * 32 + within % 32];
+    const int code = within < 32 ? packed & 0x0f : packed >> 4;
+    const float2 dm = __half22float2(block->dm);
+    return dm.x * d * code - dm.y * m;
+}
+
+__device__ __forceinline__ float q5_k_value(const Q5KBlock* block, int i) {
+    const int group = i / 64;
+    const int within = i % 64;
+    const int si = group * 2 + within / 32;
+    uint8_t d, m;
+    if (si < 4) {
+        d = block->scales[si] & 63;
+        m = block->scales[si + 4] & 63;
+    } else {
+        d = (block->scales[si + 4] & 0x0f) | ((block->scales[si - 4] >> 6) << 4);
+        m = (block->scales[si + 4] >> 4) | ((block->scales[si] >> 6) << 4);
+    }
+    const int lane = within % 32;
+    const uint8_t low = block->qs[group * 32 + lane];
+    const int low_code = within < 32 ? low & 0x0f : low >> 4;
+    const int high_bit = (block->qh[lane] >> (2 * group + (within < 32 ? 0 : 1))) & 1;
+    const float2 dm = __half22float2(block->dm);
+    return dm.x * d * (low_code + 16 * high_bit) - dm.y * m;
+}
+
+__device__ __forceinline__ float q6_k_value(const Q6KBlock* block, int i) {
+    const int half_index = i / 128;
+    const int in_half = i % 128;
+    const int group = in_half / 32;
+    const int lane = in_half % 32;
+    const int ql_index = half_index * 64 + (group & 1 ? 32 : 0) + lane;
+    const uint8_t packed = block->ql[ql_index];
+    const int low_code = group < 2 ? packed & 0x0f : packed >> 4;
+    const int high_code = (block->qh[half_index * 32 + lane] >> (2 * group)) & 3;
+    const int code = low_code | (high_code << 4);
+    const int scale_index = half_index * 8 + group * 2 + lane / 16;
+    return __half2float(block->d) * static_cast<float>(block->scales[scale_index]) * (code - 32);
+}
+
+template<int TYPE>
+__device__ __forceinline__ float native_weight_value(const uint8_t* row, int i) {
+    if constexpr (TYPE == 8) {
+        const auto* block = reinterpret_cast<const Q80Block*>(row) + i / 32;
+        return __half2float(block->d) * static_cast<float>(block->qs[i % 32]);
+    } else if constexpr (TYPE == 12) {
+        return q4_k_value(reinterpret_cast<const Q4KBlock*>(row) + i / 256, i % 256);
+    } else if constexpr (TYPE == 13) {
+        return q5_k_value(reinterpret_cast<const Q5KBlock*>(row) + i / 256, i % 256);
+    } else {
+        return q6_k_value(reinterpret_cast<const Q6KBlock*>(row) + i / 256, i % 256);
+    }
+}
+
+template<int TYPE>
+__global__ void native_mmvq_f32_kernel(const uint8_t* __restrict__ weights,
+                                       const float* __restrict__ x,
+                                       float* __restrict__ y, int n_in, int n_out) {
+    __shared__ float partial[256];
+    const int row = static_cast<int>(blockIdx.x);
+    const int tid = static_cast<int>(threadIdx.x);
+    const int block_elements = TYPE == 8 ? 32 : 256;
+    const int bytes_per_block = TYPE == 8 ? 34 : TYPE == 12 ? 144 : TYPE == 13 ? 176 : 210;
+    const size_t row_bytes = static_cast<size_t>(n_in / block_elements) * bytes_per_block;
+    const uint8_t* row_weights = weights + static_cast<size_t>(row) * row_bytes;
+    float sum = 0.0f;
+    for (int i = tid; i < n_in; i += 256)
+        sum = fmaf(native_weight_value<TYPE>(row_weights, i), x[i], sum);
+    partial[tid] = sum;
+    __syncthreads();
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (tid < stride) partial[tid] += partial[tid + stride];
+        __syncthreads();
+    }
+    if (tid == 0) y[row] = partial[0];
+}
+
+// One launch for many matrices. The per-matrix pointers and row counts travel
+// in the kernel parameter block (constant memory), so the host needs no device
+// staging copy. Block per output row, with a small linear scan to find which
+// matrix the row belongs to. Same arithmetic as native_mmvq_f32_kernel.
+constexpr int kNativeGroupMax = 64;
+struct NativeGroupedArgs {
+    const void* weights[kNativeGroupMax];
+    const float* inputs[kNativeGroupMax];
+    float* outputs[kNativeGroupMax];
+    int n_outs[kNativeGroupMax];
+    int count;
+};
+
+template<int TYPE>
+__global__ void native_mmvq_f32_grouped_kernel(const NativeGroupedArgs args, int n_in) {
+    const int warp = (static_cast<int>(blockIdx.x) * blockDim.x + static_cast<int>(threadIdx.x)) >> 5;
+    const int lane = static_cast<int>(threadIdx.x) & 31;
+    int row = warp;
+    int matrix = 0;
+    while (row >= args.n_outs[matrix]) {
+        row -= args.n_outs[matrix];
+        ++matrix;
+    }
+    const int block_elements = TYPE == 8 ? 32 : 256;
+    const int bytes_per_block = TYPE == 8 ? 34 : TYPE == 12 ? 144 : TYPE == 13 ? 176 : 210;
+    const size_t row_bytes = static_cast<size_t>(n_in / block_elements) * bytes_per_block;
+    const uint8_t* row_weights =
+        static_cast<const uint8_t*>(args.weights[matrix]) + static_cast<size_t>(row) * row_bytes;
+    const float* x = args.inputs[matrix];
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    int i = lane;
+    for (; i + 96 < n_in; i += 128) {
+        acc0 += native_weight_value<TYPE>(row_weights, i) * x[i];
+        acc1 += native_weight_value<TYPE>(row_weights, i + 32) * x[i + 32];
+        acc2 += native_weight_value<TYPE>(row_weights, i + 64) * x[i + 64];
+        acc3 += native_weight_value<TYPE>(row_weights, i + 96) * x[i + 96];
+    }
+    for (; i < n_in; i += 32) acc0 += native_weight_value<TYPE>(row_weights, i) * x[i];
+    float sum = (acc0 + acc1) + (acc2 + acc3);
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset, 32);
+    if (lane == 0) args.outputs[matrix][row] = sum;
+}
+
+// Q4_K grouped MMVQ: one warp per row, block-hoisted scales and dm. For the
+// layout i = block*256 + lane + k*32 the sub-block index is simply k, so the
+// per-element scale decode and the fp16 dm conversion leave the inner loop.
+__global__ void native_mmvq_f32_q4k_grouped_kernel(const NativeGroupedArgs args, int n_in) {
+    const int warp = (static_cast<int>(blockIdx.x) * blockDim.x + static_cast<int>(threadIdx.x)) >> 5;
+    const int lane = static_cast<int>(threadIdx.x) & 31;
+    int row = warp;
+    int matrix = 0;
+    while (row >= args.n_outs[matrix]) {
+        row -= args.n_outs[matrix];
+        ++matrix;
+    }
+    const int row_bytes = (n_in / 256) * 144;
+    const uint8_t* row_weights =
+        static_cast<const uint8_t*>(args.weights[matrix]) + static_cast<size_t>(row) * row_bytes;
+    const float* x = args.inputs[matrix];
+    float sum = 0.0f;
+    const int blocks = n_in / 256;
+    for (int b = 0; b < blocks; ++b) {
+        const Q4KBlock* block = reinterpret_cast<const Q4KBlock*>(row_weights) + b;
+        const float2 dm = __half22float2(block->dm);
+        const uint8_t* scale = block->scales;
+        const int base = b * 256 + lane;
+        float acc[8];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const uint8_t d =
+                k < 4 ? scale[k] & 63
+                      : static_cast<uint8_t>((scale[k + 4] & 0x0f) | ((scale[k - 4] >> 6) << 4));
+            const uint8_t m =
+                k < 4 ? scale[k + 4] & 63
+                      : static_cast<uint8_t>((scale[k + 4] >> 4) | ((scale[k] >> 6) << 4));
+            const uint8_t packed = block->qs[(k >> 1) * 32 + lane];
+            const int code = (k & 1) ? (packed >> 4) : (packed & 0x0f);
+            acc[k] = (dm.x * d * code - dm.y * m) * x[base + k * 32];
+        }
+        sum += ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset, 32);
+    if (lane == 0) args.outputs[matrix][row] = sum;
+}
+
+// Q5_K counterpart of the Q4_K grouped kernel (block-hoisted scales + 5th bit).
+__global__ void native_mmvq_f32_q5k_grouped_kernel(const NativeGroupedArgs args, int n_in) {
+    const int warp = (static_cast<int>(blockIdx.x) * blockDim.x + static_cast<int>(threadIdx.x)) >> 5;
+    const int lane = static_cast<int>(threadIdx.x) & 31;
+    int row = warp;
+    int matrix = 0;
+    while (row >= args.n_outs[matrix]) {
+        row -= args.n_outs[matrix];
+        ++matrix;
+    }
+    const int row_bytes = (n_in / 256) * 176;
+    const uint8_t* row_weights =
+        static_cast<const uint8_t*>(args.weights[matrix]) + static_cast<size_t>(row) * row_bytes;
+    const float* x = args.inputs[matrix];
+    float sum = 0.0f;
+    const int blocks = n_in / 256;
+    for (int b = 0; b < blocks; ++b) {
+        const Q5KBlock* block = reinterpret_cast<const Q5KBlock*>(row_weights) + b;
+        const float2 dm = __half22float2(block->dm);
+        const uint8_t* scale = block->scales;
+        const uint8_t high_byte = block->qh[lane];
+        const int base = b * 256 + lane;
+        float acc[8];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const uint8_t d =
+                k < 4 ? scale[k] & 63
+                      : static_cast<uint8_t>((scale[k + 4] & 0x0f) | ((scale[k - 4] >> 6) << 4));
+            const uint8_t m =
+                k < 4 ? scale[k + 4] & 63
+                      : static_cast<uint8_t>((scale[k + 4] >> 4) | ((scale[k] >> 6) << 4));
+            const uint8_t low = block->qs[(k >> 1) * 32 + lane];
+            const int low_code = (k & 1) ? (low >> 4) : (low & 0x0f);
+            const int high_bit = (high_byte >> (2 * (k >> 1) + (k & 1))) & 1;
+            const int code = low_code + 16 * high_bit;
+            acc[k] = (dm.x * d * code - dm.y * m) * x[base + k * 32];
+        }
+        sum += ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset, 32);
+    if (lane == 0) args.outputs[matrix][row] = sum;
+}
+
+// Q8_0 grouped kernel: one warp per row, four 32-element blocks per iteration.
+__global__ void native_mmvq_f32_q8_grouped_kernel(const NativeGroupedArgs args, int n_in) {
+    const int warp = (static_cast<int>(blockIdx.x) * blockDim.x + static_cast<int>(threadIdx.x)) >> 5;
+    const int lane = static_cast<int>(threadIdx.x) & 31;
+    int row = warp;
+    int matrix = 0;
+    while (row >= args.n_outs[matrix]) {
+        row -= args.n_outs[matrix];
+        ++matrix;
+    }
+    const int row_bytes = (n_in / 32) * 34;
+    const uint8_t* row_weights =
+        static_cast<const uint8_t*>(args.weights[matrix]) + static_cast<size_t>(row) * row_bytes;
+    const Q80Block* block = reinterpret_cast<const Q80Block*>(row_weights);
+    const float* x = args.inputs[matrix];
+    const int blocks = n_in / 32;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    int b = 0;
+    for (; b + 3 < blocks; b += 4) {
+        acc0 = fmaf(__half2float(block[b].d) * static_cast<float>(block[b].qs[lane]),
+                    x[(b + 0) * 32 + lane], acc0);
+        acc1 = fmaf(__half2float(block[b + 1].d) * static_cast<float>(block[b + 1].qs[lane]),
+                    x[(b + 1) * 32 + lane], acc1);
+        acc2 = fmaf(__half2float(block[b + 2].d) * static_cast<float>(block[b + 2].qs[lane]),
+                    x[(b + 2) * 32 + lane], acc2);
+        acc3 = fmaf(__half2float(block[b + 3].d) * static_cast<float>(block[b + 3].qs[lane]),
+                    x[(b + 3) * 32 + lane], acc3);
+    }
+    for (; b < blocks; ++b)
+        acc0 = fmaf(__half2float(block[b].d) * static_cast<float>(block[b].qs[lane]),
+                    x[b * 32 + lane], acc0);
+    float sum = (acc0 + acc1) + (acc2 + acc3);
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset, 32);
+    if (lane == 0) args.outputs[matrix][row] = sum;
+}
+
+void native_mmvq_f32_impl(int ggml_type, const void* weights, const float* x, float* y,
+                          int n_in, int n_out, void* stream) {
+    if (n_in <= 0 || n_out <= 0) throw std::invalid_argument("native FP32 MMVQ requires positive dimensions");
+    if (!weights || !x || !y || !stream) throw std::invalid_argument("native FP32 MMVQ requires non-null buffers and stream");
+    if (reinterpret_cast<std::uintptr_t>(weights) % 4 || reinterpret_cast<std::uintptr_t>(x) % 4 ||
+        reinterpret_cast<std::uintptr_t>(y) % 4)
+        throw std::invalid_argument("native FP32 MMVQ requires 4-byte aligned buffers");
+    const auto s = static_cast<cudaStream_t>(stream);
+    switch (ggml_type) {
+    case 8:
+        if (n_in % 32) throw std::invalid_argument("Q8_0 FP32 MMVQ requires n_in divisible by 32");
+        native_mmvq_f32_kernel<8><<<static_cast<unsigned>(n_out), 256, 0, s>>>(
+            static_cast<const uint8_t*>(weights), x, y, n_in, n_out);
+        break;
+    case 12:
+        if (n_in % 256) throw std::invalid_argument("Q4_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_kernel<12><<<static_cast<unsigned>(n_out), 256, 0, s>>>(
+            static_cast<const uint8_t*>(weights), x, y, n_in, n_out);
+        break;
+    case 13:
+        if (n_in % 256) throw std::invalid_argument("Q5_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_kernel<13><<<static_cast<unsigned>(n_out), 256, 0, s>>>(
+            static_cast<const uint8_t*>(weights), x, y, n_in, n_out);
+        break;
+    case 14:
+        if (n_in % 256) throw std::invalid_argument("Q6_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_kernel<14><<<static_cast<unsigned>(n_out), 256, 0, s>>>(
+            static_cast<const uint8_t*>(weights), x, y, n_in, n_out);
+        break;
+    default:
+        throw std::invalid_argument("unsupported FP32 native MMVQ GGML type");
+    }
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess)
+        throw std::runtime_error(std::string("native FP32 MMVQ launch: ") + cudaGetErrorString(error));
+}
+
 // QI=4 for Q4_0/Q5_0/IQ4_NL and QI=8 for Q8_0. With VDR=2 this preserves
 // the pinned 64/32-block iteration and 2048/1024-element small-K thresholds.
 template<typename Weight, int Qi, bool SmallK>
@@ -1243,6 +1542,64 @@ void small_f32(const void* weights, const float* x, void* scratch_q8_1,
 }
 
 } // namespace
+
+void native_mmvq_f32(int ggml_type, const void* weights, const float* x, float* y,
+                     int n_in, int n_out, void* stream) {
+    native_mmvq_f32_impl(ggml_type, weights, x, y, n_in, n_out, stream);
+}
+
+void native_mmvq_f32_many(int count, const int* types, const void* const* weights,
+                          float* const* outputs, const int* n_out, const float* x,
+                          int n_in, void* stream) {
+    if (count < 1 || !types || !weights || !outputs || !n_out || !x || !stream)
+        throw std::invalid_argument("native FP32 MMVQ batch requires non-null buffers and positive count");
+    for (int i = 0; i < count; ++i) {
+        if (!weights[i] || !outputs[i] || types[i] != types[0])
+            throw std::invalid_argument("native FP32 MMVQ batch requires one format and valid buffers");
+        native_mmvq_f32(types[i], weights[i], x, outputs[i], n_in, n_out[i], stream);
+    }
+}
+
+void native_mmvq_f32_grouped(int ggml_type, const void* const* weights,
+                             const float* const* inputs, float* const* outputs,
+                             const int* n_outs, int count, int total_rows, int n_in, void* stream) {
+    if (count < 1 || n_in <= 0 || count > kNativeGroupMax || !weights || !inputs || !outputs ||
+        !n_outs || !stream)
+        throw std::invalid_argument("native grouped FP32 MMVQ requires non-null buffers and count in [1,64]");
+    if (total_rows <= 0) throw std::invalid_argument("native grouped FP32 MMVQ requires positive rows");
+    NativeGroupedArgs args;
+    for (int i = 0; i < count; ++i) {
+        args.weights[i] = weights[i];
+        args.inputs[i] = inputs[i];
+        args.outputs[i] = outputs[i];
+        args.n_outs[i] = n_outs[i];
+    }
+    args.count = count;
+    const auto s = static_cast<cudaStream_t>(stream);
+    switch (ggml_type) {
+    case 8:
+        if (n_in % 32) throw std::invalid_argument("grouped Q8_0 FP32 MMVQ requires n_in divisible by 32");
+        native_mmvq_f32_q8_grouped_kernel<<<static_cast<unsigned>((total_rows + 3) / 4), 128, 0, s>>>(args, n_in);
+        break;
+    case 12:
+        if (n_in % 256) throw std::invalid_argument("grouped Q4_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_q4k_grouped_kernel<<<static_cast<unsigned>((total_rows + 3) / 4), 128, 0, s>>>(args, n_in);
+        break;
+    case 13:
+        if (n_in % 256) throw std::invalid_argument("grouped Q5_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_q5k_grouped_kernel<<<static_cast<unsigned>((total_rows + 3) / 4), 128, 0, s>>>(args, n_in);
+        break;
+    case 14:
+        if (n_in % 256) throw std::invalid_argument("grouped Q6_K FP32 MMVQ requires n_in divisible by 256");
+        native_mmvq_f32_grouped_kernel<14><<<static_cast<unsigned>((total_rows + 3) / 4), 128, 0, s>>>(args, n_in);
+        break;
+    default:
+        throw std::invalid_argument("unsupported grouped FP32 native MMVQ GGML type");
+    }
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess)
+        throw std::runtime_error(std::string("native grouped FP32 MMVQ launch: ") + cudaGetErrorString(error));
+}
 
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 bool native_mmvq_multi_exact() { return g_multi_exact; }

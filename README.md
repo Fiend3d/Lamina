@@ -13,10 +13,19 @@ independent NumPy implementation of the Qwen layer equations and selected the sa
 generation quality has not been checked. The scalar path dequantizes matrix rows on the CPU for each token and will
 be slow. Large scalar projections use up to eight CPU threads (`LAMINA_CPU_THREADS` sets 1..64). On a Ryzen 5 7520U,
 a matched warm-cache 40-layer pass took 4.46 seconds with one worker and 2.98 with eight. A four-token decode sample
-gave 0.395 later tokens/s with eight workers. An opt-in hybrid path now sends Q8_0, Q4_K, Q5_K and Q6_K projections through Strata's native CUDA
-MMVQ kernels; its state updates and routing still run on the CPU. The hybrid path [compiles in Linux CUDA 12.6 CI](https://github.com/Fiend3d/Lamina/actions/runs/37366756905),
-but has not been run on NVIDIA hardware or compiled with Windows CUDA. The inherited Strata GPU execution graph
-still implements Qwen3.8 and is not used by Lamina.
+gave 0.395 later tokens/s with eight workers. On an RTX 4060 Ti, the hybrid CUDA path keeps the whole token chain in
+VRAM: the hidden state, RMS norms, residuals, the DeltaNet layer (via the linked `native_gdn` kernels), attention
+(device KV cache, partial RoPE, GQA) and the device router top-8 plus MoE all stay on the GPU; only the router's eight
+ids/weights and the final hidden state touch the host. Dense and shared weights are pinned resident, each DeltaNet
+layer's pre-MoE sequence is a captured CUDA graph, the router uses a mapped-pinned doorbell, and the MoE uses grouped
+MMVQ with a block-hoisted Q4_K kernel. The independent 40-layer check passes with maximum hidden-state difference
+`1.14e-6`, matching next token 20 and logit 9.544323. On an i5-12400F the whole 20.6 GiB GGUF is memory-mapped and the
+expert cache reaches a 0.93 hit rate; a 120-token token-ID run measured a median 0.043 s (19.6 later tokens/s).
+Profiling shows ~26 ms of GPU-busy time per step, ~16 ms of it in the MoE. That is the accurate direct-FP32-activation
+MMVQ decode (the Q8_1 path is ~4x cheaper but moves the 40-layer error to 0.127), so the remaining work is a
+hand-written accurate FP32-decode GEMV and capturing the MoE/expert streaming like Strata. The inherited Strata GPU
+execution graph still implements Qwen3.8 and is not used by Lamina. A weight-cache race was also fixed: uploads now use
+`cudaMemcpyAsync` on the kernel stream instead of a synchronous pageable copy on the legacy stream.
 
 ## Build and inspect
 
@@ -27,13 +36,10 @@ cmake -S . -B build
 cmake --build build --target lamina-gguf lamina-infer
 ```
 
-On a machine with the CUDA toolkit and an Ampere or newer NVIDIA GPU, configure with
-`-DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80` and run `python lamina.py chat --cuda ...`.
-The flag is explicit: a default build stays CPU-only, and a CPU-only binary reports an error if `--cuda` is used.
-The hybrid path keeps an LRU device weight cache sized to 75% of free VRAM at startup and transfers activations for
-each projection. On a 16 GB card, set `LAMINA_CUDA_CACHE_MB=6144` to test a roughly 8 GB-card-sized cache budget;
-an actual 8 GB card chooses its limit automatically. This setting caps the cache, not all CUDA allocations. It is an
-experimental step toward a full GPU engine, with no verified speedup or model parity yet.
+To build the CUDA hybrid engine and projection checks on an Ampere or newer NVIDIA GPU, configure with
+`-DLAMINA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89`, then build `lamina-infer` and
+`lamina-cuda-projection-check`. Validate with both the isolated projection suite and the independent 40-layer reference
+check before relying on a new CUDA build.
 
 Measure decode speed with one persistent process, first at the automatic cache limit, then with a 6 GiB cap to
 approximate an 8 GB card's weight budget:

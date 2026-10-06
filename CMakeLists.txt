@@ -231,17 +231,36 @@ add_library(lamina_model STATIC src/model/inference.cpp src/model/cuda_projectio
 find_package(Threads REQUIRED)
 target_link_libraries(lamina_model PUBLIC strata_artifact Threads::Threads)
 if(LAMINA_ENABLE_CUDA)
-  add_library(lamina_cuda_kernels STATIC src/kernels/cuda/native_mmvq.cu src/kernels/cuda/iq_kernels.cu)
+  add_library(lamina_cuda_kernels STATIC src/kernels/cuda/native_mmvq.cu src/kernels/cuda/iq_kernels.cu
+                                           src/kernels/cuda/native_gdn.cu
+                                           src/kernels/cuda/native_gdn_preprocess.cu)
   set_target_properties(lamina_cuda_kernels PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
   target_include_directories(lamina_cuda_kernels PRIVATE include third_party/ggml)
   target_compile_options(lamina_cuda_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>)
+  if(LAMINA_CUDA_VERBOSE)
+    target_compile_options(lamina_cuda_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--ptxas-options=-v>)
+  endif()
   target_link_libraries(lamina_cuda_kernels PUBLIC CUDA::cudart)
+  # Lamina's own elementwise ops are compiled WITHOUT --use_fast_math so their
+  # expf matches the scalar reference closely enough for the parity gate.
+  add_library(lamina_cuda_ops STATIC src/model/cuda_kernels.cu)
+  set_target_properties(lamina_cuda_ops PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+  target_include_directories(lamina_cuda_ops PRIVATE include)
+  target_link_libraries(lamina_cuda_ops PUBLIC CUDA::cudart)
+  add_executable(lamina-cuda-elementwise-check tests/lamina/cuda_elementwise_check.cu)
+  set_target_properties(lamina-cuda-elementwise-check PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+  target_include_directories(lamina-cuda-elementwise-check PRIVATE include)
+  target_link_libraries(lamina-cuda-elementwise-check PRIVATE lamina_cuda_ops CUDA::cudart)
   target_compile_definitions(lamina_model PRIVATE LAMINA_ENABLE_CUDA=1)
   target_include_directories(lamina_model PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-  target_link_libraries(lamina_model PRIVATE lamina_cuda_kernels CUDA::cudart)
+  target_link_libraries(lamina_model PRIVATE lamina_cuda_kernels lamina_cuda_ops CUDA::cudart)
 endif()
 add_executable(lamina-infer src/model/infer_main.cpp)
 target_link_libraries(lamina-infer PRIVATE lamina_model)
+if(LAMINA_ENABLE_CUDA)
+  add_executable(lamina-cuda-projection-check tests/lamina/cuda_projection_check.cpp)
+  target_link_libraries(lamina-cuda-projection-check PRIVATE lamina_model)
+endif()
 
 # The copied Strata engine below this point still executes Qwen3.8. Keep it
 # available for porting, but never place its binaries in a normal Lamina build.

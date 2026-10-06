@@ -2,19 +2,30 @@
 
 Read this before changing inference code. Lamina targets the pinned Qwen3.6-35B-A3B
 UD-Q4_K_M GGUF. It is a native Strata port in progress, with a correct but slow
-CPU path and an unverified hybrid CUDA projection path. Do not report it as a
-fast GPU engine until the hardware checks below pass and measured throughput
-supports that claim.
+CPU path and a hybrid CUDA path that runs the whole token chain (norms, residuals,
+DeltaNet, attention, router and MoE) on the GPU. The hybrid passes the 40-layer
+parity gate but is launch-bound, not yet Strata-class: do not report it
+as a fast GPU engine until the remaining device-resident work below is done and
+measured throughput supports that claim.
 
 ## What runs today
 
 | Path | State | Evidence | Performance |
 | --- | --- | --- | --- |
 | Scalar C++ | Full 40-layer text graph runs | Two tokens checked against independent NumPy across all layers; same next token | About 0.395 later tokens/s in a four-token notebook sample |
-| Hybrid CUDA | CUDA quantized projections wired into scalar graph | Linux CUDA 12.6 toolkit compile passed; Windows CUDA compile and GPU runtime remain unverified | Unknown |
+| Hybrid CUDA | Whole token chain on the GPU: hidden state, RMS norms, residuals, DeltaNet, attention (device KV cache, partial RoPE, GQA), device router top-8 and MoE all stay in VRAM; only the router's 8 ids/weights and the final hidden state touch the host. Dense weights are pinned resident; each DeltaNet layer's pre-MoE sequence is a captured CUDA graph; the router uses a mapped-pinned doorbell; the MoE uses grouped MMVQ with a block-hoisted Q4_K kernel | Windows CUDA 13.4, RTX 4060 Ti; isolated projection and elementwise suites pass; independent 40-layer check max diff `1.14e-6`, next token 20, logit 9.544323 | i5-12400F + RTX 4060 Ti: 120-token token-ID run median 0.043 s (19.6 later tokens/s). `LAMINA_PROFILE=1` reports ~38 ms GPU-busy per step, of which the MoE is ~26 ms; the accurate FP32 quantized decode is the wall |
 | Inherited Strata CUDA engine | Qwen3.8-specific source only | Different 48-layer graph and routing; not a Lamina target | Not applicable |
 
-The scalar measurement used an AMD Ryzen 5 7520U with a warm file cache.
+The scalar measurement used an AMD Ryzen 5 7520U with a warm file cache. The
+hybrid numbers above used an Intel Core i5-12400F (64 GB RAM) with a warm file
+cache and the whole 20.6 GiB GGUF memory-mapped from `../Lamina-data`.
+
+A race fixed during this work: the weight cache uploaded quantized blocks with a
+**synchronous pageable `cudaMemcpy` on the legacy stream** while the projections
+ran on a **non-blocking stream**, so a queued projection could read a
+partially-uploaded weight. Weight uploads now use `cudaMemcpyAsync` on the
+kernel stream. Any new device-resident work must keep every host/device transfer
+ordered with the stream the kernels use.
 It is not a GPU performance estimate. The 22.1 GB GGUF is memory mapped from
 `../Lamina-data`; an 8 GB GPU does not need to hold the whole file, but its
 throughput and even successful execution still require testing.
@@ -34,10 +45,15 @@ took 4.46 seconds with one worker and 2.98 seconds with eight on this notebook.
 - `src/model/inference.cpp`: Qwen3.6 token graph, GGUF row decoding, CPU
   projections, 30 recurrent DeltaNet layers, 10 full-attention layers, top-eight
   experts, shared expert, residuals and final logits.
-- `src/model/cuda_projection.cpp`: opt-in hybrid projection adapter. It uses
-  Strata's `src/kernels/cuda/native_mmvq.cu` and `iq_kernels.cu`, an LRU weight
-  cache sized to 75% of free VRAM, and synchronous activation/result transfers
-  per projection. `LAMINA_CUDA_CACHE_MB` lowers the weight-cache limit.
+- `src/model/cuda_projection.cpp`: hybrid projection adapter. It uses a direct
+  FP32-activation path in Strata's `src/kernels/cuda/native_mmvq.cu` for Q8_0,
+  Q4_K, Q5_K and Q6_K, an LRU weight cache sized to 75% of free VRAM, and
+  blocking activation/result transfers with explicit device synchronization.
+  `LAMINA_CUDA_CACHE_MB` lowers the cache limit. The CUDA-only
+  `lamina-cuda-projection-check` target compares selected tensors with scalar
+  dequantized matvecs. `LAMINA_PROFILE=1` prints per-token total, CUDA-matvec,
+  CPU-matvec and remaining graph time; a sample showed ~218 ms of CUDA matvecs
+  in a ~270 ms token step.
 - `src/model/infer_main.cpp`: token-ID CLI, interactive text-client protocol,
   and `--prefix` hidden-state diagnostic. `lamina.py` applies the tokenizer and
   text chat template, then calls this binary. `tools/benchmark.py` measures
@@ -87,8 +103,9 @@ difference `1.0023523324687034e-6`, next token ID `20` in both paths, and
 native logit `9.544323`. This checks the scalar math for that input, not general
 generation quality or GPU parity.
 
-For CUDA, configure `-DLAMINA_ENABLE_CUDA=ON` and an appropriate
-`CMAKE_CUDA_ARCHITECTURES`. The toolkit-only job in
+For CUDA kernel checks, configure `-DLAMINA_ENABLE_CUDA=ON` and an appropriate
+`CMAKE_CUDA_ARCHITECTURES`, build `lamina-cuda-projection-check`, and run it with
+the pinned model path. The toolkit-only job in
 `.github/workflows/lamina-cuda-build.yml` [passed on Linux with CUDA 12.6](https://github.com/Fiend3d/Lamina/actions/runs/37366756905);
 it cannot run inference without a GPU. On an NVIDIA machine, start with a
 four-layer check, then all 40 layers:
@@ -106,26 +123,36 @@ actual text prompts. Do not weaken the parity gate merely to make it pass.
 
 ## Performance work in order
 
-1. **Get a real CUDA result.** Compile on Windows and Linux with the toolkit.
-   Run the prefix comparison and a short text prompt on an NVIDIA GPU. Record
-   GPU model, CUDA version, available VRAM, system RAM and exact command.
-2. **Measure before changing kernels.** Run `python -m tools.benchmark --engine
-   build-cuda/lamina-infer --cuda --tokens 4`, then repeat with `--cache-mb
-   6144` on a larger card. Record first-token time and later-token throughput.
-   The cache cap approximates an 8 GB card's cache budget; it does not emulate
-   PCIe bandwidth or memory pressure. Test a physical 8 GB card as well.
-3. **Profile transfer and CPU time.** The hybrid graph copies input/output for
-   each projection, synchronizes after every call, and performs recurrent
-   state, attention, routing and residual work on the CPU. Identify measured
-   time spent in each before deciding which kernels to port next.
-4. **Keep state on GPU.** Port DeltaNet causal convolution and recurrent state,
-   full-attention KV cache, RoPE, normalization, routing, and residuals. Use
-   the Qwen3.6 shapes and equations above. Avoid routing every intermediate
-   tensor through host memory.
-5. **Stage experts within the VRAM budget.** The GGUF is larger than 8 or 16 GB.
-   Upload selected quantized expert slices, reuse likely weights, and overlap
-   transfer with compute where safe. Measure miss rate, bytes transferred and
-   actual peak VRAM on both card sizes.
+1. **Keep the full-graph parity gate.** The device MoE and GPU router path
+   passes on RTX 4060 Ti: maximum hidden difference `1.73e-6`, next token 20 and
+   native logit 9.544323. Do not weaken this gate.
+2. **Measured state (i5-12400F + RTX 4060 Ti).** `LAMINA_PROFILE=1` reports
+   `device gpu_busy_ms` (CUDA-event time across the whole device chain) of
+   ~26 ms/step, of which the MoE is ~16 ms and the DeltaNet+attention+norms are 
+   ~12 ms. The expert cache hit rate is ~0.93 with ~5 GB resident of the 11 GB
+   limit; dense and shared weights are pinned. `LAMINA_DEV_PROFILE=1` splits the
+   MoE into router and kernels.
+3. **The MoE's accurate decode is the wall (next, biggest win).** The direct
+   FP32-activation MMVQ path decodes one quantized element at a time (~30 cycles
+   per element measured) because it must not quantize the activation: the Q8_1
+   `native_mmvq` path is ~4x cheaper but shifting the MoE to it moved the 40
+   layer hidden-state error to `0.127` (same top-1 token here, logit 9.601 vs
+   9.544). Speed therefore needs a hand-written accurate FP32-decode GEMV —
+   e.g. a proper block/multi-row tiling with `__dp4a`-style integer weight codes
+   and exact per-group scales, or a two-level scheme that keeps the activation
+   in FP32 — rather than more launch or transfer tuning. The grouped Q4_K kernel
+   in `src/kernels/cuda/native_mmvq.cu` (`native_mmvq_f32_q4k_grouped_kernel`) is
+   the template; Q5_K/Q6_K down projections and the Q8_0 DeltaNet projections are
+   still on the generic per-element path.
+4. **Capture more graphs.** DeltaNet layers already replay a captured pre-MoE
+   graph. The MoE cannot be captured while its expert weights change each token;
+   capturing it needs the Strata design: a fixed resident expert set, graphs per
+   layer, and a CPU pool for misses, with a mapped-pinned doorbell. Attention can
+   be captured once its position and KV-append offset are read from device memory.
+5. **Overlap CPU and GPU experts.** The cache holds ~93% of requested experts;
+   split each layer at the router and compute the misses on a CPU pool
+   concurrently, as Strata's `src/core/session.cpp` does, for a larger card or a
+   smaller VRAM budget. Measure hit rate, bytes transferred and peak VRAM.
 6. **Add prompt prefill and broader validation.** Decode-only token loops make
    prompt processing slow. Preserve causal DeltaNet/attention state while
    batching prefill. Compare several prompts and generated tokens with an
