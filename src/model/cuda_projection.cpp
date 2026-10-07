@@ -1035,6 +1035,7 @@ std::vector<float> CudaProjection::matvec(const strata::TensorInfo& tensor, cons
     void* device_weight = impl_->weight(tensor, slice, expert, bytes);
     check(cudaMemcpyAsync(impl_->input, x.data(), x.size() * sizeof(float),
                           cudaMemcpyHostToDevice, impl_->stream), "upload activation");
+    impl_->tl_mark(kTlHeadKernel);
     if (impl_->fast) {
         impl_->ensure(impl_->dense_q8, impl_->dense_q8_cap, strata::kernels::native_q8_1_bytes(4096));
         strata::kernels::native_quantize_q8_1(impl_->input, impl_->dense_q8, n_in, 1, impl_->stream);
@@ -1042,6 +1043,7 @@ std::vector<float> CudaProjection::matvec(const strata::TensorInfo& tensor, cons
     } else strata::kernels::native_mmvq_f32(tensor.type, device_weight, impl_->input, impl_->output,
                                      n_in, n_out, impl_->stream);
     check(cudaGetLastError(), "launch projection");
+    impl_->tl_mark(kTlHeadCopy);
     std::vector<float> result(static_cast<size_t>(n_out));
     check(cudaMemcpyAsync(result.data(), impl_->output, result.size() * sizeof(float),
                           cudaMemcpyDeviceToHost, impl_->stream), "download projection");
@@ -1356,6 +1358,7 @@ void CudaProjection::delta_net_core(int layer, const float* x_dev, float* out_de
     impl_->ensure(impl_->g_y, impl_->g_y_cap, static_cast<size_t>(kHeads) * kS);
     impl_->ensure(impl_->g_ssm_out, impl_->g_ssm_out_cap, kHidden);
 
+    impl_->tl_mark(kTlGdnProject);
     // qkv and attn_gate share the activation; one grouped MMVQ dispatch.
     const void* qkv_gate_weights[2] = {impl_->projection_weight(*w.qkv, w.qkv_data, -1),
                                        impl_->projection_weight(*w.gate, w.gate_data, -1)};
@@ -1365,6 +1368,7 @@ void CudaProjection::delta_net_core(int layer, const float* x_dev, float* out_de
     impl_->decode_group(static_cast<int>(w.qkv->type), qkv_gate_weights,
                                              qkv_gate_inputs, qkv_gate_outputs, qkv_gate_rows, 2,
                                              kChannels + 4096, kHidden, impl_->stream);
+    impl_->tl_mark(kTlGdnSmall);
     // alpha and beta are dense F32 projections.
     void* alpha_weight = impl_->weight(*w.alpha, w.alpha_data, -1,
                                        static_cast<size_t>(kHidden) * kHeads * sizeof(float));
@@ -1390,9 +1394,11 @@ void CudaProjection::delta_net_core(int layer, const float* x_dev, float* out_de
                                      static_cast<const float*>(a_weight), impl_->g_gate, kHeads,
                                      impl_->stream);
     const strata::kernels::GdnShapes shapes{kS, 16, kHeads};
+    impl_->tl_mark(kTlGdnStep);
     strata::kernels::native_gdn_step(state.rec, impl_->g_conv_silu, impl_->g_conv_silu + 2048,
                                      impl_->g_conv_silu + 4096, impl_->g_gate, impl_->g_beta,
                                      impl_->g_outnorm, shapes, impl_->stream);
+    impl_->tl_mark(kTlGdnOut);
     // Closing RMS norm with gamma and SiLU(z), then the ssm_out projection.
     void* norm_weight = impl_->weight(*w.norm, w.norm_data, -1,
                                       static_cast<size_t>(kS) * sizeof(float));
@@ -1970,9 +1976,9 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
                       impl_->stream);
     check(cudaGetLastError(), "launch MoE");
     // Copy this layer's CPU experts into the cache in the background, highest
-    // router weight first, so following tokens run them on the GPU. The host
-    // does this while the GPU works through the combine and the next mixer.
-    // Evicted blocks are fenced by their retirement events.
+    // router weight first, so following tokens run them on the GPU. Evicted
+    // blocks are fenced by their retirement events. (Deferring this host work
+    // into the next layer's doorbell wait measured slower: 31.0 -> 29.0 tok/s.)
     for (size_t i = 0; i < cpu_slots.size() && int(i) < impl_->admit_per_layer; ++i) {
         const int expert = experts[cpu_slots[i]];
         if (!(impl_->admit(*routed.gate, routed.gate_data, expert) && impl_->admit(*routed.up, routed.up_data, expert) &&
@@ -2198,7 +2204,8 @@ void CudaProjection::delta_layer_graph(int layer, const GdnWeights& w,
         check(cudaGraphLaunch(graph.exec, impl_->stream), "launch DeltaNet graph");
         return;
     }
-    if (!graph.warmed) {
+    // The timeline records events inside the layer, which capture would forbid.
+    if (!graph.warmed || impl_->timeline) {
         graph.warmed = true;
         hidden_rms(input_norm, input_norm_data, epsilon);
         delta_net_into_mix(layer, w);
@@ -2573,7 +2580,8 @@ void CudaProjection::timeline_token() {
             }
             if (++p.tl_tokens % 32 == 0) {
                 static const char* names[kTlCount] = {"dense", "router", "host_gap", "moe_setup", "prefetch_wait",
-                    "resident", "miss_wait", "miss_experts", "prefetch_issue", "combine", "tail"};
+                    "resident", "miss_wait", "miss_experts", "prefetch_issue", "combine", "tail", "attention",
+                    "gdn_project", "gdn_small", "gdn_step", "gdn_out", "head_kernel", "head_copy_and_host"};
                 double total = 0;
                 for (double v : p.tl_ms) total += v;
                 std::fprintf(stderr, "timeline tokens=%llu ms_per_token=%.3f", static_cast<unsigned long long>(p.tl_tokens),

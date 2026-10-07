@@ -598,7 +598,8 @@ std::vector<float> Inference::step_hidden_device(const std::vector<float>& embed
     if (profile_enabled()) cuda_->mark_begin();
     cuda_->timeline_token();
     for (int layer = 0; layer < layers_; ++layer) {
-        cuda_->timeline_mark(CudaProjection::kTlDense);
+        // "dense" covers DeltaNet layers; full-attention layers are charged separately.
+        cuda_->timeline_mark(layer % 4 == 3 ? CudaProjection::kTlAttention : CudaProjection::kTlDense);
         const strata::TensorInfo& input_norm = tensor(layer_name(layer, "attn_norm.weight"));
         const strata::TensorInfo& post_norm = tensor(layer_name(layer, "post_attention_norm.weight"));
         const auto mixer_start = std::chrono::steady_clock::now();

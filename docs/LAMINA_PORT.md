@@ -2,7 +2,7 @@
 
 
 Fast mode now runs cache-missed experts on the CPU by default. On an RTX 3050
-8 GB machine the matched comparison measured **29.76 tokens/s for Lamina versus
+8 GB machine the matched comparison measured **31.24 tokens/s for Lamina versus
 28.56 for CUDA llama.cpp b11474**. The **40 tokens/s target is not met**, and no
 Strata parity is claimed. See [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md);
 earlier RTX 4060 records are in [the previous validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md).

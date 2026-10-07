@@ -89,6 +89,64 @@ step(float* __restrict__ state, const float* __restrict__ q, const float* __rest
     }
 }
 
+// Decode variant of step<false> with coalesced state traffic. In step<false>
+// the 32 lanes of a warp read rows i = r * 32 + lane of one column, addresses
+// h_v * S floats (16 KiB) apart, so every load touches its own 32-byte sector.
+// Here a block stages a [128 rows x 32 columns] tile of one head through shared
+// memory with 128-byte row loads and stores. Each warp then runs the same
+// per-(head, column) computation as step<false>, with the same lane-to-row
+// mapping, the same sums and the same warp reductions, so results are equal.
+constexpr int kTileCols = 32;
+__global__ void __launch_bounds__(256)
+step_tiled(float* __restrict__ state, const float* __restrict__ q, const float* __restrict__ k,
+           const float* __restrict__ v, const float* __restrict__ gate, const float* __restrict__ beta,
+           float* __restrict__ output, int h_k, int h_v, float scale) {
+    __shared__ float tile[S][kTileCols + 1];  // +1 column: conflict-free column reads
+    const int head = blockIdx.x, col0 = blockIdx.y * kTileCols;
+    const int lane = threadIdx.x, tid = threadIdx.y * 32 + threadIdx.x;
+    const int threads = blockDim.x * blockDim.y;
+    for (int index = tid; index < S * kTileCols; index += threads) {
+        const int i = index / kTileCols, c = index % kTileCols;
+        tile[i][c] = state[(size_t(i) * h_v + head) * S + col0 + c];
+    }
+    __syncthreads();
+    const int q_head = head % h_k;
+    float k_reg[4], q_reg[4];
+#pragma unroll
+    for (int r = 0; r < 4; ++r) {
+        const int i = r * 32 + lane;
+        k_reg[r] = k[q_head * S + i];
+        q_reg[r] = q[q_head * S + i];
+    }
+    const float g_val = expf(gate[head]);
+    for (int cc = threadIdx.y; cc < kTileCols; cc += blockDim.y) {
+        const int col = col0 + cc;
+        float s_shard[4];
+#pragma unroll
+        for (int r = 0; r < 4; ++r) s_shard[r] = tile[r * 32 + lane][cc];
+        float kv_shard = 0.0f;
+#pragma unroll
+        for (int r = 0; r < 4; ++r) kv_shard += s_shard[r] * k_reg[r];
+        const float kv_col = warp_sum(kv_shard);
+        const float delta_col = (v[head * S + col] - g_val * kv_col) * beta[head];
+        float attn_partial = 0.0f;
+#pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            s_shard[r] = g_val * s_shard[r] + k_reg[r] * delta_col;
+            attn_partial += s_shard[r] * q_reg[r];
+        }
+        const float attn_col = warp_sum(attn_partial);
+        if (lane == 0) output[head * S + col] = attn_col * scale;
+#pragma unroll
+        for (int r = 0; r < 4; ++r) tile[r * 32 + lane][cc] = s_shard[r];
+    }
+    __syncthreads();
+    for (int index = tid; index < S * kTileCols; index += threads) {
+        const int i = index / kTileCols, c = index % kTileCols;
+        state[(size_t(i) * h_v + head) * S + col0 + c] = tile[i][c];
+    }
+}
+
 bool valid_span(const void* pointer, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(pointer);
     return pointer && address % sizeof(float) == 0 && bytes <= UINTPTR_MAX - address;
@@ -123,8 +181,8 @@ void native_gdn_step(float* state, const float* q, const float* k, const float* 
             throw std::invalid_argument("native GDN requires aligned input spans disjoint from state and output");
     }
     const float scale = 1.0f / sqrtf(float(S));
-    step<false><<<dim3(unsigned(shape.h_v), 1, S / 4), dim3(32, 4), 0, static_cast<cudaStream_t>(stream)>>>(
-        state, q, k, v, gate, beta, output, int(shape.h_k), int(shape.h_v), scale, 1);
+    step_tiled<<<dim3(unsigned(shape.h_v), S / kTileCols), dim3(32, 8), 0, static_cast<cudaStream_t>(stream)>>>(
+        state, q, k, v, gate, beta, output, int(shape.h_k), int(shape.h_v), scale);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

@@ -9,11 +9,13 @@ Strata kernels alone has not reproduced its execution performance.
 **Update, 7 October 2026 (RTX 3050 8 GB / Ryzen 7 5700X machine).** Step 1 has
 a tool: `LAMINA_TIMELINE=1` partitions each token's stream time into stages.
 Acceptance milestone 2 is reached on that machine: with CPU experts as the
-fast-mode default, the matched nine-run median is 29.76 tokens/s against 28.56
-for llama.cpp b11474, ahead in every prompt class and with identical output
-across repeats. Milestone 3 (40 tokens/s) is not reached. The remaining
-per-token costs there are the dense mixer (about 13 ms), the RAM-bandwidth-bound
-CPU expert batch and GPU expert kernels well below the card's bandwidth.
+fast-mode default and a coalesced DeltaNet step, the matched nine-run median is
+31.24 tokens/s against 28.56 for llama.cpp b11474, ahead in every prompt class
+and with identical output across repeats. Milestone 3 (40 tokens/s) is not
+reached. The largest remaining cost is the RAM-bandwidth-bound CPU expert batch
+(it saturates near 16 GB/s of expert reads), then the DeltaNet projections,
+GPU experts, attention layers and the DeltaNet output path; see
+[the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md).
 Milestone 4 holds: 128K retrieval passes, with prefill unchanged and later
 decode 6.02 -> 9.15 tokens/s. The RTX 4060 numbers below predate this work.
 See [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md).

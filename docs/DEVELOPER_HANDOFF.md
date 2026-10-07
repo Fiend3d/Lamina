@@ -7,11 +7,13 @@ gaps, profiling requirements, scheduling work and acceptance gates.
 
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched
-comparison measured **29.76 tokens/s for Lamina versus 28.56 for CUDA
+comparison measured **31.24 tokens/s for Lamina versus 28.56 for CUDA
 llama.cpp b11474**, ahead in prose, code and math. The **40 tokens/s target is
 not met**; prefill is still slower than llama.cpp; no Strata parity is claimed.
 Exact commands, the stage timeline that drove the work, fixed bugs and limits
-are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md).
+are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
+and [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md),
+which also lists the remaining per-token costs and a measured dead end.
 The RTX 4060 machine of the earlier records (llama.cpp 25.47 versus Lamina
 16.40 before this work, see [that comparison](../bench/results/2026-10-07-llama-cuda/README.md)
 and [validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md)) has not
@@ -34,8 +36,16 @@ kernels).
 Profile a change with `LAMINA_TIMELINE=1` before choosing the next one. It
 prints per-token averages of stream-ordered stage times (dense, router,
 host_gap, moe_setup, resident, miss_wait, combine, tail and others), which
-partition the stream's wall time, idle gaps included. Its markers cost about
-2 ms per token; never use timeline runs as headline numbers.
+partition the stream's wall time, idle gaps included. DeltaNet layers are split
+into `gdn_project`, `gdn_small`, `gdn_step` and `gdn_out`, attention layers are
+charged to `attention`, and the LM head to `head_kernel` and
+`head_copy_and_host`. With the timeline on, DeltaNet layers run eagerly rather
+than as captured graphs. Its markers cost about 2 ms per token; never use
+timeline runs as headline numbers.
+
+`native_gdn_step` (decode) uses `step_tiled`, which stages each head's state
+through shared memory with coalesced 128-byte rows. Its arithmetic is bitwise
+identical to `step<false>`, which the prefill path still uses.
 
 ## Active implementation
 

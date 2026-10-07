@@ -182,7 +182,8 @@ public:
     // stage, so the stages partition the stream's wall time, idle gaps included.
     enum TimelineStage {
         kTlDense, kTlRouter, kTlHostGap, kTlMoeSetup, kTlPrefetchWait, kTlResident,
-        kTlMissWait, kTlMissExperts, kTlPrefetchIssue, kTlCombine, kTlTail, kTlCount
+        kTlMissWait, kTlMissExperts, kTlPrefetchIssue, kTlCombine, kTlTail, kTlAttention,
+        kTlGdnProject, kTlGdnSmall, kTlGdnStep, kTlGdnOut, kTlHeadKernel, kTlHeadCopy, kTlCount
     };
     void timeline_mark(TimelineStage stage);
     void timeline_token();  // closes the previous token and accumulates it
