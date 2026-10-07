@@ -48,22 +48,32 @@ struct ScopedTimer {
     }
 };
 
-bool env_enabled(const char* name) {
+char env_first_char(const char* name) {
 #ifdef _MSC_VER
     char* raw_setting = nullptr;
     size_t length = 0;
-    if (_dupenv_s(&raw_setting, &length, name)) return false;
+    if (_dupenv_s(&raw_setting, &length, name)) return 0;
     const std::unique_ptr<char, decltype(&std::free)> storage(raw_setting, &std::free);
-    return storage && storage.get()[0] == '1';
+    return storage ? storage.get()[0] : 0;
 #else
     const char* setting = std::getenv(name);
-    return setting && setting[0] == '1';
+    return setting ? setting[0] : 0;
 #endif
 }
+
+bool env_enabled(const char* name) { return env_first_char(name) == '1'; }
 
 bool profile_enabled() {
     static const bool enabled = env_enabled("LAMINA_PROFILE");
     return enabled;
+}
+
+// Next-layer expert prefetch is decided in CudaProjection (default: on when
+// model RAM is registered). Only an explicit LAMINA_PREFETCH=0 skips building
+// the next layer's descriptor here.
+bool prefetch_requested() {
+    static const bool requested = env_first_char("LAMINA_PREFETCH") != '0';
+    return requested;
 }
 
 float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
@@ -610,9 +620,17 @@ std::vector<float> Inference::step_hidden_device(const std::vector<float>& embed
         moe_weights(layer, routed, shared);
         const strata::TensorInfo& router = tensor(layer_name(layer, "ffn_gate_inp.weight"));
         const strata::TensorInfo& shared_gate = tensor(layer_name(layer, "ffn_gate_inp_shexp.weight"));
+        MoePrefetch next;
+        if (prefetch_requested() && layer + 1 < layers_) {
+            MoeWeights next_shared;
+            moe_weights(layer + 1, next.routed, next_shared);
+            next.router = &tensor(layer_name(layer + 1, "ffn_gate_inp.weight"));
+            next.router_data = file_.tensor_data(*next.router);
+        }
         const auto moe_start = std::chrono::steady_clock::now();
         cuda_->moe_into_mix(router, file_.tensor_data(router), shared_gate,
-                            file_.tensor_data(shared_gate), routed, shared);
+                            file_.tensor_data(shared_gate), routed, shared,
+                            next.router ? &next : nullptr);
         if (profile_enabled())
             g_device_moe_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - moe_start).count();
@@ -796,6 +814,12 @@ std::vector<float> Inference::forward_hidden(std::vector<float> x) {
                          static_cast<unsigned long long>(stats.graph_hits),
                          static_cast<unsigned long long>(stats.graph_misses),
                          static_cast<unsigned long long>(stats.cpu_experts));
+            if (stats.prefetch_predicted)
+                std::fprintf(stderr, "  prefetch predicted=%llu useful=%llu accuracy=%.3f experts_uploaded=%llu\n",
+                             static_cast<unsigned long long>(stats.prefetch_predicted),
+                             static_cast<unsigned long long>(stats.prefetch_useful),
+                             double(stats.prefetch_useful) / double(stats.prefetch_predicted),
+                             static_cast<unsigned long long>(stats.prefetch_uploaded));
         }
     }
     return x;

@@ -1,0 +1,22 @@
+{
+  "median_later_tokens_per_second": 17.343280051385705,
+  "target": 40,
+  "acceptance_complete": true,
+  "target_met": false,
+  "prompt_medians": {
+    "prose": 20.372445696894182,
+    "code": 17.343280051385705,
+    "math": 16.886893053861638
+  },
+  "reports": [
+    "prose-1.json",
+    "prose-2.json",
+    "prose-3.json",
+    "code-1.json",
+    "code-2.json",
+    "code-3.json",
+    "math-1.json",
+    "math-2.json",
+    "math-3.json"
+  ]
+}

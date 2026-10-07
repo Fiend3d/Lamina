@@ -22,6 +22,14 @@ environment and toolchain assets belong in `../Lamina-data`.
 The inherited Qwen3.8 graph in `src/core/` and `src/prefill/` is source material,
 not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
 
+Decode now prefetches the next layer's predicted experts (`LAMINA_PREFETCH`,
+default on only with `LAMINA_HOST_REGISTER=1`). On an RTX 3050 it raised the
+nine-run median from 15.29 to 17.34 tokens/s with identical outputs; see
+[prefetch measurements](../bench/results/2026-10-07-rtx3050-prefetch/README.md).
+Build for a non-Ada GPU with `python -m tools.build_windows --cuda-arch 86`
+(default 89 is the RTX 4060; a mismatched architecture silently gives wrong
+kernels).
+
 ## Active implementation
 
 - `tools/lamina_model.py`, `include/lamina/model/qwen36.hpp`: pinned checksum,
@@ -42,7 +50,10 @@ not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
   Decode graphs read updated device pointer tables; graph keys do not depend
   on selected expert weight addresses. Never free/reuse a weight while a
   queued kernel can read it. A separate copy stream uses retirement/readiness events; resident experts
-  execute while misses upload. Optional `LAMINA_HOST_REGISTER=1` registers the
+  execute while misses upload. Next-layer prefetch applies layer L+1's router to
+  layer L's normalized input, copies the predicted missing experts behind layer
+  L's own misses, and orders the compute stream after a `prefetch_ready` event
+  (`drain_prefetch`) before any reader touches them. Optional `LAMINA_HOST_REGISTER=1` registers the
   mapped model for direct RAM DMA (21.1 GiB pinned on this machine; startup cost).
   The cache target is at most 75% of free memory, capped at 5000 MiB on <=8 GiB GPUs; whole-expert blocks and bounded frequency-aware
   eviction are opt-in via `LAMINA_ATOMIC_EXPERT_CACHE=1` and

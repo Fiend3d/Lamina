@@ -21,6 +21,14 @@ struct MoeWeights {
     const uint8_t* down_data = nullptr;
 };
 
+// The next layer's router and routed experts. The decode chain passes it so
+// the expert uploads for that layer can start before its router has run.
+struct MoePrefetch {
+    const strata::TensorInfo* router = nullptr;
+    const uint8_t* router_data = nullptr;
+    MoeWeights routed;
+};
+
 // The quantized and F32 weights of one Qwen3.6 DeltaNet layer, each with the
 // base pointer of its mapped GGUF payload.
 struct GdnWeights {
@@ -148,7 +156,8 @@ public:
     void delta_net_into_mix(int layer, const GdnWeights& w);
     void moe_into_mix(const strata::TensorInfo& router, const uint8_t* router_data,
                       const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
-                      const MoeWeights& routed, const MoeWeights& shared);
+                      const MoeWeights& routed, const MoeWeights& shared,
+                      const MoePrefetch* next = nullptr);
     void attention_into_mix(int layer, const AttnWeights& w, int position, float rope_base,
                              const std::array<int, 3>& rope_positions);
     bool supports_attention(const AttnWeights& w) const;
@@ -179,6 +188,9 @@ public:
         size_t memory_limit = 0;
         uint64_t graph_hits = 0, graph_misses = 0;
         uint64_t cpu_experts = 0;
+        // Next-layer prefetch: experts uploaded early, experts predicted, and
+        // how many predictions the next router then actually selected.
+        uint64_t prefetch_uploaded = 0, prefetch_predicted = 0, prefetch_useful = 0;
     };
     Stats stats() const;
 

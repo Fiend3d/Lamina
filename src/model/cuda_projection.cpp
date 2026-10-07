@@ -120,6 +120,20 @@ struct CudaProjection::Impl {
         }
         timings.clear();
     }
+    // Next-layer expert prefetch. Entries inserted by a prefetch are visible in
+    // `weights` while their copy may still be in flight, so every reader must
+    // first order `stream` after prefetch_ready (drain_prefetch).
+    cudaEvent_t prefetch_ready = nullptr;
+    bool prefetch_pending = false, has_prefetch = false;
+    std::vector<int> prefetch_pred, prefetch_expected;
+    MoeWeights prefetch_target;
+    float* pred_scales = nullptr; size_t pred_scales_cap = 0;
+    uint64_t stat_pf_uploaded = 0, stat_pf_predicted = 0, stat_pf_useful = 0;
+    void drain_prefetch() {
+        if (!prefetch_pending) return;
+        check(cudaStreamWaitEvent(stream, prefetch_ready, 0), "wait prefetched experts");
+        prefetch_pending = false;
+    }
     uint64_t stat_hits = 0;
     uint64_t stat_misses = 0;
     uint64_t stat_cpu_experts = 0;
@@ -324,6 +338,8 @@ struct CudaProjection::Impl {
         if (weight_copy) cudaStreamDestroy(weight_copy);
         if (expert_epoch) cudaEventDestroy(expert_epoch);
         if (expert_ready) cudaEventDestroy(expert_ready);
+        if (prefetch_ready) cudaEventDestroy(prefetch_ready);
+        cudaFree(pred_scales);
         for (auto& [name, entry] : weights)
             if (!entry.block || entry.device == entry.block->base) cudaFree(entry.device);
         for (auto& [bytes, blocks] : free_blocks)
@@ -539,6 +555,7 @@ struct CudaProjection::Impl {
             if (tensors[i] == &tensor) role = i;
         }
         if (auto entry = weights.find(keys[role]); entry != weights.end()) {
+            if (!expert_pipeline_running) drain_prefetch();
             ++stat_hits; entry->second.used = ++clock; ++entry->second.block->hits;
             lru.splice(lru.end(), lru, entry->second.lru);
             if (lease_active) for (const auto& key : keys) leases.insert(weights.at(key).device);
@@ -708,6 +725,7 @@ struct CudaProjection::Impl {
         const std::string key = tensor.name + "#type=" + std::to_string(tensor.type) +
                                 "#expert=" + std::to_string(expert);
         if (auto found = weights.find(key); found != weights.end()) {
+            if (expert >= 0 && !expert_pipeline_running) drain_prefetch();
             found->second.used = ++clock; ++found->second.hits;
             if (!found->second.pinned) {
                 if (expert < 0) {
@@ -1433,6 +1451,9 @@ void CudaProjection::moe_pipeline(const float* x, float* output, const MoeWeight
         }
         impl_->end_time(timed, impl_->stream);
     };
+    // Experts uploaded by the previous layer's prefetch count as resident above,
+    // so the resident phase must not start before their copies finish.
+    impl_->drain_prefetch();
     fill(0); execute(0);
     auto status = cudaStreamQuery(impl_->stream);
     if (status != cudaSuccess && status != cudaErrorNotReady) check(status, "submit resident experts");
@@ -1452,6 +1473,30 @@ void CudaProjection::moe_pipeline(const float* x, float* output, const MoeWeight
             check(cudaStreamWaitEvent(impl_->stream, impl_->expert_ready, 0), "wait missing experts");
         }
         execute(1);
+    }
+    if (impl_->has_prefetch && impl_->weight_copy) {
+        // Queue the predicted next-layer experts behind this layer's own misses.
+        // Leases are still active, so nothing this layer reads can be evicted.
+        const auto& next = impl_->prefetch_target;
+        impl_->expert_layout(next);
+        const auto hits_before = impl_->stat_hits, misses_before = impl_->stat_misses;
+        int issued = 0;
+        for (const int e : impl_->prefetch_pred) {
+            if (e < 0 || e >= int(next.gate->shape.at(2))) continue;
+            const bool present = impl_->resident(*next.gate, e) && impl_->resident(*next.up, e) && impl_->resident(*next.down, e);
+            impl_->projection_weight(*next.gate, next.gate_data, e);
+            impl_->projection_weight(*next.up, next.up_data, e);
+            impl_->projection_weight(*next.down, next.down_data, e);
+            if (!present) ++issued;
+        }
+        impl_->stat_hits = hits_before; impl_->stat_misses = misses_before;  // prefetch must not skew the hit rate
+        if (issued) {
+            if (!impl_->prefetch_ready)
+                check(cudaEventCreateWithFlags(&impl_->prefetch_ready, cudaEventDisableTiming), "create prefetch event");
+            check(cudaEventRecord(impl_->prefetch_ready, impl_->weight_copy), "record prefetch ready");
+            impl_->prefetch_pending = true;
+            impl_->stat_pf_uploaded += issued;
+        }
     }
     cuda::moe_combine(impl_->down_dev, impl_->scales_dev, slots, hidden, output, impl_->stream);
     check(cudaGetLastError(), "launch expert pipeline");
@@ -1964,7 +2009,7 @@ void CudaProjection::delta_layer_graph(int layer, const GdnWeights& w,
 void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_t* router_data,
                                   const strata::TensorInfo& shared_gate,
                                   const uint8_t* shared_gate_data, const MoeWeights& routed,
-                                  const MoeWeights& shared) {
+                                  const MoeWeights& shared, const MoePrefetch* next) {
     if (!supports_moe(routed, shared)) throw std::invalid_argument("unsupported CUDA MoE block");
     impl_->expert_layout(routed);
     const int n_in = static_cast<int>(routed.gate->shape[0]);
@@ -1983,6 +2028,25 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
                       impl_->d_scales_map + top_k, impl_->stream);
     cuda::router_topk(impl_->r_logits, experts_count, top_k, impl_->d_ids_map, impl_->d_scales_map,
                       impl_->stream);
+    // Predict the next layer's experts by applying its router to this layer's
+    // normalized input. The hidden state changes by one layer's residual, so
+    // the prediction is approximate; its ids ride in the second half of the
+    // mapped id buffer and are published by the same doorbell.
+    // Default on only with registered model RAM, where an upload is one async
+    // DMA call. Through the staging pool each upload blocks the host on a worker
+    // copy, which measured 20% slower; LAMINA_PREFETCH=1/0 overrides.
+    const char* mode = std::getenv("LAMINA_PREFETCH");
+    const bool allowed = mode && mode[0] ? mode[0] == '1' : impl_->registered_weights != nullptr;
+    const bool predict = allowed && next && next->router && !impl_->cpu_misses;
+    if (predict) {
+        void* next_router = impl_->weight(*next->router, next->router_data, -1,
+                                          static_cast<size_t>(n_in) * experts_count * sizeof(float));
+        impl_->ensure(impl_->pred_scales, impl_->pred_scales_cap, static_cast<size_t>(top_k));
+        cuda::gemv_f32(static_cast<const float*>(next_router), impl_->norm_dev, impl_->r_logits,
+                       n_in, experts_count, impl_->stream);
+        cuda::router_topk(impl_->r_logits, experts_count, top_k, impl_->d_ids_map + top_k,
+                          impl_->pred_scales, impl_->stream);
+    }
     const unsigned seq = ++impl_->route_seq;
     cuda::doorbell_signal(impl_->d_flag_map, static_cast<int>(seq), impl_->stream);
     volatile const int* flag = impl_->h_flag_map;
@@ -2003,8 +2067,22 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
     std::memcpy(ids.data(), impl_->h_ids_map, ids.size() * sizeof(int));
     std::memcpy(weights.data(), impl_->h_scales_map, weights.size() * sizeof(float));
     std::memcpy(&shared_weight, impl_->h_scales_map + top_k, sizeof(float));
+    // Score the previous layer's guess against what this router really chose.
+    for (const int guess : impl_->prefetch_expected) {
+        impl_->stat_pf_predicted++;
+        if (std::find(ids.begin(), ids.end(), guess) != ids.end()) impl_->stat_pf_useful++;
+    }
+    impl_->prefetch_pred.clear();
+    impl_->has_prefetch = false;
+    if (predict) {
+        impl_->prefetch_pred.assign(impl_->h_ids_map + top_k, impl_->h_ids_map + 2 * top_k);
+        impl_->prefetch_target = next->routed;
+        impl_->has_prefetch = true;
+    }
+    impl_->prefetch_expected = impl_->prefetch_pred;
     impl_->ensure(impl_->mix_dev, impl_->mix_cap, static_cast<size_t>(n_in));
     moe_core(impl_->norm_dev, impl_->mix_dev, routed, ids, weights, shared, shared_weight);
+    impl_->has_prefetch = false;
     if (device_profile()) {
         const auto core_end = std::chrono::steady_clock::now();
         std::fprintf(stderr, "devmoe route_ms=%.3f core_ms=%.3f\n",
@@ -2275,6 +2353,9 @@ CudaProjection::Stats CudaProjection::stats() const {
     stats.graph_hits = impl_->moe_graph_hits;
     stats.graph_misses = impl_->moe_graph_misses;
     stats.cpu_experts = impl_->stat_cpu_experts;
+    stats.prefetch_uploaded = impl_->stat_pf_uploaded;
+    stats.prefetch_predicted = impl_->stat_pf_predicted;
+    stats.prefetch_useful = impl_->stat_pf_useful;
     return stats;
 }
 
@@ -2360,7 +2441,7 @@ void CudaProjection::delta_layer_graph(int, const GdnWeights&, const strata::Ten
 }
 void CudaProjection::moe_into_mix(const strata::TensorInfo&, const uint8_t*,
                                   const strata::TensorInfo&, const uint8_t*, const MoeWeights&,
-                                  const MoeWeights&) {
+                                  const MoeWeights&, const MoePrefetch*) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
 void CudaProjection::attention_into_mix(int, const AttnWeights&, int, float, const std::array<int, 3>&) {
