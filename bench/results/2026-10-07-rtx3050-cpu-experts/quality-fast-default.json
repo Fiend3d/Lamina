@@ -1,0 +1,38 @@
+{
+  "engine_sha256": "1907d1b01c4e42261c6fdd2bfcfb44849c966dddc51b72a97e1a52c6257528b5",
+  "fixture_sha256": "2b36023e2cab590a2b7f3c56a945bb33a2645f9dd8874bb71a26fcb123145641",
+  "token_ids_sha256": "6dce037e76a72a7a6d849780d92e2a2cdefb2f3a1e41c0b15395977577f74b68",
+  "pinned_model_sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+  "scored_tokens": 1025,
+  "environment": {},
+  "runs": [
+    {
+      "command": [
+        "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-quality-check.exe",
+        "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "D:\\projects\\lamina\\Lamina-data\\quality-heldout-tokens.txt",
+        "write",
+        "D:\\projects\\lamina\\Lamina-data\\quality-baseline-logits.bin"
+      ],
+      "returncode": 0,
+      "stdout": "scored=128\nscored=256\nscored=384\nscored=512\nscored=640\nscored=768\nscored=896\nscored=1024\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-quality-check.exe",
+        "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "D:\\projects\\lamina\\Lamina-data\\quality-heldout-tokens.txt",
+        "compare",
+        "D:\\projects\\lamina\\Lamina-data\\quality-baseline-logits.bin"
+      ],
+      "returncode": 0,
+      "stdout": "scored=128\nscored=256\nscored=384\nscored=512\nscored=640\nscored=768\nscored=896\nscored=1024\ntokens=1025 mean_kl_nats=0.00252725509 perplexity_ratio=0.997558516 argmax_agreement=0.981463 baseline_nll=1.5786833 fast_nll=1.57623883\n",
+      "stderr": ""
+    }
+  ],
+  "mean_kl_nats": 0.00252725509,
+  "perplexity_ratio": 0.997558516,
+  "argmax_agreement": 0.981463,
+  "passed": true
+}

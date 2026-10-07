@@ -16,6 +16,18 @@
 
 namespace lamina::model {
 namespace {
+constexpr int kGateRows = 32;   // rows per gate/up work item
+constexpr int kDownRows = 128;  // rows per down work item
+constexpr int kSpins = 1 << 16; // roughly a millisecond of polling before sleeping
+
+void pause() {
+#if defined(_M_X64) || defined(__x86_64__)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+
 bool avx2_available() {
 #if defined(_MSC_VER) && defined(_M_X64)
     int regs[4]; __cpuid(regs, 1);
@@ -43,38 +55,45 @@ double avx_dot(const float* a, const float* b, int n) {
 #endif
 #ifdef LAMINA_CPU_QUANT
 // Same ggml-cpu traits and quantizers as Strata's native expert adapter.
-std::vector<float> project_quantized(const strata::TensorInfo& t, const uint8_t* data,
-                                      int expert, const std::vector<float>& x,
-                                      std::vector<uint8_t>& quantized, bool quantize = true) {
-    const auto type = static_cast<ggml_type>(t.type);
-    const auto* wt = ggml_get_type_traits_cpu(type);
+void quantize_for(const strata::TensorInfo& t, const float* x, std::vector<uint8_t>& quantized) {
+    const auto* wt = ggml_get_type_traits_cpu(static_cast<ggml_type>(t.type));
     const auto* at = ggml_get_type_traits_cpu(wt->vec_dot_type);
     if (!wt->vec_dot || !at->from_float) throw std::runtime_error("CPU quantized expert type unsupported");
+    const int width = int(t.shape[0]);
+    quantized.resize(ggml_row_size(wt->vec_dot_type, width));
+    at->from_float(x, quantized.data(), width);
+}
+
+void project_quantized_rows(const strata::TensorInfo& t, const uint8_t* data, int expert,
+                            const uint8_t* quantized, float* out, int begin, int end) {
+    const auto type = static_cast<ggml_type>(t.type);
+    const auto* wt = ggml_get_type_traits_cpu(type);
     const int width = int(t.shape[0]), rows = int(t.shape[1]);
-    if (x.size() != size_t(width)) throw std::invalid_argument("CPU quantized expert width");
     const size_t row_bytes = ggml_row_size(type, width);
-    if (quantize) {
-        quantized.resize(ggml_row_size(wt->vec_dot_type, width));
-        at->from_float(x.data(), quantized.data(), width);
-    }
     const uint8_t* source = data + size_t(expert) * rows * row_bytes;
-    std::vector<float> output(rows);
-    for (int row = 0; row < rows; ++row)
-        wt->vec_dot(width, &output[row], 0, source + size_t(row) * row_bytes, 0, quantized.data(), 0, 1);
-    return output;
+    for (int row = begin; row < end; ++row)
+        wt->vec_dot(width, &out[row], 0, source + size_t(row) * row_bytes, 0, quantized, 0, 1);
+}
+
+bool same_dot_type(const strata::TensorInfo& a, const strata::TensorInfo& b) {
+    return ggml_get_type_traits_cpu(static_cast<ggml_type>(a.type))->vec_dot_type ==
+           ggml_get_type_traits_cpu(static_cast<ggml_type>(b.type))->vec_dot_type;
 }
 #endif
-std::vector<float> project(const strata::TensorInfo& t, const uint8_t* data,
-                           int expert, const std::vector<float>& x) {
+
+// Dequantizes rows [begin, end) of one expert matrix and dots them with x in FP64.
+void project_rows(const strata::TensorInfo& t, const uint8_t* data, int expert, const float* x,
+                  float* out, int begin, int end) {
     int block = 0, bytes = 0;
-    if (!strata::block_geometry(t.type, block, bytes) || x.size() != t.shape[0])
+    if (!strata::block_geometry(t.type, block, bytes))
         throw std::invalid_argument("CPU expert projection shape or type");
     const int width = int(t.shape[0]), rows = int(t.shape[1]);
     const size_t row_bytes = size_t(width / block) * bytes;
-    const uint8_t* source = data + size_t(expert) * rows * row_bytes;
-    std::vector<float> decoded(width), out(rows);
+    const uint8_t* source = data + (size_t(expert) * rows + size_t(begin)) * row_bytes;
+    thread_local std::vector<float> decoded;
+    decoded.resize(size_t(width));
     static const bool avx = avx2_available();
-    for (int row = 0; row < rows; ++row) {
+    for (int row = begin; row < end; ++row) {
         for (int i = 0; i < width; i += block, source += bytes) {
             switch (t.type) {
             case 8: strata::dequantize_q8_0(source, decoded.data()+i); break;
@@ -86,15 +105,15 @@ std::vector<float> project(const strata::TensorInfo& t, const uint8_t* data,
         }
         double sum = 0;
 #if defined(_M_X64) || defined(__x86_64__)
-        if (avx && width % 8 == 0) sum = avx_dot(decoded.data(), x.data(), width);
+        if (avx && width % 8 == 0) sum = avx_dot(decoded.data(), x, width);
         else
 #endif
         for (int i = 0; i < width; ++i) sum += double(decoded[i]) * x[i];
         out[row] = float(sum);
     }
-    return out;
 }
 }
+
 CpuExperts::CpuExperts(unsigned workers, bool fast) : fast_(fast) {
 #ifdef LAMINA_CPU_QUANT
     if (fast) {
@@ -106,48 +125,163 @@ CpuExperts::CpuExperts(unsigned workers, bool fast) : fast_(fast) {
     if (fast) throw std::runtime_error("quantized CPU experts were not built");
 #endif
     try {
-        for (unsigned i = 0; i < std::max(1u, workers); ++i) workers_.emplace_back([this] {
-            while (true) {
-                std::function<void()> job;
-                {
-                    std::unique_lock lock(mutex_);
-                    ready_.wait(lock, [this] { return stopping_ || !jobs_.empty(); });
-                    if (stopping_ && jobs_.empty()) return;
-                    job = std::move(jobs_.front()); jobs_.pop();
-                }
-                job();
-            }
-        });
+        for (unsigned i = 0; i < std::max(1u, workers); ++i) workers_.emplace_back([this] { worker_loop(); });
     } catch (...) {
-        { std::lock_guard lock(mutex_); stopping_ = true; }
-        ready_.notify_all(); for (auto& worker : workers_) worker.join(); throw;
+        stopping_.store(true);
+        { std::lock_guard lock(mutex_); }
+        wake_.notify_all(); for (auto& worker : workers_) worker.join(); throw;
     }
 }
+
 CpuExperts::~CpuExperts() {
-    { std::lock_guard lock(mutex_); stopping_ = true; }
-    ready_.notify_all(); for (auto& worker : workers_) worker.join();
+    stopping_.store(true, std::memory_order_release);
+    { std::lock_guard lock(mutex_); }
+    wake_.notify_all();
+    for (auto& worker : workers_) worker.join();
 }
-std::future<std::vector<float>> CpuExperts::submit(MoeWeights weights, int expert,
-                                                 std::shared_ptr<const std::vector<float>> input) {
-    auto task = std::make_shared<std::packaged_task<std::vector<float>()>>([weights, expert, input, fast = fast_] {
-#ifdef LAMINA_CPU_QUANT
-        if (fast) {
-            std::vector<uint8_t> quantized;
-            auto gate = project_quantized(*weights.gate, weights.gate_data, expert, *input, quantized);
-            auto up = project_quantized(*weights.up, weights.up_data, expert, *input, quantized, false);
-            for (size_t i = 0; i < gate.size(); ++i) gate[i] = (gate[i] / (1.f + std::exp(-gate[i]))) * up[i];
-            return project_quantized(*weights.down, weights.down_data, expert, gate, quantized);
+
+void CpuExperts::worker_loop() {
+    uint64_t seen = 0;
+    while (true) {
+        int spins = 0;
+        uint64_t current;
+        while ((current = generation_.load(std::memory_order_acquire)) == seen) {
+            if (stopping_.load(std::memory_order_acquire)) return;
+            if (++spins < kSpins) { pause(); continue; }
+            std::unique_lock lock(mutex_);
+            wake_.wait(lock, [&] { return stopping_.load() || generation_.load() != seen; });
+            spins = 0;
         }
-#else
-        (void)fast;
+        seen = current;
+        work();
+    }
+}
+
+void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids, const float* input,
+                       const std::vector<float*>& outputs) {
+    if (ids.empty() || ids.size() != outputs.size() || !input)
+        throw std::invalid_argument("CPU expert batch");
+    const auto& g = *weights.gate;
+    const auto& u = *weights.up;
+    const auto& d = *weights.down;
+    if (g.shape.size() != 3 || u.shape != g.shape || d.shape.size() != 3 || d.shape[0] != g.shape[1])
+        throw std::invalid_argument("CPU expert projection shape or type");
+    const int ff = int(g.shape[1]), hidden = int(d.shape[1]);
+    for (const int id : ids)
+        if (id < 0 || id >= int(g.shape[2])) throw std::out_of_range("CPU expert index");
+    // wait() left next_ at kIdle, so no worker can claim an item while the
+    // batch is rebuilt.
+    weights_ = weights; ids_ = ids; input_ = input; outputs_ = outputs;
+#ifdef LAMINA_CPU_QUANT
+    if (fast_) {
+        quantize_for(g, input, input_q_);
+        if (!same_dot_type(g, u)) quantize_for(u, input, input_q_up_);
+        else input_q_up_.clear();
+    }
 #endif
-        auto gate = project(*weights.gate, weights.gate_data, expert, *input);
-        auto up = project(*weights.up, weights.up_data, expert, *input);
-        for (size_t i = 0; i < gate.size(); ++i) gate[i] = (gate[i] / (1.0f + std::exp(-gate[i]))) * up[i];
-        return project(*weights.down, weights.down_data, expert, gate);
-    });
-    auto result = task->get_future();
-    { std::lock_guard lock(mutex_); jobs_.emplace([task] { (*task)(); }); }
-    ready_.notify_one(); return result;
+    while (experts_.size() < ids.size()) experts_.push_back(std::make_unique<ExpertState>());
+    items_.clear();
+    for (int e = 0; e < int(ids.size()); ++e) {
+        auto& state = *experts_[size_t(e)];
+        state.gate.resize(size_t(ff)); state.up.resize(size_t(ff)); state.swiglu.resize(size_t(ff));
+        state.pending.store(2 * ((ff + kGateRows - 1) / kGateRows), std::memory_order_relaxed);
+        state.ready.store(false, std::memory_order_relaxed);
+        for (int b = 0; b < ff; b += kGateRows) {
+            items_.push_back({e, 0, b, std::min(ff, b + kGateRows)});
+            items_.push_back({e, 1, b, std::min(ff, b + kGateRows)});
+        }
+    }
+    // Down items follow every gate/up item, so by the time one is claimed all
+    // of its expert's gate/up items have already been claimed by running threads.
+    for (int e = 0; e < int(ids.size()); ++e)
+        for (int b = 0; b < hidden; b += kDownRows) items_.push_back({e, 2, b, std::min(hidden, b + kDownRows)});
+    failed_.store(false, std::memory_order_relaxed);
+    error_ = nullptr;
+    finished_.store(0, std::memory_order_relaxed);
+    count_.store(items_.size(), std::memory_order_relaxed);
+    next_.store(0, std::memory_order_release);
+    generation_.fetch_add(1, std::memory_order_release);
+    { std::lock_guard lock(mutex_); }
+    wake_.notify_all();
+}
+
+void CpuExperts::wait() {
+    work();
+    const size_t total = count_.load(std::memory_order_acquire);
+    while (finished_.load(std::memory_order_acquire) < total) pause();
+    next_.store(kIdle, std::memory_order_release);
+    if (failed_.load(std::memory_order_acquire)) {
+        std::exception_ptr error;
+        { std::lock_guard lock(mutex_); error = error_; }
+        std::rethrow_exception(error);
+    }
+}
+
+void CpuExperts::work() {
+    while (true) {
+        const size_t i = next_.fetch_add(1, std::memory_order_acq_rel);
+        if (i >= count_.load(std::memory_order_acquire)) return;
+        const Item item = items_[i];
+        if (!failed_.load(std::memory_order_acquire)) {
+            try { run(item); }
+            catch (...) {
+                std::lock_guard lock(mutex_);
+                if (!error_) error_ = std::current_exception();
+                failed_.store(true, std::memory_order_release);
+            }
+        }
+        // Always count gate/up chunks down, even after an error, so no down
+        // item can wait forever on its expert.
+        if (item.matrix < 2 && experts_[size_t(item.expert)]->pending.fetch_sub(1, std::memory_order_acq_rel) == 1)
+            finish_gate_up(item.expert);
+        finished_.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+void CpuExperts::run(const Item& item) {
+    auto& state = *experts_[size_t(item.expert)];
+    const int expert = ids_[size_t(item.expert)];
+    if (item.matrix == 2) {
+        while (!state.ready.load(std::memory_order_acquire)) pause();
+        if (failed_.load(std::memory_order_acquire)) return;
+        float* out = outputs_[size_t(item.expert)];
+#ifdef LAMINA_CPU_QUANT
+        if (fast_) {
+            project_quantized_rows(*weights_.down, weights_.down_data, expert, state.swiglu_q.data(), out, item.begin, item.end);
+            return;
+        }
+#endif
+        project_rows(*weights_.down, weights_.down_data, expert, state.swiglu.data(), out, item.begin, item.end);
+        return;
+    }
+    const auto& tensor = item.matrix == 0 ? *weights_.gate : *weights_.up;
+    const uint8_t* data = item.matrix == 0 ? weights_.gate_data : weights_.up_data;
+    float* out = item.matrix == 0 ? state.gate.data() : state.up.data();
+#ifdef LAMINA_CPU_QUANT
+    if (fast_) {
+        const auto& quantized = item.matrix == 1 && !input_q_up_.empty() ? input_q_up_ : input_q_;
+        project_quantized_rows(tensor, data, expert, quantized.data(), out, item.begin, item.end);
+        return;
+    }
+#endif
+    project_rows(tensor, data, expert, input_, out, item.begin, item.end);
+}
+
+void CpuExperts::finish_gate_up(int expert) {
+    auto& state = *experts_[size_t(expert)];
+    if (!failed_.load(std::memory_order_acquire)) {
+        try {
+            for (size_t i = 0; i < state.gate.size(); ++i)
+                state.swiglu[i] = (state.gate[i] / (1.0f + std::exp(-state.gate[i]))) * state.up[i];
+#ifdef LAMINA_CPU_QUANT
+            if (fast_) quantize_for(*weights_.down, state.swiglu.data(), state.swiglu_q);
+#endif
+        } catch (...) {
+            std::lock_guard lock(mutex_);
+            if (!error_) error_ = std::current_exception();
+            failed_.store(true, std::memory_order_release);
+        }
+    }
+    state.ready.store(true, std::memory_order_release);
 }
 }

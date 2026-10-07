@@ -177,6 +177,16 @@ public:
     void mark_begin();
     double mark_end_ms();
 
+    // Stage timeline (LAMINA_TIMELINE=1, diagnostics only). Each mark records a
+    // stream-ordered event; the time until the next mark is charged to the
+    // stage, so the stages partition the stream's wall time, idle gaps included.
+    enum TimelineStage {
+        kTlDense, kTlRouter, kTlHostGap, kTlMoeSetup, kTlPrefetchWait, kTlResident,
+        kTlMissWait, kTlMissExperts, kTlPrefetchIssue, kTlCombine, kTlTail, kTlCount
+    };
+    void timeline_mark(TimelineStage stage);
+    void timeline_token();  // closes the previous token and accumulates it
+
     struct Stats {
         uint64_t hits = 0;
         uint64_t misses = 0;
@@ -188,6 +198,7 @@ public:
         size_t memory_limit = 0;
         uint64_t graph_hits = 0, graph_misses = 0;
         uint64_t cpu_experts = 0;
+        uint64_t admitted = 0;  // expert tensors copied in the background by the CPU-miss policy
         // Next-layer prefetch: experts uploaded early, experts predicted, and
         // how many predictions the next router then actually selected.
         uint64_t prefetch_uploaded = 0, prefetch_predicted = 0, prefetch_useful = 0;

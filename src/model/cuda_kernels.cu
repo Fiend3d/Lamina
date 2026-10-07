@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <stdexcept>
 
 namespace lamina::model::cuda {
 namespace {
@@ -348,6 +349,10 @@ __global__ void attn_matrix_softmax_kernel(float* scores, int count, int columns
     reduce[lane] = maximum; __syncthreads();
     for (int d = 128; d; d >>= 1) { if (lane < d) reduce[lane] = fmaxf(reduce[lane], reduce[lane+d]); __syncthreads(); }
     maximum = reduce[0];
+    // Every thread must read the maximum before lane 0 reuses reduce[0] for the
+    // denominator below; without this barrier a late warp could read the
+    // denominator as the maximum (observed as run-to-run prefill drift on SM86).
+    __syncthreads();
     float denominator = 0.f;
     for (int k = lane; k < count; k += 256) {
         float weight = isfinite(maximum) ? expf(row[k] - maximum) : 0.f;
@@ -431,26 +436,53 @@ __global__ void attn_decode_kernel(const float* __restrict__ q, const float* __r
         (acc / run_sum) * (1.0f / (1.0f + expf(-gate)));
 }
 
+constexpr int kTopkMaxExperts = 1024, kTopkMaxK = 16;
+
+// The better of two (value, index) candidates: larger value, then lower index.
+// This reproduces the sequential scan's strict '>' (first maximum wins).
+__device__ __forceinline__ bool topk_better(float value, int index, float best, int best_index) {
+    return value > best || (value == best && index >= 0 && (best_index < 0 || index < best_index));
+}
+
+// One block (kThreads threads) per column. Each of the k selections is a
+// block-wide argmax over the not-yet-chosen logits. The softmax over the
+// chosen logits runs serially in thread 0, in the original order and on the
+// original values, so ids and weights are bit-identical to the former
+// single-thread kernel.
 __global__ void router_topk_kernel(const float* __restrict__ logits, int n, int k,
                                    int* __restrict__ ids, float* __restrict__ weights) {
-    if (threadIdx.x != 0) return;
+    __shared__ float values[kTopkMaxExperts];
+    __shared__ float warp_value[kThreads / 32];
+    __shared__ int warp_index[kThreads / 32];
+    __shared__ int chosen[kTopkMaxK];
     logits += size_t(blockIdx.x) * n;
     ids += size_t(blockIdx.x) * k;
     weights += size_t(blockIdx.x) * (k + 1);
-    bool used[256];
-    for (int i = 0; i < n; ++i) used[i] = false;
-    int chosen[16];
+    for (int i = threadIdx.x; i < n; i += blockDim.x) values[i] = logits[i];
+    __syncthreads();
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     for (int s = 0; s < k; ++s) {
-        int best = -1;
-        float best_value = -INFINITY;
-        for (int i = 0; i < n; ++i)
-            if (!used[i] && logits[i] > best_value) {
-                best_value = logits[i];
-                best = i;
-            }
-        used[best] = true;
-        chosen[s] = best;
+        float best = -INFINITY;
+        int index = -1;
+        for (int i = threadIdx.x; i < n; i += blockDim.x)
+            if (values[i] > best) { best = values[i]; index = i; }
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const float other = __shfl_down_sync(0xffffffffu, best, offset);
+            const int other_index = __shfl_down_sync(0xffffffffu, index, offset);
+            if (topk_better(other, other_index, best, index)) { best = other; index = other_index; }
+        }
+        if (lane == 0) { warp_value[warp] = best; warp_index[warp] = index; }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            best = -INFINITY; index = -1;
+            for (int w = 0; w < int(blockDim.x) / 32; ++w)
+                if (topk_better(warp_value[w], warp_index[w], best, index)) { best = warp_value[w]; index = warp_index[w]; }
+            chosen[s] = index;
+            values[index] = -INFINITY;  // a chosen expert never wins again
+        }
+        __syncthreads();
     }
+    if (threadIdx.x != 0) return;
     const float maximum = logits[chosen[0]];
     float sum = 0.0f;
     for (int s = 0; s < k; ++s) sum += expf(logits[chosen[s]] - maximum);
@@ -626,11 +658,13 @@ void attn_decode(const float* q, const float* k_cache, const float* v_cache, int
 }
 
 void router_topk(const float* logits, int n, int k, int* ids, float* weights, void* stream) {
-    router_topk_kernel<<<1, 1, 0, static_cast<cudaStream_t>(stream)>>>(logits, n, k, ids, weights);
+    if (n < 1 || n > kTopkMaxExperts || k < 1 || k > kTopkMaxK || k > n)
+        throw std::invalid_argument("router top-k shape");
+    router_topk_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(logits, n, k, ids, weights);
 }
 
 void router_topk_columns(const float* logits, int columns, int* ids, float* scales, void* stream) {
-    router_topk_kernel<<<columns, 1, 0, static_cast<cudaStream_t>(stream)>>>(logits, 256, 8, ids, scales);
+    router_topk_kernel<<<columns, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(logits, 256, 8, ids, scales);
 }
 
 void dot_sigmoid_columns(const float* weights, const float* x, int columns, float* scales, void* stream) {
@@ -726,6 +760,15 @@ void kv_store(const float* source, void* destination, int elements, bool half, v
 
 void dot_sigmoid(const float* a, const float* b, int n, float* out, void* stream) {
     dot_sigmoid_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(a, b, n, out);
+}
+
+__global__ void copy_f32_kernel(const float* __restrict__ source, float* __restrict__ destination, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) destination[i] = source[i];
+}
+
+void copy_f32(const float* source, float* destination, int n, void* stream) {
+    copy_f32_kernel<<<(n + kThreads - 1) / kThreads, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(source, destination, n);
 }
 
 void doorbell_signal(int* flag, int value, void* stream) {

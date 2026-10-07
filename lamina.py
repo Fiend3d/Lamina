@@ -51,8 +51,10 @@ def main():
     parser.add_argument("--kv-type", choices=("f32", "f16"), default="f32", help="KV storage precision; experimental lossy f16 requires CUDA")
     parser.add_argument("--kv-cache", choices=("auto", "host", "device"), default="auto")
     parser.add_argument("--vram-limit-mb", type=int, default=0)
-    parser.add_argument("--cpu-threads", type=int, default=8)
-    parser.add_argument("--expert-policy", choices=("stream", "cpu-miss"), default="stream")
+    parser.add_argument("--cpu-threads", type=int, default=None,
+                        help="CPU threads for the image encoder (default 8) and CPU experts (engine default: a quarter of hardware threads)")
+    parser.add_argument("--expert-policy", choices=("auto", "stream", "cpu-miss"), default="auto",
+                        help="auto: CPU experts for cache misses in fast mode, GPU streaming in f32")
     parser.add_argument("--prefill-chunk", type=int, default=2048)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0)
@@ -68,13 +70,15 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    if not 1 <= args.cpu_threads <= 64: parser.error("cpu-threads must be 1..64")
-    os.environ["LAMINA_CPU_THREADS"] = str(args.cpu_threads)
-    os.environ["LAMINA_EXPERT_POLICY"] = args.expert_policy
+    if args.cpu_threads is not None:
+        if not 1 <= args.cpu_threads <= 64: parser.error("cpu-threads must be 1..64")
+        os.environ["LAMINA_CPU_THREADS"] = str(args.cpu_threads)
+    if args.expert_policy != "auto":
+        os.environ["LAMINA_EXPERT_POLICY"] = args.expert_policy
     cuda = args.cuda if args.cuda is not None else "build-cuda" in str(args.engine)
     engine = Engine(args.model, args.tokenizer, args.engine, cuda, args.max_context, args.kv_cache,
                     args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image else None,
-                    args.max_image_tokens, args.cpu_threads, args.kv_type, args.compute_mode)
+                    args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode)
     atexit.register(engine.close)
     try:
         if args.command == "serve":

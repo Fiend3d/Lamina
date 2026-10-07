@@ -148,7 +148,7 @@ def main():
               "engine_sha256": hashlib.sha256(a.engine.read_bytes()).hexdigest(),
               "benchmark_arguments": vars(a) | {"engine": str(a.engine), "model": str(a.model), "prompt": None if a.prompt_file else a.prompt},
               "prompt_file_sha256": hashlib.sha256(a.prompt_file.read_bytes()).hexdigest() if a.prompt_file else None,
-              "environment": {key: os.environ[key] for key in ("LAMINA_CUDA_CACHE_MB", "LAMINA_CPU_THREADS", "LAMINA_EXPERT_POLICY", "LAMINA_PROFILE", "LAMINA_PINNED_UPLOADS", "LAMINA_MOE_GRAPHS", "LAMINA_PREFILL_BLAS", "LAMINA_HOST_REGISTER", "LAMINA_EXPERT_PIPELINE", "LAMINA_CACHE_POLICY", "LAMINA_ATOMIC_EXPERT_CACHE", "LAMINA_MATRIX_ATTN", "LAMINA_DEV_PROFILE", "LAMINA_PREFILL_PROGRESS", "LAMINA_Q8_PERSISTENT") if key in os.environ},
+              "environment": {key: os.environ[key] for key in ("LAMINA_CUDA_CACHE_MB", "LAMINA_CPU_THREADS", "LAMINA_EXPERT_POLICY", "LAMINA_PROFILE", "LAMINA_PINNED_UPLOADS", "LAMINA_MOE_GRAPHS", "LAMINA_PREFILL_BLAS", "LAMINA_HOST_REGISTER", "LAMINA_EXPERT_PIPELINE", "LAMINA_CACHE_POLICY", "LAMINA_ATOMIC_EXPERT_CACHE", "LAMINA_MATRIX_ATTN", "LAMINA_DEV_PROFILE", "LAMINA_PREFILL_PROGRESS", "LAMINA_Q8_PERSISTENT", "LAMINA_PREFETCH", "LAMINA_ADMIT_PER_LAYER", "LAMINA_ADMIT_MB", "LAMINA_TIMELINE") if key in os.environ},
               "first_token_seconds": times[0], "prompt_tokens": len(prompt),
               "startup_seconds": startup_seconds,
               "generated_tokens":len(outputs), "eos_positions":[i for i,t in enumerate(outputs) if t in (248044,248046)],

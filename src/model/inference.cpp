@@ -596,7 +596,9 @@ std::vector<float> Inference::step_hidden_device(const std::vector<float>& embed
     if (const auto* meta = file_.get("qwen35moe.rope.freq_base"))
         rope_base = static_cast<float>(meta->num());
     if (profile_enabled()) cuda_->mark_begin();
+    cuda_->timeline_token();
     for (int layer = 0; layer < layers_; ++layer) {
+        cuda_->timeline_mark(CudaProjection::kTlDense);
         const strata::TensorInfo& input_norm = tensor(layer_name(layer, "attn_norm.weight"));
         const strata::TensorInfo& post_norm = tensor(layer_name(layer, "post_attention_norm.weight"));
         const auto mixer_start = std::chrono::steady_clock::now();
@@ -636,6 +638,7 @@ std::vector<float> Inference::step_hidden_device(const std::vector<float>& embed
                 std::chrono::steady_clock::now() - moe_start).count();
         cuda_->add_hidden_mix();
     }
+    cuda_->timeline_mark(CudaProjection::kTlTail);
     if (profile_enabled())
         std::fprintf(stderr, "device gpu_chain_span_ms=%.3f\n", cuda_->mark_end_ms());
     return cuda_->hidden_download();
@@ -800,7 +803,7 @@ std::vector<float> Inference::forward_hidden(std::vector<float> x) {
             const auto stats = cuda_->stats();
             std::fprintf(stderr,
                          "  cache hits=%llu misses=%llu hit_rate=%.3f uploaded_mb=%.1f "
-                         "evicted_mb=%.1f resident_mb=%.1f limit_mb=%.1f allocated_mb=%.1f budget_mb=%.1f graph_hits=%llu graph_misses=%llu cpu_experts=%llu\n",
+                         "evicted_mb=%.1f resident_mb=%.1f limit_mb=%.1f allocated_mb=%.1f budget_mb=%.1f graph_hits=%llu graph_misses=%llu cpu_experts=%llu admitted=%llu\n",
                          static_cast<unsigned long long>(stats.hits),
                          static_cast<unsigned long long>(stats.misses),
                          (stats.hits + stats.misses)
@@ -813,7 +816,8 @@ std::vector<float> Inference::forward_hidden(std::vector<float> x) {
                          double(stats.memory_limit) / 1048576.0,
                          static_cast<unsigned long long>(stats.graph_hits),
                          static_cast<unsigned long long>(stats.graph_misses),
-                         static_cast<unsigned long long>(stats.cpu_experts));
+                         static_cast<unsigned long long>(stats.cpu_experts),
+                         static_cast<unsigned long long>(stats.admitted));
             if (stats.prefetch_predicted)
                 std::fprintf(stderr, "  prefetch predicted=%llu useful=%llu accuracy=%.3f experts_uploaded=%llu\n",
                              static_cast<unsigned long long>(stats.prefetch_predicted),

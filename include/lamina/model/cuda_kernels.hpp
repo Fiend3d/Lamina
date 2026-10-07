@@ -97,4 +97,8 @@ void dot_sigmoid(const float* a, const float* b, int n, float* out, void* stream
 // host spin loop sees the router's writes to mapped memory. One thread.
 void doorbell_signal(int* flag, int value, void* stream);
 
+// Element copy by the SMs. With a mapped host pointer on either side it moves
+// small data over PCIe without queueing behind copy-engine DMA.
+void copy_f32(const float* source, float* destination, int n, void* stream);
+
 }  // namespace lamina::model::cuda

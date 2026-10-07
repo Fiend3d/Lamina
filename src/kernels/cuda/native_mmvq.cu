@@ -1469,6 +1469,48 @@ __global__ void native_q8_table_kernel(Group table, int n_in) {
     }
 }
 
+// One warp per row, four rows per block, for rows whose whole dot product the
+// four-warp kernel above computes in its first warp (n_in / DIV * T <= 32; for
+// example the 512-wide Q4_K/Q5_K expert down projections). Each lane performs
+// the same loads and the same accumulation as that warp's lane, and the three
+// idle warps only contributed zeros, so non-zero results are bitwise equal.
+// It avoids scheduling 96 idle threads and two block barriers per row.
+template<typename F, typename Group>
+__global__ void native_q8_table_warp_kernel(Group table, int n_in) {
+    const int count=group_count(table),lane=int(threadIdx.x);
+    const int blocks=n_in/F::DIV;
+    for(int linear=int(blockIdx.x)*int(blockDim.y)+int(threadIdx.y);;linear+=int(gridDim.x)*int(blockDim.y)) {
+        int row=linear,matrix=0;
+        while(matrix<count && row>=table.n_outs[matrix])row-=table.n_outs[matrix++];
+        if(matrix==count)break;
+        if(!table.weights[matrix]) {
+            if(!lane && group_clear(table))table.outputs[matrix][row]=0.f;
+            continue;
+        }
+        const auto* w=static_cast<const typename F::Block*>(table.weights[matrix]);
+        const auto* x=reinterpret_cast<const Q81Block*>(table.inputs[matrix]);
+        float sum=0.f;
+        for(int bx=lane/F::T;bx<blocks;bx+=F::BPI) {
+            const int qs=F::kqs(lane);
+            const auto value=F::load(w+size_t(row)*blocks+bx,qs);
+            sum+=F::apply(value,x+bx*F::KBY,qs);
+        }
+        sum=warp_sum(sum);
+        if(!lane)table.outputs[matrix][row]=sum;
+    }
+}
+
+template<typename F, typename Group>
+void launch_q8_table(const Group& args, int rows, int n_in, cudaStream_t s) {
+    const dim3 threads(32, 4);
+    const char* persistent=std::getenv("LAMINA_Q8_PERSISTENT");
+    const bool bounded=persistent && persistent[0]=='1';
+    if ((n_in / F::DIV) * F::T <= 32) {
+        const int blocks=(rows+3)/4;
+        native_q8_table_warp_kernel<F><<<bounded ? std::min(blocks,128) : blocks, threads, 0, s>>>(args, n_in);
+    } else native_q8_table_kernel<F><<<bounded ? std::min(rows,128) : rows, threads, 0, s>>>(args, n_in);
+}
+
 template<typename F, int NCOLS>
 void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
     const auto* w = static_cast<const typename F::Block*>(weights);
@@ -1732,15 +1774,12 @@ void native_mmvq_f32_grouped(int ggml_type, const void* const* weights,
 }
 
 void native_mmvq_q8_grouped(int type, const NativeF32Grouped& args, int rows, int n_in, void* stream) {
-    const dim3 threads(32, 4);
-    const char* persistent=std::getenv("LAMINA_Q8_PERSISTENT");
-    const int grid=persistent && persistent[0]=='1' ? std::min(rows,128) : rows;
     auto s = static_cast<cudaStream_t>(stream);
     switch (type) {
-    case 8: native_q8_table_kernel<SmallTraits<Q80Block, 8>><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 12: native_q8_table_kernel<Q4KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 13: native_q8_table_kernel<Q5KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 14: native_q8_table_kernel<Q6KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
+    case 8: launch_q8_table<SmallTraits<Q80Block, 8>>(args, rows, n_in, s); break;
+    case 12: launch_q8_table<Q4KTraits>(args, rows, n_in, s); break;
+    case 13: launch_q8_table<Q5KTraits>(args, rows, n_in, s); break;
+    case 14: launch_q8_table<Q6KTraits>(args, rows, n_in, s); break;
     default: throw std::invalid_argument("unsupported Q8 grouped format");
     }
     launch_check();
@@ -1751,15 +1790,12 @@ void native_mmvq_q8_grouped_table(int type, const NativeF32Grouped* table,
     if (!table || !stream || count < 1 || count > 64 || rows < 1 || n_in <= 0 ||
         n_in % (type == 8 ? 32 : 256)) throw std::invalid_argument("invalid Q8 projection table");
     auto s = static_cast<cudaStream_t>(stream);
-    const dim3 threads(32, 4);
-    const char* persistent=std::getenv("LAMINA_Q8_PERSISTENT");
-    const int grid=persistent && persistent[0]=='1' ? std::min(rows,128) : rows;
     const NativeGroupedView args{table->weights, table->inputs, table->outputs, table->n_outs, count, &table->clear_missing, &table->count};
     switch (type) {
-    case 8: native_q8_table_kernel<SmallTraits<Q80Block, 8>><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 12: native_q8_table_kernel<Q4KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 13: native_q8_table_kernel<Q5KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
-    case 14: native_q8_table_kernel<Q6KTraits><<<grid, threads, 0, s>>>(args, n_in); break;
+    case 8: launch_q8_table<SmallTraits<Q80Block, 8>>(args, rows, n_in, s); break;
+    case 12: launch_q8_table<Q4KTraits>(args, rows, n_in, s); break;
+    case 13: launch_q8_table<Q5KTraits>(args, rows, n_in, s); break;
+    case 14: launch_q8_table<Q6KTraits>(args, rows, n_in, s); break;
     default: throw std::invalid_argument("unsupported Q8 table format");
     }
     launch_check();

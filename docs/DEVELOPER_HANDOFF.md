@@ -5,15 +5,17 @@ For the next optimization phase, follow the prioritized
 gaps, profiling requirements, scheduling work and acceptance gates.
 
 
-Current performance work adds optional fast computation and GPU layer-major long
-prefill. The **40 tokens/s target is not met**. See [current measurements and
-validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
-128K timings, EOS-correct retrieval and known failures.
-
-The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
-for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
-32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
-[commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).
+Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
+fast mode runs cache-missed experts on the CPU by default, and the matched
+comparison measured **29.76 tokens/s for Lamina versus 28.56 for CUDA
+llama.cpp b11474**, ahead in prose, code and math. The **40 tokens/s target is
+not met**; prefill is still slower than llama.cpp; no Strata parity is claimed.
+Exact commands, the stage timeline that drove the work, fixed bugs and limits
+are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md).
+The RTX 4060 machine of the earlier records (llama.cpp 25.47 versus Lamina
+16.40 before this work, see [that comparison](../bench/results/2026-10-07-llama-cuda/README.md)
+and [validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md)) has not
+been remeasured.
 
 Start here. Lamina targets the pinned Qwen3.6-35B-A3B UD-Q4_K_M GGUF,
 architecture `qwen35moe`. Strata baseline is
@@ -22,13 +24,18 @@ environment and toolchain assets belong in `../Lamina-data`.
 The inherited Qwen3.8 graph in `src/core/` and `src/prefill/` is source material,
 not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
 
-Decode now prefetches the next layer's predicted experts (`LAMINA_PREFETCH`,
-default on only with `LAMINA_HOST_REGISTER=1`). On an RTX 3050 it raised the
-nine-run median from 15.29 to 17.34 tokens/s with identical outputs; see
-[prefetch measurements](../bench/results/2026-10-07-rtx3050-prefetch/README.md).
+The streaming policy (FP32 default, or `LAMINA_EXPERT_POLICY=stream`) prefetches
+the next layer's predicted experts (`LAMINA_PREFETCH`, default on only with
+`LAMINA_HOST_REGISTER=1`); see [prefetch measurements](../bench/results/2026-10-07-rtx3050-prefetch/README.md).
 Build for a non-Ada GPU with `python -m tools.build_windows --cuda-arch 86`
 (default 89 is the RTX 4060; a mismatched architecture silently gives wrong
 kernels).
+
+Profile a change with `LAMINA_TIMELINE=1` before choosing the next one. It
+prints per-token averages of stream-ordered stage times (dense, router,
+host_gap, moe_setup, resident, miss_wait, combine, tail and others), which
+partition the stream's wall time, idle gaps included. Its markers cost about
+2 ms per token; never use timeline runs as headline numbers.
 
 ## Active implementation
 
@@ -61,7 +68,10 @@ kernels).
 - `src/kernels/cuda/native_mmvq.cu`: inherited generic quantized kernels plus
   accurate FP32-activation grouped/device-table/column adapters. Optional `--compute-mode fast` uses Strata Q8 activation kernels.
   Default `f32` retains the independent 1e-5 gate; fast uses a separate
-  held-out KL/perplexity gate, never FP32 equivalence.
+  held-out KL/perplexity gate, never FP32 equivalence. Q8 table rows whose dot
+  product fits one warp (`n_in / DIV * T <= 32`, for example 512-wide Q4_K/Q5_K
+  expert down projections) run one warp per row, bitwise equal to the
+  four-warp kernel.
 - Batched prefill uses native FP32 column reductions below 16 columns and,
   optionally, a single dequantized matrix scratch plus strict FP32 cuBLAS GEMM
   for larger groups. Fast mode uses BF16 inputs/weights with FP32 accumulation for quantized
@@ -87,6 +97,10 @@ kernels).
   Prefill at >=16 columns uses bounded matrix QK/PV and causal online softmax;
   FP32 uses pedantic SGEMM, fast uses BF16 tensor-core inputs and probabilities.
   `LAMINA_MATRIX_ATTN=0` selects the original fused path for comparisons.
+  The matrix softmax needs a barrier between reading the row maximum and
+  reusing its reduction buffer; without it the 40-layer prefill check drifted
+  run to run on SM86 (fixed 2026-10-07). Router top-k is a block-wide argmax
+  (formerly one thread), with bit-identical ids and weights.
 - Host KV uses two bounded pinned/device slots and a separate nonblocking
   transfer stream. Per-slot copy/consumer events protect pinned-memory and
   device-buffer reuse; compute waits on copy completion. FP32 staging is
@@ -102,11 +116,24 @@ kernels).
   pages and other buffers. GPU staging remains bounded. No sliding window or
   history truncation. Prefill scratch is freed before decode, preserving KV,
   convolution and recurrent state and restoring the expert-cache budget.
-- `src/model/cpu_experts.cpp`: persistent worker pool and CPU dequantization
-  for optional `LAMINA_EXPERT_POLICY=cpu-miss`; FP64 reductions preserve
-  accuracy. Fast mode optionally uses pinned ggml AVX2 quantized CPU dots (build option
-  `LAMINA_CPU_QUANT=ON`). Default `stream` sends misses to the GPU. CPU policy needs its
-  own measured evidence before choosing it for a machine.
+- `src/model/cpu_experts.cpp`: persistent spinning worker pool for the CPU
+  miss policy, the default in fast mode (`LAMINA_EXPERT_POLICY` overrides; FP32
+  defaults to `stream`). One token-layer's CPU experts form a batch whose rows
+  are split across all workers; the calling thread helps in `wait()`. Each row
+  is computed exactly as a whole-expert task would compute it. FP32 uses FP64
+  dequantized reductions; fast mode uses ggml AVX2 quantized dots (build option
+  `LAMINA_CPU_QUANT=ON`). Workers default to a quarter of the hardware threads,
+  at most eight (`LAMINA_CPU_THREADS`). The decode router publishes the expert
+  input to mapped host memory before the doorbell, CPU results return through
+  mapped memory read by a kernel, and the batch starts before GPU setup.
+- CPU-miss admission (`cuda_projection.cpp`, registered RAM only): after a
+  layer's combine, up to `LAMINA_ADMIT_PER_LAYER` (default 1) CPU experts are
+  copied into a request-local VRAM pool (`LAMINA_ADMIT_MB`, default 2048) with
+  its own LRU. Admissions become visible only at the next decode token, after
+  their copy event completes, and RESET drops the pool. Base-cache uploads never
+  evict admissions unless only pinned entries remain. This keeps fast-mode output
+  identical across repeated requests although CPU and GPU expert arithmetic
+  differ in their last bits.
 - `src/model/infer_main.cpp`, `sampling.hpp`: persistent native protocol,
   RESET/SAMPLE/BATCH/PREFILL/PROMPT/IMAGE, seeded sampling, prefix diagnostics.
 - `tools/lamina_chat.py`, `lamina_protocol.py`, `lamina_vision.py`, `lamina.py`:
@@ -222,8 +249,10 @@ The optional CPU-miss policy also passed the independent 40-layer check
 python -m tools.reference_prefix --layers 40 --engine build-cuda/lamina-infer.exe --cuda --tokens 42 43 44 45 --max-context 131072 --kv-cache host
 ```
 
-The normal-cache CPU-miss benchmark reached 6.459 tokens/s; the forced
-2200 MiB cache reached 3.908. GPU streaming remains the faster default.
+On the RTX 3050 machine with the current binary this check measures
+`2.16125275e-6`, next token 369. The 6.459 and 3.908 tokens/s CPU-miss results
+recorded for the RTX 4060 machine predate the row-split CPU pool and admission;
+on the RTX 3050 machine the CPU policy is now the faster fast-mode default.
 
 ### Attention/KV update
 
@@ -272,8 +301,10 @@ The NumPy reference uses independent gguf-py dequantization.
 
 The default compute mode is checked FP32. Enable optional reduced-precision
 computation with `--compute-mode fast`; KV precision is a separate option.
-For this 64 GiB RAM machine, set `LAMINA_HOST_REGISTER=1` to bypass staging
-memcpy and DMA directly from registered model pages. Registration failure
+For the streaming policy on a 64 GiB RAM machine, set `LAMINA_HOST_REGISTER=1`
+to bypass staging memcpy and DMA directly from registered model pages. With the
+fast-mode CPU policy it measured no faster than leaving it unset on the RTX 3050
+machine; there it only enables admission. Registration failure
 falls back to the persistent worker staging pool. Registration adds about
 several seconds to cold startup and reserves roughly 21 GiB of pinned RAM.
 It is not appropriate to set blindly on a low-RAM machine.

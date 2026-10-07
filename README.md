@@ -1,15 +1,19 @@
 # Lamina
 
 
-Current performance work adds optional fast computation and GPU layer-major long
-prefill. The **40 tokens/s target is not met**. See [current measurements and
-validation](bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
-128K timings, EOS-correct retrieval and known failures.
+Fast mode now runs cache-missed experts on the CPU by default. On an RTX 3050
+8 GB with a Ryzen 7 5700X, the matched comparison measured **29.76 tokens/s for
+Lamina versus 28.56 tokens/s for CUDA llama.cpp b11474** (nine resident-process
+runs, 32K context, FP16 KV), ahead in prose, code and math. The **40 tokens/s
+target is not met**, prefill is still slower than llama.cpp, and this is not a
+matched Strata comparison. See
+[commands, results and limits](bench/results/2026-10-07-rtx3050-cpu-experts/README.md).
 
-The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
-for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
-32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
-[commands and full results](bench/results/2026-10-07-llama-cuda/README.md).
+Earlier records from an RTX 4060 machine (where llama.cpp measured 25.47 and
+Lamina 16.40 tokens/s before these changes) are in
+[the previous comparison](bench/results/2026-10-07-llama-cuda/README.md) and
+[validation](bench/results/2026-10-06-strata-plan/VALIDATION.md). That machine has
+not been remeasured.
 
 Lamina is a native [Strata](https://github.com/Niko1221/Strata) port for
 Qwen3.6-35B-A3B, pinned to Strata commit `6f32ec070f23ced9f50e704d854d775da52591ab`.
@@ -38,8 +42,11 @@ python -m venv ../Lamina-data/venv
 ../Lamina-data/venv/Scripts/python.exe -m tools.build_windows --vision
 ```
 
-The helper builds Release CUDA for this machine's RTX 4060 (SM 89), installs
-runtime DLLs beside the binary, and builds the pinned CPU image encoder. CUDA
+The helper builds Release CUDA for SM 89 (RTX 4060) by default. For another GPU
+pass its compute capability, for example `--cuda-arch 86` for an RTX 3050/3060.
+A mismatched architecture builds without error but produces wrong kernels.
+The helper installs runtime DLLs beside the binary and builds the pinned CPU
+image encoder. CUDA
 redistribution checksums and licenses are verified/preserved. The image encoder
 uses CPU RAM so it does not compete for the text engine's VRAM.
 
@@ -49,18 +56,19 @@ uses CPU RAM so it does not compete for the text engine's VRAM.
 ../Lamina-data/venv/Scripts/python.exe lamina.py serve --vision --max-context 131072 --kv-cache host
 ```
 
-For optional faster computation on this 8 GB GPU / 64 GB RAM machine:
+For faster, slightly lossy computation on an 8 GB GPU / 64 GB RAM machine:
 
 ```powershell
-$env:LAMINA_HOST_REGISTER='1'
 ../Lamina-data/venv/Scripts/python.exe lamina.py serve --compute-mode fast --prefill-chunk 2048
 ```
 
 `fast` uses Strata Q8 activation kernels and BF16 prefill with FP32 accumulation.
-It is lossy; checked FP32 remains the default. Model RAM registration enables
-direct expert DMA, pins approximately 21 GiB of system RAM, and adds roughly
-several seconds to cold startup. Leave it unset on machines with limited RAM;
-worker-backed staging remains available. For a 128K fast configuration add
+It is lossy; checked FP32 remains the default. In fast mode, experts missing from
+the GPU cache run on CPU worker threads (a quarter of the hardware threads by
+default) instead of being copied over PCIe. Optional `LAMINA_HOST_REGISTER=1`
+pins about 21 GiB of model RAM and enables background admission of CPU experts
+into VRAM. In fast mode it measured no faster than leaving it unset, while it
+adds several seconds to startup, so it is not recommended there. For a 128K fast configuration add
 `--max-context 131072 --kv-type f16 --kv-cache device`. FP16 KV is separately
 lossy. Capacity and retrieval results are in
 [the current measurement record](bench/results/2026-10-06-strata-plan/VALIDATION.md).
@@ -84,7 +92,10 @@ Long text prefill processes all prompt tiles one layer at a time, reusing that
 layer's expert weights. Its full residual needs at most 1 GiB of GPU memory;
 attention and projection workspaces remain tiled. `--prefill-chunk` defaults
 to 2048 (maximum 2048). `--cpu` selects scalar inference.
-`--expert-policy cpu-miss` is an optional CPU miss path; GPU streaming is default.
+`--expert-policy auto` (default) runs cache-missed experts on the CPU in fast
+mode and streams them to the GPU in f32 mode; `stream` and `cpu-miss` force a
+policy. `--cpu-threads` sets the image encoder threads (default 8) and, when
+given, the CPU expert workers.
 
 `--kv-type f16` enables experimental, lossy FP16 KV storage with FP32 attention
 accumulation. It halves KV memory and transfer bytes. For 128K the cache is

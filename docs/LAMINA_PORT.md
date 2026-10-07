@@ -1,10 +1,11 @@
 # Qwen3.6 port status
 
 
-Current performance work adds optional fast computation and GPU layer-major long
-prefill. The **40 tokens/s target is not met**. See [current measurements and
-validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
-128K timings, EOS-correct retrieval and known failures.
+Fast mode now runs cache-missed experts on the CPU by default. On an RTX 3050
+8 GB machine the matched comparison measured **29.76 tokens/s for Lamina versus
+28.56 for CUDA llama.cpp b11474**. The **40 tokens/s target is not met**, and no
+Strata parity is claimed. See [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md);
+earlier RTX 4060 records are in [the previous validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md).
 
 Lamina uses the pinned Unsloth Qwen3.6-35B-A3B UD-Q4_K_M GGUF at revision
 `a483e9e6cbd595906af30beda3187c2663a1118c`, engine architecture `qwen35moe`.
@@ -125,7 +126,8 @@ The <=8 GiB GPU cache target is capped at 5000 MiB after real-prompt cache
 comparisons; a larger target reduced throughput. User overrides remain explicit
 experiments. The CUDA copy-batch prototype faulted and is not included.
 
-The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
-for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
-32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
-[commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).
+Before the CPU-expert default, the matched CUDA llama.cpp comparison on the
+RTX 4060 machine measured **25.47 tokens/s** for llama.cpp versus **16.40
+tokens/s** for Lamina (nine resident-process runs, 32K context, FP16 KV, fast
+Lamina computation). See [commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).
+That machine has not been remeasured with the current code.
