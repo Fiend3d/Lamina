@@ -1,0 +1,41 @@
+{
+  "engine_sha256": "55968fa2216aac8e7f05210d24fe68cdf8cd76199750ce4ceffeea3cfd845a63",
+  "fixture_sha256": "2b36023e2cab590a2b7f3c56a945bb33a2645f9dd8874bb71a26fcb123145641",
+  "token_ids_sha256": "6dce037e76a72a7a6d849780d92e2a2cdefb2f3a1e41c0b15395977577f74b68",
+  "pinned_model_sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+  "scored_tokens": 1025,
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_PROGRESS": "1"
+  },
+  "runs": [
+    {
+      "command": [
+        "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-quality-check.exe",
+        "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "D:\\Projects\\lamina\\Lamina-data\\quality-heldout-tokens.txt",
+        "write",
+        "D:\\Projects\\lamina\\Lamina-data\\quality-baseline-logits.bin"
+      ],
+      "returncode": 0,
+      "stdout": "scored=128\nscored=256\nscored=384\nscored=512\nscored=640\nscored=768\nscored=896\nscored=1024\n",
+      "stderr": "registered model RAM: 21109.1 MiB, direct expert DMA enabled\n"
+    },
+    {
+      "command": [
+        "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-quality-check.exe",
+        "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "D:\\Projects\\lamina\\Lamina-data\\quality-heldout-tokens.txt",
+        "compare",
+        "D:\\Projects\\lamina\\Lamina-data\\quality-baseline-logits.bin"
+      ],
+      "returncode": 0,
+      "stdout": "scored=128\nscored=256\nscored=384\nscored=512\nscored=640\nscored=768\nscored=896\nscored=1024\ntokens=1025 mean_kl_nats=0.00256116943 perplexity_ratio=0.99936955 argmax_agreement=0.980488 baseline_nll=1.57770615 fast_nll=1.5770755\n",
+      "stderr": "registered model RAM: 21109.1 MiB, direct expert DMA enabled\n"
+    }
+  ],
+  "mean_kl_nats": 0.00256116943,
+  "perplexity_ratio": 0.99936955,
+  "argmax_agreement": 0.980488,
+  "passed": true
+}

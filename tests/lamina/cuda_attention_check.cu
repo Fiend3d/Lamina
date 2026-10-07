@@ -9,10 +9,66 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef LAMINA_PREFILL_BLAS
+#include <cublas_v2.h>
+#endif
 
 void check(cudaError_t status) {
     if (status != cudaSuccess) throw std::runtime_error(cudaGetErrorString(status));
 }
+#ifdef LAMINA_PREFILL_BLAS
+void matrix_check() {
+    cudaStream_t stream; check(cudaStreamCreate(&stream));
+    cublasHandle_t blas;
+    const auto bc=[](cublasStatus_t s) { if(s!=CUBLAS_STATUS_SUCCESS) throw std::runtime_error("matrix test cuBLAS failure"); };
+    bc(cublasCreate(&blas)); bc(cublasSetStream(blas,stream)); bc(cublasSetMathMode(blas,CUBLAS_PEDANTIC_MATH));
+    constexpr int columns=9;
+    for(int n : {2057,131072}) {
+        std::vector<float> q(columns*8192), k(size_t(n)*512), v(k.size());
+        const bool distant=n==131072;
+        for(size_t i=0;i<q.size();++i) q[i]=distant ? 0 : .17f*std::sin(float(i)*.043f);
+        for(size_t i=0;i<k.size();++i) { k[i]=distant ? 0 : .21f*std::cos(float(i)*.012f); v[i]=distant ? 0 : std::sin(float(i)*.017f); }
+        if(distant) for(int j=0;j<512;++j) v[j]=float(n*2*(j%7-3));
+        float *dq,*dk,*dv,*pq,*pk,*pv,*scores,*meta,*output,*acc,*reference,*result;
+        const auto alloc=[](float** p,size_t elements){check(cudaMalloc(p,elements*4));};
+        alloc(&dq,q.size());alloc(&dk,k.size());alloc(&dv,v.size());alloc(&pq,q.size()/2);
+        alloc(&pk,2048*512);alloc(&pv,2048*512);alloc(&scores,16*columns*2048);
+        alloc(&meta,16*columns*2);alloc(&output,16*columns*256);alloc(&acc,16*columns*258);
+        alloc(&reference,16*columns*256);alloc(&result,16*columns*256);
+        check(cudaMemcpyAsync(dq,q.data(),q.size()*4,cudaMemcpyHostToDevice,stream));
+        check(cudaMemcpyAsync(dk,k.data(),k.size()*4,cudaMemcpyHostToDevice,stream));
+        check(cudaMemcpyAsync(dv,v.data(),v.size()*4,cudaMemcpyHostToDevice,stream));
+        for(int begin=0;begin<n;begin+=2048)
+            lamina::model::cuda::attn_fused_columns(dq,dk+size_t(begin)*512,dv+size_t(begin)*512,std::min(2048,n-begin),begin,n-columns,columns,acc,begin==0,false,stream);
+        lamina::model::cuda::attn_columns_finish(dq,acc,columns,reference,stream);
+        lamina::model::cuda::attn_matrix_queries(dq,columns,pq,false,stream);
+        const float scale=.0625f,one=1,zero=0;
+        for(int begin=0;begin<n;begin+=2048) {
+            const int count=std::min(2048,n-begin);
+            lamina::model::cuda::attn_matrix_kv(dk+size_t(begin)*512,dv+size_t(begin)*512,count,false,pk,pv,false,stream);
+            for(int kv=0;kv<2;++kv)
+                bc(cublasGemmStridedBatchedEx(blas,CUBLAS_OP_T,CUBLAS_OP_N,count,columns,256,&scale,
+                    pk+kv*count*256,CUDA_R_32F,256,0,pq+kv*8*columns*256,CUDA_R_32F,256,columns*256,
+                    &zero,scores+kv*8*count*columns,CUDA_R_32F,count,count*columns,8,CUBLAS_COMPUTE_32F_PEDANTIC,CUBLAS_GEMM_DEFAULT));
+            lamina::model::cuda::attn_matrix_softmax(scores,count,columns,begin,n-columns,meta,nullptr,false,stream);
+            for(int kv=0;kv<2;++kv)
+                bc(cublasGemmStridedBatchedEx(blas,CUBLAS_OP_N,CUBLAS_OP_N,256,columns,count,&one,
+                    pv+kv*count*256,CUDA_R_32F,256,0,scores+kv*8*count*columns,CUDA_R_32F,count,count*columns,
+                    &zero,output+kv*8*columns*256,CUDA_R_32F,256,columns*256,8,CUBLAS_COMPUTE_32F_PEDANTIC,CUBLAS_GEMM_DEFAULT));
+            lamina::model::cuda::attn_matrix_merge(output,meta,columns,acc,begin==0,stream);
+        }
+        lamina::model::cuda::attn_columns_finish(dq,acc,columns,result,stream);
+        std::vector<float> want(16*columns*256),got(want.size());
+        check(cudaMemcpyAsync(want.data(),reference,want.size()*4,cudaMemcpyDeviceToHost,stream));
+        check(cudaMemcpyAsync(got.data(),result,got.size()*4,cudaMemcpyDeviceToHost,stream));check(cudaStreamSynchronize(stream));
+        double error=0;for(size_t i=0;i<got.size();++i)error=std::max(error,std::abs(double(got[i])-want[i]));
+        std::printf("matrix attention n=%d columns=%d max_abs_diff=%.9g\n",n,columns,error);
+        if(error>=1e-5)throw std::runtime_error("matrix attention parity failed");
+        for(float* p : {dq,dk,dv,pq,pk,pv,scores,meta,output,acc,reference,result})check(cudaFree(p));
+    }
+    bc(cublasDestroy(blas));check(cudaStreamDestroy(stream));
+}
+#endif
 void benchmark() {
     cudaStream_t stream; check(cudaStreamCreate(&stream));
     constexpr int columns = 128, heads = 16, dim = 256, stride = 512;
@@ -59,6 +115,9 @@ void benchmark() {
 }
 int main(int argc, char** argv) {
     try {
+#ifdef LAMINA_PREFILL_BLAS
+        matrix_check();
+#endif
         if (argc == 2 && std::string(argv[1]) == "--benchmark") { benchmark(); return 0; }
         constexpr int heads = 16, kv_heads = 2, dim = 256, stride = 512;
         cudaStream_t stream; check(cudaStreamCreate(&stream));

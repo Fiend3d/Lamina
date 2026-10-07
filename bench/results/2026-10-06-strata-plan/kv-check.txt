@@ -1,0 +1,13 @@
+FP16 host reset max_abs_diff=0
+FP16 host/device prefill max_abs_diff=0
+FP16 host/device decode max_abs_diff=0
+FP16 device reset max_abs_diff=0
+FP16 image mRoPE max_abs_diff=0
+FP16 text after image max_abs_diff=0
+FP16 versus FP32 hidden drift max_abs=0.0819320679 relative_l2=0.0137237144 (lossy, not FP32 parity)
+three-tile cache type=f32
+host/device varied-token prefill max_abs_diff=0
+host/device varied-token decode max_abs_diff=0
+three-tile cache type=f16
+host/device varied-token prefill max_abs_diff=0
+host/device varied-token decode max_abs_diff=0

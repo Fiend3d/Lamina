@@ -1,0 +1,62 @@
+The engineer returned to the workshop after sunset. A small brass clock stood beside a notebook. She recorded the temperature and checked the measurements before opening the next drawer. Each observation needed to be reproducible, because the team would compare the results in the morning. The river outside had risen after three days of rain. A bridge connected the village to the railway station, where passengers waited for the evening train.
+
+A binary search requires a sorted sequence. Start with the interval containing every element, compare the target against the middle element, and discard the half that cannot contain the answer. The number of comparisons grows logarithmically.
+
+ def lower_bound(values, target):
+    left, right = 0, len(values)
+    while left < right:
+        middle = (left + right) // 2
+        if values[middle] < target:
+            left = middle + 1
+        else:
+            right = middle
+    return left
+
+If a rectangle has width 7 and height 12, its area is 84 square units and its perimeter is 38 units. For independent events with probabilities 0.2 and 0.5, the probability that both occur is 0.1. Solving 3x + 5 = 26 gives x = 7. A geometric series with first term 1 and ratio one half converges to 2.
+
+??????? ????????? ?????????? ???????????? ? ???????? ??? ???????? ??????. ?? ????????? ???? ?????? ??????????, ??????? ????????? ?????????. ???????? ?????, ?? ????????????????? ????????? ?????? ?????????????? ????????? ??????.
+
+The database stores orders separately from customers. A foreign key prevents an order from referring to a customer that does not exist. Transactions make several updates appear as one operation. An index reduces the number of rows inspected by a query, although it also increases the cost of inserting new records.
+
+SELECT customers.name, SUM(orders.amount) AS total
+FROM customers JOIN orders ON orders.customer_id = customers.id
+WHERE orders.created_at >= '2025-01-01'
+GROUP BY customers.name ORDER BY total DESC;
+
+The gardener planted beans in the southern bed and carrots near the fence. She watered the seedlings early in the morning to reduce evaporation. The soil contained compost from the previous autumn. In a separate plot she left several rows untreated so that the experiment had a comparison group.
+
+A function is continuous at a point when its limiting value equals its value there. Differentiability implies continuity, but the reverse does not hold. The absolute value function is continuous at zero and has no derivative there. Integrating x squared from zero to three gives nine.
+
+An operating system schedules runnable threads and provides isolation between processes. Memory mapped files expose file contents through virtual addresses; reading a page may trigger disk access if it is absent from memory. A cache improves performance when future requests reuse previous entries. Its usefulness depends on the access pattern as well as its capacity.
+
+The expedition carried a map, spare batteries, dried food and a first aid kit. At each junction they noted their position. The mountain path became narrow above the tree line, so the group reduced its pace. At the summit they could see a lake in the valley and clouds approaching from the west.
+An archive is useful only if its contents can be found again. The librarian assigns a stable identifier to every document and keeps a separate record of its author, title and publication date. When a corrected edition arrives, she preserves the earlier copy rather than overwriting it. Readers can then see which version supported a particular claim. A catalogue describes the collection, but it does not replace the source material itself.
+
+During a software incident, the first priority is to restore service and preserve enough evidence to understand what happened. A timestamp alone may be ambiguous when machines use different clocks. Request identifiers help connect logs from separate services. A retry can recover from a temporary network failure, but careless retries may duplicate a payment or increase the load on an already struggling server. Idempotent operations and bounded backoff make recovery more predictable.
+
+from collections import deque
+
+def shortest_path(graph, start, goal):
+    pending = deque([start])
+    parent = {start: None}
+    while pending:
+        node = pending.popleft()
+        if node == goal:
+            path = []
+            while node is not None:
+                path.append(node)
+                node = parent[node]
+            return path[::-1]
+        for neighbor in graph.get(node, []):
+            if neighbor not in parent:
+                parent[neighbor] = node
+                pending.append(neighbor)
+    return None
+
+This breadth first search returns a shortest path in an unweighted graph. Recording a parent when a vertex is first discovered prevents repeated visits and makes it possible to reconstruct the route. A weighted graph requires a different strategy, because the fewest edges do not necessarily give the lowest total cost. Dijkstra's algorithm handles nonnegative edge weights by processing the smallest known distance first.
+
+????? ?????? ????? ????????, ??????????? ??????? ????????????. ?????????? ????????????? ?????? ?????, ??????????? ? ?????? ?????????? ??????????. ?? ????????? ?????? ????????? ????? ???? ????????: ???????? ???????? ?????????? ? ?????????? ????? ????? ???????????. ??????? ????????, ??? ???????? ?????? ????????? ?????????? ? ?????? ???? ???????? ?????? ????????????? ???????? ?? ?????? ??????????.
+
+La observaci?n cuidadosa distingue una hip?tesis de una conclusi?n. Antes de iniciar el experimento, el equipo describe qu? medir?, c?mo comparar? los resultados y qu? condiciones mantendr? constantes. Si los datos contradicen la predicci?n, hay que revisar la explicaci?n. Repetir las mediciones ayuda a separar un efecto real de una fluctuaci?n accidental.
+
+A fair die has six equally likely outcomes. The expected value of a single roll is 3.5, obtained by summing the six outcomes and dividing by six. Two independent rolls have expected sum seven. Their sums are not equally likely: there is only one way to obtain two, while six ordered pairs produce seven. The variance of the sum equals the sum of the individual variances because the covariance is zero.

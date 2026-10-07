@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "scored_tokens": 1025,
+  "mean_kl_nats": 0.0254850952,
+  "perplexity_ratio": 1.00016878,
+  "argmax_agreement": 0.98439,
+  "baseline_nll": 0.829325971,
+  "fast_nll": 0.829494734,
+  "fixture_sha256": "ab77da97bfeec6b1455f55bc4b895e04bed75b1f7be4fc4c72cf2b3d124b7292",
+  "token_ids_sha256": "6ca627a465b86ffb7393bd960f347316db74763ef2779cf5eec89fa40b5093a1",
+  "comparison_log": "scored=128\nscored=256\nscored=384\nscored=512\nscored=640\nscored=768\nscored=896\nscored=1024\ntokens=1025 mean_kl_nats=0.0254850952 perplexity_ratio=1.00016878 argmax_agreement=0.984390 baseline_nll=0.829325971 fast_nll=0.829494734\n",
+  "notes": "Initial serial comparison. FP32 baseline before GQA shared-load dispatch; fast after. Full FP32 state/attention gates pass. A fresh same-build comparison is required before delivery."
+}

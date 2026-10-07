@@ -29,23 +29,23 @@ def main():
     visual_studio = subprocess.check_output([str(vswhere), "-latest", "-products", "*", "-requires",
         "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], text=True).strip()
     if not visual_studio: raise RuntimeError("Visual Studio C++ tools are missing")
-    if args.vision:
+    if args.vision or not args.cpu:
         source = ROOT / "third_party/llama.cpp"
         revision = (ROOT / "third_party/ggml/VERSION.txt").read_text().split()[0]
         if not source.exists():
             subprocess.run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/llama.cpp.git", str(source)], check=True)
             subprocess.run(["git", "-C", str(source), "checkout", revision], check=True)
         actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-        if actual != revision: raise RuntimeError(f"vision source must be at pinned commit {revision}; existing checkout preserved")
+        if actual != revision: raise RuntimeError(f"ggml/vision source must be at pinned commit {revision}; existing checkout preserved")
     import ninja
     ninja_path = Path(ninja.BIN_DIR) / "ninja.exe"
     args.build_dir.mkdir(parents=True, exist_ok=True)
     configure = f"cmake -S {quoted(ROOT)} -B {quoted(args.build_dir.resolve())} -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM={quoted(ninja_path)}"
     targets = "lamina-gguf lamina-infer lamina-sampling-check"
     if not args.cpu:
-        configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
-        targets += " lamina-cuda-projection-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check"
-    else: configure += " -DLAMINA_ENABLE_CUDA=OFF"
+        configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DLAMINA_CPU_QUANT=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
+        targets += " lamina-cuda-projection-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check lamina-quality-check"
+    else: configure += " -DLAMINA_ENABLE_CUDA=OFF -DLAMINA_PREFILL_BLAS=OFF -DLAMINA_CPU_QUANT=OFF"
     commands = ["@echo off", "call " + quoted(Path(visual_studio) / "VC/Auxiliary/Build/vcvars64.bat"),
                 "if errorlevel 1 exit /b 1", configure, "if errorlevel 1 exit /b 1",
                 f"cmake --build {quoted(args.build_dir.resolve())} --target {targets} -j {args.jobs}", "if errorlevel 1 exit /b 1"]

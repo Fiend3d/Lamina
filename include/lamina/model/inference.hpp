@@ -19,12 +19,13 @@ class Inference {
 public:
     explicit Inference(const std::string& path, int context = 32768, int layers = 40,
                        bool cuda = false, const std::string& kv_cache = "auto",
-                       size_t vram_limit_mb = 0, const std::string& kv_type = "f32");
+                       size_t vram_limit_mb = 0, const std::string& kv_type = "f32", const std::string& compute_mode = "f32");
     ~Inference();
     std::vector<float> step(int token);
     // Development diagnostic: return the residual stream before final norm.
     std::vector<float> step_hidden(int token);
     std::vector<float> prefill_hidden(const std::vector<int>& tokens);
+    std::vector<float> prefill_long(const std::vector<int>& tokens, int chunk = 2048);
     std::vector<float> prefill_embeddings(const std::vector<float>& embeddings,
                                           const std::vector<std::array<int, 3>>& positions);
     std::vector<float> logits(std::vector<float> hidden);

@@ -23,11 +23,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--engine", type=Path, default=root / "build-cuda/lamina-infer.exe")
     p.add_argument("--vision-engine", type=Path, default=root / "build-vision/bin/Release/strata-vision.exe")
+    p.add_argument("--compute-mode", choices=("f32", "fast"), default="f32")
     p.add_argument("--kv-type", choices=("f32", "f16"), default="f32")
     p.add_argument("--report", type=Path, default=root / "bench/results/2026-10-06-rtx4060-8gb/runtime.json")
     args = p.parse_args()
     engine = Engine(data / "models" / FILENAME, data / "tokenizer/tokenizer.json", args.engine,
-                    True, prefill_chunk=2048, vision_engine=args.vision_engine, kv_type=args.kv_type)
+                    True, prefill_chunk=2048, vision_engine=args.vision_engine, kv_type=args.kv_type, compute_mode=args.compute_mode)
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine))
     worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
     endpoint = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
@@ -53,6 +54,8 @@ def main():
         seeded = text(request("sample-seed", "Give one short creative greeting.", temperature=0.6, top_p=0.9, seed=42, max_tokens=32))
         assert seeded == text(request("sample-seed-repeat", "Give one short creative greeting.", temperature=0.6, top_p=0.9, seed=42, max_tokens=32))
         assert first == text(request("reset", "Say hello in one short sentence.", max_tokens=32))
+        long_text="The vault code for station Amber is LAMINA847263.\n" + "The researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\n"*150 + "\nWhat is the vault code for station Amber? Reply with the code alone."
+        assert "LAMINA847263" in text(request("long-text",long_text,max_tokens=32))
         streamed = request("sse-unicode", "Reply exactly: Hello 🌍", stream=True, stream_options={"include_usage": True}, max_tokens=32)
         assert "🌍" in streamed["text"]
         reasoning = request("thinking", "What is 2 + 3? Answer briefly.", enable_thinking=True, max_tokens=128)
@@ -79,7 +82,7 @@ def main():
         connection = socket.create_connection(server.server_address)
         body = json.dumps({"messages": [{"role": "user", "content": "Hello " * 4096}], "max_tokens": 1, "stream": True}).encode()
         connection.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
-        time.sleep(0.5); connection.close()
+        time.sleep(0.5); connection.shutdown(socket.SHUT_RDWR); connection.close()
         deadline = time.monotonic() + 5
         while old.poll() is None and time.monotonic() < deadline: time.sleep(0.1)
         assert old.poll() is not None, "disconnect did not stop native prefill"
@@ -88,7 +91,7 @@ def main():
     finally:
         server.shutdown(); server.server_close(); worker.join(timeout=2); engine.close()
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps({"passed": passed, "engine": str(args.engine), "engine_sha256": hashlib.sha256(args.engine.read_bytes()).hexdigest(), "kv_type": args.kv_type, "vision_engine": str(args.vision_engine), "requests": report}, ensure_ascii=False, indent=2), encoding="utf-8")
+        args.report.write_text(json.dumps({"passed": passed, "engine": str(args.engine), "engine_sha256": hashlib.sha256(args.engine.read_bytes()).hexdigest(), "kv_type": args.kv_type, "compute_mode": args.compute_mode, "vision_engine": str(args.vision_engine), "requests": report}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__": main()

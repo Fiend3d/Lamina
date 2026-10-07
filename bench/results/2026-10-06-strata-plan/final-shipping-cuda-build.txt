@@ -1,0 +1,40 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.33
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: AMD64
+-- CMAKE_GENERATOR_PLATFORM: 
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: /arch:AVX2 GGML_AVX2;GGML_FMA;GGML_F16C;__BMI2__;GGML_BMI2
+-- ggml version: 0.24.0
+-- ggml commit:  3cf03257f
+-- Configuring done (1.9s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/Projects/lamina/Lamina/build-cuda
+[1/7] Building CXX object CMakeFiles\lamina_model.dir\src\model\cuda_projection.cpp.obj
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(47): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(507): warning C4458: declaration of 'weights' hides class member
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(63): note: see declaration of 'lamina::model::CudaProjection::Impl::weights'
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(576): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(609): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(649): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(766): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(773): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(780): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(827): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(1002): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(1318): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(1469): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(1470): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(1596): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Projects\lamina\Lamina\src\model\cuda_projection.cpp(2154): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+[2/7] Linking CXX static library lamina_model.lib
+[3/7] Linking CXX executable lamina-quality-check.exe
+[4/7] Linking CXX executable lamina-prefill-check.exe
+[5/7] Linking CXX executable lamina-infer.exe
+[6/7] Linking CXX executable lamina-kv-precision-check.exe
+[7/7] Linking CXX executable lamina-cuda-projection-check.exe

@@ -16,8 +16,9 @@ class CpuExperts {
     std::queue<std::function<void()>> jobs_;
     std::vector<std::thread> workers_;
     bool stopping_ = false;
+    bool fast_ = false;
 public:
-    explicit CpuExperts(unsigned workers);
+    explicit CpuExperts(unsigned workers, bool fast = false);
     ~CpuExperts();
     std::future<std::vector<float>> submit(MoeWeights weights, int expert,
                                           std::shared_ptr<const std::vector<float>> input);

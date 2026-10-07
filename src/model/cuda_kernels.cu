@@ -6,11 +6,18 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 namespace lamina::model::cuda {
 namespace {
 
 constexpr int kThreads = 256;
+
+__global__ void to_bf16_kernel(const float* source, __nv_bfloat16* destination, int n) {
+    int i = int(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n) destination[i] = __float2bfloat16_rn(source[i]);
+}
+
 
 __device__ __forceinline__ float sigmoid_precise(float x) {
     return 1.0f / (1.0f + expf(-x));
@@ -86,8 +93,9 @@ __global__ void moe_combine_kernel(const float* __restrict__ down,
 
 __global__ void attn_norm_rope_kernel(float* __restrict__ x, int stride, int n, int n_rot,
                                       const float* __restrict__ gamma, float epsilon, float rope_base,
-                                      int position, int pos_h, int pos_w) {
-    float* head = x + static_cast<size_t>(blockIdx.x) * stride;
+                                      int position, int pos_h, int pos_w, const int* positions = nullptr, int heads = 0) {
+    if (positions) { position=positions[blockIdx.y*3]; pos_h=positions[blockIdx.y*3+1]; pos_w=positions[blockIdx.y*3+2]; }
+    float* head = x + (size_t(blockIdx.y)*heads + blockIdx.x) * stride;
     const int j = threadIdx.x;
     __shared__ float sums[256];
     sums[j] = head[j] * head[j];
@@ -107,6 +115,60 @@ __global__ void attn_norm_rope_kernel(float* __restrict__ x, int stride, int n, 
         head[j] = a * c - b * s;
         head[j + n_rot / 2] = a * s + b * c;
     }
+}
+
+// One warp per query head; all eight heads share each KV load. Keep the
+// original 128-key reduction and value accumulation order for FP32 parity.
+template<class T>
+__global__ void attn_gqa_partial_kernel(const float* q, const T* keys, const T* values,
+    int count, int tile_offset, int total_tiles, float* partial) {
+    const int lane = threadIdx.x & 31, head = threadIdx.x >> 5;
+    const int kv = blockIdx.y, h = kv * 8 + head, start = blockIdx.x * 128;
+    __shared__ float tile[16 * 256], scores[8][128], reduction[8][256];
+    float query[8], acc[8]{};
+    for (int j=0; j<8; ++j) query[j] = q[h*512+lane+j*32];
+    for (int begin=0; begin<128; begin+=16) {
+        for (int i=threadIdx.x; i<16*256; i+=256) {
+            const int t=start+begin+i/256;
+            tile[i]=t<count ? float(keys[size_t(t)*512+kv*256+i%256]) : 0.0f;
+        }
+        __syncthreads();
+        for (int t=0; t<16; ++t) {
+            float dot=0;
+            for (int j=0; j<8; ++j) dot += query[j]*tile[t*256+lane+j*32];
+            for (int offset=16; offset; offset>>=1) dot += __shfl_down_sync(0xffffffffu,dot,offset);
+            if (!lane) scores[head][begin+t]=start+begin+t<count ? dot*0.0625f : -INFINITY;
+        }
+        __syncthreads();
+    }
+    for (int i=lane; i<256; i+=32) reduction[head][i]=i<128 ? scores[head][i] : -INFINITY;
+    __syncthreads();
+    for (int step=128; step; step>>=1) {
+        for (int i=lane; i<step; i+=32) reduction[head][i]=fmaxf(reduction[head][i],reduction[head][i+step]);
+        __syncthreads();
+    }
+    const float maximum=reduction[head][0];
+    for (int i=lane; i<128; i+=32) scores[head][i]=isfinite(maximum) ? expf(scores[head][i]-maximum) : 0;
+    __syncthreads();
+    for (int i=lane; i<256; i+=32) reduction[head][i]=i<128 ? scores[head][i] : 0;
+    __syncthreads();
+    for (int step=128; step; step>>=1) {
+        for (int i=lane; i<step; i+=32) reduction[head][i] += reduction[head][i+step];
+        __syncthreads();
+    }
+    for (int begin=0; begin<128; begin+=16) {
+        for (int i=threadIdx.x; i<16*256; i+=256) {
+            const int t=start+begin+i/256;
+            tile[i]=t<count ? float(values[size_t(t)*512+kv*256+i%256]) : 0;
+        }
+        __syncthreads();
+        for (int t=0; t<16 && start+begin+t<count; ++t)
+            for (int j=0; j<8; ++j) acc[j] += scores[head][begin+t]*tile[t*256+lane+j*32];
+        __syncthreads();
+    }
+    float* dst=partial+(size_t(h)*total_tiles+tile_offset+blockIdx.x)*258;
+    if (!lane) { dst[0]=maximum; dst[1]=reduction[head][0]; }
+    for (int j=0; j<8; ++j) dst[2+lane+j*32]=acc[j];
 }
 
 template<class T>
@@ -255,6 +317,62 @@ __global__ void attn_columns_accumulate_kernel(const float* partial, int tiles,
     __syncthreads();
     if (!j) { dst[0] = maximum; dst[1] = denominator; }
     dst[j + 2] = acc;
+}
+
+template<typename T>
+__global__ void attn_matrix_queries_kernel(const float* q, int columns, T* packed) {
+    size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= size_t(16) * columns * 256) return;
+    int d = i % 256, c = (i / 256) % columns, h = i / (size_t(columns) * 256);
+    packed[i] = T(q[size_t(c) * 8192 + h * 512 + d]);
+}
+template<typename S, typename T>
+__global__ void attn_matrix_kv_kernel(const S* k, const S* v, int count, T* pk, T* pv) {
+    size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= size_t(2) * count * 256) return;
+    int d = i % 256, c = (i / 256) % count, h = i / (size_t(count) * 256);
+    size_t from = size_t(c) * 512 + h * 256 + d;
+    pk[i] = T(float(k[from])); pv[i] = T(float(v[from]));
+}
+__global__ void attn_matrix_softmax_kernel(float* scores, int count, int columns,
+    int key_start, int query_start, float* metadata, __nv_bfloat16* probability) {
+    int c = blockIdx.x % columns, h = blockIdx.x / columns, lane = threadIdx.x;
+    float* row = scores + size_t(blockIdx.x) * count;
+    __shared__ float reduce[256];
+    float maximum = -INFINITY;
+    for (int k = lane; k < count; k += 256) {
+        float score = key_start + k <= query_start + c ? row[k] : -INFINITY;
+        row[k] = score;
+        maximum = fmaxf(maximum, score);
+    }
+    reduce[lane] = maximum; __syncthreads();
+    for (int d = 128; d; d >>= 1) { if (lane < d) reduce[lane] = fmaxf(reduce[lane], reduce[lane+d]); __syncthreads(); }
+    maximum = reduce[0];
+    float denominator = 0.f;
+    for (int k = lane; k < count; k += 256) {
+        float weight = isfinite(maximum) ? expf(row[k] - maximum) : 0.f;
+        row[k] = weight;
+        denominator += weight;
+        if (probability) probability[size_t(blockIdx.x) * count + k] = __float2bfloat16_rn(weight);
+    }
+    reduce[lane] = denominator; __syncthreads();
+    for (int d = 128; d; d >>= 1) { if (lane < d) reduce[lane] += reduce[lane+d]; __syncthreads(); }
+    if (!lane) { metadata[2 * blockIdx.x] = maximum; metadata[2 * blockIdx.x + 1] = reduce[0]; }
+}
+__global__ void attn_matrix_merge_kernel(const float* output, const float* metadata, int columns,
+    float* accumulator, bool first) {
+    int c = blockIdx.x % columns, h = blockIdx.x / columns, d = threadIdx.x;
+    float* row = accumulator + (size_t(c) * 16 + h) * 258;
+    float tile_max = metadata[2 * blockIdx.x], tile_den = metadata[2 * blockIdx.x + 1];
+    float previous_max = first ? -INFINITY : row[0], previous_den = first ? 0.f : row[1];
+    float previous = first ? 0.f : row[d+2];
+    float maximum = fmaxf(previous_max, tile_max);
+    float a = previous_den ? expf(previous_max - maximum) : 0.f;
+    float b = tile_den ? expf(tile_max - maximum) : 0.f;
+    float numerator = previous * a + output[size_t(blockIdx.x) * 256 + d] * b;
+    __syncthreads();
+    if (!d) { row[0] = maximum; row[1] = previous_den * a + tile_den * b; }
+    row[d+2] = numerator;
 }
 
 __global__ void attn_columns_finish_kernel(const float* q, const float* accumulator, float* out) {
@@ -433,6 +551,10 @@ __global__ void gemv_f32_columns_kernel(const float* weights, const float* x, fl
 
 }  // namespace
 
+void to_bf16(const float* source, void* destination, int n, void* stream) {
+    to_bf16_kernel<<<(n + 255) / 256, 256, 0, static_cast<cudaStream_t>(stream)>>>(source, static_cast<__nv_bfloat16*>(destination), n);
+}
+
 void swiglu(const float* gate, const float* up, float* out, int n, void* stream) {
     swiglu_kernel<<<blocks(n), kThreads, 0, static_cast<cudaStream_t>(stream)>>>(gate, up, out, n);
 }
@@ -490,6 +612,12 @@ void attn_norm_mrope(float* x, int heads, int stride, int n, int n_rot, const fl
         x, stride, n, n_rot, gamma, epsilon, rope_base, t, h, w);
 }
 
+void attn_norm_mrope_columns(float* x, int heads, int stride, int columns,
+    const float* gamma, float epsilon, float rope_base, const int* positions, void* stream) {
+    attn_norm_rope_kernel<<<dim3(heads,columns),256,0,static_cast<cudaStream_t>(stream)>>>(
+        x,stride,256,64,gamma,epsilon,rope_base,0,0,0,positions,heads);
+}
+
 void attn_decode(const float* q, const float* k_cache, const float* v_cache, int position,
                  int heads, int kv_heads, int head_dim, float scale, float* out, void* stream) {
     attn_decode_kernel<<<static_cast<unsigned>(heads), static_cast<unsigned>(head_dim), 0,
@@ -524,6 +652,10 @@ void moe_combine_columns(const float* down, const float* scales, int columns, in
 void attn_partials(const float* q, const float* k, const float* v, int count,
                    int offset, int tiles, int heads, int kv_heads, int dim,
                    float scale, float* partial, void* stream) {
+    if (count >= 2048 && heads == 16 && kv_heads == 2 && dim == 256 && scale == 0.0625f) {
+        attn_gqa_partial_kernel<<<dim3((count + 127) / 128, 2), 256, 0, static_cast<cudaStream_t>(stream)>>>(q, k, v, count, offset, tiles, partial);
+        return;
+    }
     attn_partial_kernel<<<dim3((count + 127) / 128, heads), 256, 0,
                            static_cast<cudaStream_t>(stream)>>>(q, k, v, count, offset,
                                                                tiles, heads, kv_heads, dim, scale, partial);
@@ -561,9 +693,29 @@ void attn_fused_columns(const float* q, const void* k, const void* v, int count,
 
 void attn_half_partials(const float* q, const void* k, const void* v, int count,
     int offset, int tiles, float* partial, void* stream) {
-    attn_partial_kernel<<<dim3((count + 127) / 128, 16), 256, 0, static_cast<cudaStream_t>(stream)>>>(
-        q, static_cast<const __half*>(k), static_cast<const __half*>(v), count, offset, tiles,
-        16, 2, 256, 1.0f/16.0f, partial);
+    if (count >= 2048) attn_gqa_partial_kernel<<<dim3((count + 127) / 128, 2), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+        q, static_cast<const __half*>(k), static_cast<const __half*>(v), count, offset, tiles, partial);
+    else attn_partial_kernel<<<dim3((count+127)/128,16),256,0,static_cast<cudaStream_t>(stream)>>>(
+        q,static_cast<const __half*>(k),static_cast<const __half*>(v),count,offset,tiles,16,2,256,.0625f,partial);
+}
+
+void attn_matrix_queries(const float* q, int columns, void* packed, bool bf16, void* stream) {
+    auto s = static_cast<cudaStream_t>(stream); int blocks = 16 * columns;
+    if (bf16) attn_matrix_queries_kernel<<<blocks, 256, 0, s>>>(q, columns, static_cast<__nv_bfloat16*>(packed));
+    else attn_matrix_queries_kernel<<<blocks, 256, 0, s>>>(q, columns, static_cast<float*>(packed));
+}
+void attn_matrix_kv(const void* k, const void* v, int count, bool half, void* pk, void* pv, bool bf16, void* stream) {
+    auto s = static_cast<cudaStream_t>(stream); int blocks = 2 * count;
+    if (bf16 && half) attn_matrix_kv_kernel<<<blocks, 256, 0, s>>>(static_cast<const __half*>(k), static_cast<const __half*>(v), count, static_cast<__nv_bfloat16*>(pk), static_cast<__nv_bfloat16*>(pv));
+    else if (bf16) attn_matrix_kv_kernel<<<blocks, 256, 0, s>>>(static_cast<const float*>(k), static_cast<const float*>(v), count, static_cast<__nv_bfloat16*>(pk), static_cast<__nv_bfloat16*>(pv));
+    else if (half) attn_matrix_kv_kernel<<<blocks, 256, 0, s>>>(static_cast<const __half*>(k), static_cast<const __half*>(v), count, static_cast<float*>(pk), static_cast<float*>(pv));
+    else attn_matrix_kv_kernel<<<blocks, 256, 0, s>>>(static_cast<const float*>(k), static_cast<const float*>(v), count, static_cast<float*>(pk), static_cast<float*>(pv));
+}
+void attn_matrix_softmax(float* scores, int count, int columns, int ks, int qs, float* metadata, void* probability, bool bf16, void* stream) {
+    attn_matrix_softmax_kernel<<<16 * columns, 256, 0, static_cast<cudaStream_t>(stream)>>>(scores, count, columns, ks, qs, metadata, bf16 ? static_cast<__nv_bfloat16*>(probability) : nullptr);
+}
+void attn_matrix_merge(const float* output, const float* metadata, int columns, float* accumulator, bool first, void* stream) {
+    attn_matrix_merge_kernel<<<16 * columns, 256, 0, static_cast<cudaStream_t>(stream)>>>(output, metadata, columns, accumulator, first);
 }
 
 void kv_store(const float* source, void* destination, int elements, bool half, void* stream) {

@@ -47,6 +47,7 @@ def main():
     backend.add_argument("--cuda", dest="cuda", action="store_true", default=None)
     backend.add_argument("--cpu", dest="cuda", action="store_false")
     parser.add_argument("--max-context", type=int, default=32768)
+    parser.add_argument("--compute-mode", choices=("f32", "fast"), default="f32", help="fast: experimental Strata-style reduced-precision computation")
     parser.add_argument("--kv-type", choices=("f32", "f16"), default="f32", help="KV storage precision; experimental lossy f16 requires CUDA")
     parser.add_argument("--kv-cache", choices=("auto", "host", "device"), default="auto")
     parser.add_argument("--vram-limit-mb", type=int, default=0)
@@ -73,11 +74,11 @@ def main():
     cuda = args.cuda if args.cuda is not None else "build-cuda" in str(args.engine)
     engine = Engine(args.model, args.tokenizer, args.engine, cuda, args.max_context, args.kv_cache,
                     args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image else None,
-                    args.max_image_tokens, args.cpu_threads, args.kv_type)
+                    args.max_image_tokens, args.cpu_threads, args.kv_type, args.compute_mode)
     atexit.register(engine.close)
     try:
         if args.command == "serve":
-            print(f"Lamina {MODEL_NAME}: {'CUDA' if cuda else 'CPU'}, context={args.max_context}, KV={args.kv_type}/{args.kv_cache}, http://{args.host}:{args.port}", flush=True)
+            print(f"Lamina {MODEL_NAME}: {'CUDA' if cuda else 'CPU'}, compute={args.compute_mode}, context={args.max_context}, KV={args.kv_type}/{args.kv_cache}, http://{args.host}:{args.port}", flush=True)
             server = ThreadingHTTPServer((args.host, args.port), make_handler(engine))
             try: server.serve_forever()
             finally: server.server_close()

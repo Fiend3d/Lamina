@@ -1,5 +1,16 @@
 # Lamina developer handoff
 
+
+Current performance work adds optional fast computation and GPU layer-major long
+prefill. The **40 tokens/s target is not met**. See [current measurements and
+validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
+128K timings, EOS-correct retrieval and known failures.
+
+The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
+for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
+32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
+[commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).
+
 Start here. Lamina targets the pinned Qwen3.6-35B-A3B UD-Q4_K_M GGUF,
 architecture `qwen35moe`. Strata baseline is
 `6f32ec070f23ced9f50e704d854d775da52591ab`. Model, tokenizer, mmproj,
@@ -14,22 +25,40 @@ not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
   10 gated full-attention, 256 experts/top-eight, ordinary residuals.
 - `src/model/inference.cpp`: native Qwen3.6 scalar and CUDA layer graph,
   layer-major causal text/image prefill, physical versus mRoPE positions,
-  reset and output logits. Prefill chunks are bounded to 2048 columns.
+  reset and output logits. Long text prefill traverses all tiles of one layer before advancing layers.
+  A full FP32 residual (<=1 GiB) stays on GPU; work tiles stay <=2048 columns.
+  The `PROMPT chunk tokens...` protocol selects this path. BATCH/PREFILL remain
+  compatible chunk commands; image segments use their existing chunk path.
 - `src/model/cuda_projection.cpp`: allocation-accounted VRAM budget, separate
-  expert weight-cache target, constant-time LRU, stream-ordered pinned upload
-  ring, stable dense/shared weights, CUDA DeltaNet and dynamic MoE graphs.
+  expert weight-cache target, constant-time LRU, worker-backed pinned upload
+  ring, dense/shared weights pinned during decode, CUDA DeltaNet and dynamic MoE graphs.
+  Long prefill pins only the current layer: completed layers enter LRU and
+  are re-pinned on reuse. Captured dense graphs are retired and invalidated
+  before their weights become evictable.
   Decode graphs read updated device pointer tables; graph keys do not depend
   on selected expert weight addresses. Never free/reuse a weight while a
-  queued kernel can read it. Weight uploads/reuse are on the inference stream.
+  queued kernel can read it. A separate copy stream uses retirement/readiness events; resident experts
+  execute while misses upload. Optional `LAMINA_HOST_REGISTER=1` registers the
+  mapped model for direct RAM DMA (21.1 GiB pinned on this machine; startup cost).
+  The cache target is at most 75% of free memory, capped at 5000 MiB on <=8 GiB GPUs; whole-expert blocks and bounded frequency-aware
+  eviction are opt-in via `LAMINA_ATOMIC_EXPERT_CACHE=1` and
+  `LAMINA_CACHE_POLICY=lfu`. Enlarging the cache regressed and was reverted.
 - `src/kernels/cuda/native_mmvq.cu`: inherited generic quantized kernels plus
-  accurate FP32-activation grouped/device-table/column adapters. Q8 activation
-  quantization is not enabled because it failed full-model accuracy.
+  accurate FP32-activation grouped/device-table/column adapters. Optional `--compute-mode fast` uses Strata Q8 activation kernels.
+  Default `f32` retains the independent 1e-5 gate; fast uses a separate
+  held-out KL/perplexity gate, never FP32 equivalence.
 - Batched prefill uses native FP32 column reductions below 16 columns and,
   optionally, a single dequantized matrix scratch plus strict FP32 cuBLAS GEMM
-  for larger groups. TF32 is disabled. `LAMINA_PREFILL_BLAS` CMake option is
+  for larger groups. Fast mode uses BF16 inputs/weights with FP32 accumulation for quantized
+  projections at eight or more columns. Router, norms, GDN recurrence and
+  mixture accumulation remain FP32. TF32 is disabled. `LAMINA_PREFILL_BLAS` CMake option is
   off in default hardware-free builds and on in the Windows CUDA helper.
   `LAMINA_PREFILL_BLAS=0` runtime environment selects the native fallback.
   cuBLAS workspace is explicitly 8 MiB; matrix scratch is bounded/reused.
+  Prefill hidden/norm/mixer buffers and position triples remain on GPU across layers;
+  batched mRoPE uses two launches per attention layer instead of two per token.
+  Only routing
+  metadata and the final hidden row return to the CPU.
 - `native_gdn_preprocess.cu`, `native_gdn.cu`: causal convolution and recurrent
   state retained across prefill chunks; recurrence traverses columns on GPU.
 - `src/model/cuda_kernels.cu`: norms, routing, expert gathers/scatters and
@@ -38,7 +67,11 @@ not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
   across eight query warps, preserves 128-key reduction order and updates
   the running accumulator directly. All up to 2048 query columns share one
   history sweep; the accumulator is at most 32.25 MiB. No batch partial
-  matrix is allocated. Decode stages 2048 history tokens per tile.
+  matrix is allocated. Decode stages 2048 history tokens per tile; full tiles share KV loads
+  across eight grouped-query heads while retaining the 128-key reduction order.
+  Prefill at >=16 columns uses bounded matrix QK/PV and causal online softmax;
+  FP32 uses pedantic SGEMM, fast uses BF16 tensor-core inputs and probabilities.
+  `LAMINA_MATRIX_ATTN=0` selects the original fused path for comparisons.
 - Host KV uses two bounded pinned/device slots and a separate nonblocking
   transfer stream. Per-slot copy/consumer events protect pinned-memory and
   device-buffer reuse; compute waits on copy completion. FP32 staging is
@@ -56,10 +89,11 @@ not Lamina inference. Do not feed it this GGUF. Preserve upstream notices.
   convolution and recurrent state and restoring the expert-cache budget.
 - `src/model/cpu_experts.cpp`: persistent worker pool and CPU dequantization
   for optional `LAMINA_EXPERT_POLICY=cpu-miss`; FP64 reductions preserve
-  accuracy. Default `stream` sends misses to the GPU. CPU policy needs its
+  accuracy. Fast mode optionally uses pinned ggml AVX2 quantized CPU dots (build option
+  `LAMINA_CPU_QUANT=ON`). Default `stream` sends misses to the GPU. CPU policy needs its
   own measured evidence before choosing it for a machine.
 - `src/model/infer_main.cpp`, `sampling.hpp`: persistent native protocol,
-  RESET/SAMPLE/BATCH/PREFILL/IMAGE, seeded sampling, prefix diagnostics.
+  RESET/SAMPLE/BATCH/PREFILL/PROMPT/IMAGE, seeded sampling, prefix diagnostics.
 - `tools/lamina_chat.py`, `lamina_protocol.py`, `lamina_vision.py`, `lamina.py`:
   official pinned chat template, native resident process, CPU mtmd image
   encoder, serialized HTTP API, SSE/usage/reasoning, tools, stop handling,
@@ -112,7 +146,7 @@ include 131,072 positions and a nonzero value only at the oldest position,
 plus batched causal masking. The attention test also compares FP16 storage
 against an independent scalar reference with explicitly rounded inputs.
 These are independent scalar tests, not a full
-128K model-generation test. Seventeen Python tests and sampling checks pass.
+128K model-generation test. Twenty-one Python tests and sampling checks pass.
 
 ## Measurements and validation boundaries
 
@@ -200,7 +234,7 @@ experimental and lossy; its sequential/batched rounding can exceed the FP32
 The CLI rejects FP16 on CPU before loading optional tokenizer dependencies.
 A 4-layer/4097-varied-token/2048-chunk transfer test also matches host/device
 exactly in both FP32 and FP16, including decode, exercising both slots and
-slot-zero reuse. Seventeen Python tests pass in the sibling venv.
+slot-zero reuse. Twenty-one Python tests pass in the sibling venv.
 
 The updated full 128K FP16 device profile completed: 131040 prompt + 16
 response tokens, explicit 2048-token chunks, first token 1736.531 s, later
@@ -211,9 +245,73 @@ Prefill still takes 28 min 57 s. Exact command/hash/hardware are in
 `fused-f16-device-128k.json` in the attention-update measurement directory.
 
 Broader comparisons against official Transformers on capable hardware,
-semantic long-context retrieval and Linux GPU runtime remain unverified.
+Linux GPU runtime remains unverified.
 Build success alone does not establish correctness, quality or speed.
 Model equations follow the pinned
 [Qwen config](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/config.json),
 Transformers `qwen3_5_moe` and llama.cpp `conversion/qwen.py` orientation.
 The NumPy reference uses independent gguf-py dequantization.
+
+
+### Strata execution work (current)
+
+The default compute mode is checked FP32. Enable optional reduced-precision
+computation with `--compute-mode fast`; KV precision is a separate option.
+For this 64 GiB RAM machine, set `LAMINA_HOST_REGISTER=1` to bypass staging
+memcpy and DMA directly from registered model pages. Registration failure
+falls back to the persistent worker staging pool. Registration adds about
+several seconds to cold startup and reserves roughly 21 GiB of pinned RAM.
+It is not appropriate to set blindly on a low-RAM machine.
+
+Reproducible new checks:
+
+```powershell
+python -m tools.quality_check
+$env:LAMINA_HOST_REGISTER='1'
+python -m tools.performance_check --long
+python -m tools.runtime_check --compute-mode fast --report ../Lamina-data/runtime-fast.json
+```
+
+The quality fixture is `tests/lamina/quality_fixture.txt`: 256-token warmup
+and 1025 teacher-forced targets, including prose, code and arithmetic. Non-ASCII fixture portions are
+corrupted; multilingual quality has not been validated.
+FP32 baseline logits are written under sibling Lamina-data, then the fast
+process reads them. Gates: mean KL <=0.1 nats, perplexity ratio <=1.05.
+This is a small deterministic regression fixture, not a broad quality eval.
+`tools.performance_check` measures three serial 256-token runs for each of
+prose/code/math and records the nine-run median against the 40 tokens/s target.
+Its long profiles contain an early semantic needle; the 128K profile explicitly
+uses lossy FP16 device KV. Do not transfer fast/F16 quality claims to FP32.
+
+`LAMINA_DEV_PROFILE` records async DMA/expert event timings and host staging/
+router waits; `LAMINA_PROFILE` prints model statistics. The GPU chain span
+includes idle gaps and host delays and must not be described as GPU busy time.
+Instrumentation has overhead and bounds its timing pool with a diagnostic
+  fence at 1024 event pairs: never use profiled runs as headline benchmarks.
+
+The source, commands and measured results for this phase are recorded in
+`bench/results/2026-10-06-strata-plan/VALIDATION.md`. The 40 tokens/s target
+must be assessed from that record, not inferred from kernel throughput.
+
+
+Long CUDA text prompts use `PROMPT` through the CLI/API and benchmark tooling.
+This changes the scheduling order across chunks, not the causal layer equations.
+Only the residual stream has full prompt size; query/softmax/projection/MoE
+workspaces remain bounded. `--prefill-chunk` sets the work tile size. This avoids
+reloading all model layers for each work tile. Model weights stay RAM-backed;
+one layer's experts fit the bounded GPU cache across its prompt tiles.
+`LAMINA_PREFILL_PROGRESS=1` prints completed layers to stderr. Benchmark
+`--prefill-schedule chunk` retains the earlier schedule for matched comparisons.
+Fast MMVQ defaults to Strata's original launch arrangement. Experimental
+`LAMINA_Q8_PERSISTENT=1` enables a bounded persistent grid and compact active
+expert tables; it did not improve this machine's real-prompt measurements.
+
+Long prefill releases previous layers' dense/shared weight pins, synchronizes
+readers and invalidates graphs containing their addresses. Decode re-pins
+weights on lookup. The regression suite includes long prefill after graph
+capture, followed by reset. Retrieval benchmarks stop at both model stop IDs;
+continuing generation past EOS does not count as a semantic success.
+
+The <=8 GiB GPU cache target is capped at 5000 MiB after real-prompt cache
+comparisons; a larger target reduced throughput. User overrides remain explicit
+experiments. The CUDA copy-batch prototype faulted and is not included.

@@ -48,17 +48,18 @@ void image(lamina::model::Inference& model, const std::string& path, int context
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: lamina-infer MODEL [--cuda] [--max-context N] [--kv-cache auto|device|host] [--kv-type f32|f16] [--vram-limit-mb N] token...|--interactive|--prefix layers token...\n"); return 2;
+        std::fprintf(stderr, "usage: lamina-infer MODEL [--cuda] [--max-context N] [--kv-cache auto|device|host] [--kv-type f32|f16] [--compute-mode f32|fast] [--vram-limit-mb N] token...|--interactive|--prefix layers token...\n"); return 2;
     }
     try {
-        bool cuda = false; int context = 32768, first = 2; size_t vram_mb = 0; std::string kv_cache = "auto", kv_type = "f32";
+        bool cuda = false; int context = 32768, first = 2; size_t vram_mb = 0; std::string kv_cache = "auto", kv_type = "f32", compute_mode = "f32";
         for (; first < argc; ++first) {
             const std::string arg = argv[first];
             if (arg == "--cuda") cuda = true;
-            else if (arg == "--max-context" || arg == "--kv-cache" || arg == "--kv-type" || arg == "--vram-limit-mb") {
+            else if (arg == "--max-context" || arg == "--kv-cache" || arg == "--kv-type" || arg == "--compute-mode" || arg == "--vram-limit-mb") {
                 if (++first >= argc) throw std::invalid_argument("missing value for " + arg);
                 if (arg == "--max-context") context = integer(argv[first]);
                 else if (arg == "--kv-cache") kv_cache = argv[first];
+                else if (arg == "--compute-mode") compute_mode = argv[first];
                 else if (arg == "--kv-type") kv_type = argv[first]; else vram_mb = integer(argv[first]);
             } else break;
         }
@@ -67,14 +68,14 @@ int main(int argc, char** argv) {
             const bool batched = std::string(argv[first]) == "--batch-prefix";
             if (argc < first + 3) throw std::invalid_argument("prefix requires layers and tokens");
             const int layers = integer(argv[++first]);
-            lamina::model::Inference model(argv[1], context, layers, cuda, kv_cache, vram_mb, kv_type); std::vector<float> hidden;
+            lamina::model::Inference model(argv[1], context, layers, cuda, kv_cache, vram_mb, kv_type, compute_mode); std::vector<float> hidden;
             std::vector<int> tokens;
             while (++first < argc) tokens.push_back(integer(argv[first]));
             if (batched) hidden = model.prefill_hidden(tokens);
             else for (int token : tokens) hidden = model.step_hidden(token);
             for (float value : hidden) std::printf("%.9g\n", value); return 0;
         }
-        lamina::model::Inference model(argv[1], context, 40, cuda, kv_cache, vram_mb, kv_type); lamina::model::Sampler sampler;
+        lamina::model::Inference model(argv[1], context, 40, cuda, kv_cache, vram_mb, kv_type, compute_mode); lamina::model::Sampler sampler;
         if (argc == first + 1 && std::string(argv[first]) == "--interactive") {
             std::string line;
             while (std::getline(std::cin, line)) {
@@ -85,6 +86,14 @@ int main(int argc, char** argv) {
                     if (!(args >> temperature >> p >> k >> seed) || args >> extra) throw std::invalid_argument("invalid SAMPLE command");
                     sampler.configure(temperature, p, k, seed); std::puts(".");
                 } else if (line.rfind("IMAGE ", 0) == 0) { image(model, line.substr(6), context); std::puts("."); }
+                else if (line.rfind("PROMPT ",0)==0) {
+                    std::istringstream args(line.substr(7));std::string word;
+                    if(!(args>>word))throw std::invalid_argument("PROMPT requires chunk and tokens");
+                    const int chunk=integer(word);std::vector<int> tokens;
+                    while(args>>word)tokens.push_back(integer(word));
+                    auto hidden=model.prefill_long(tokens,chunk);
+                    std::printf("%d\n",sampler.sample(model.logits(std::move(hidden))));
+                }
                 else if (line.rfind("PREFILL ", 0) == 0 || line.rfind("BATCH ", 0) == 0) {
                     const bool logits = line.rfind("PREFILL ", 0) == 0; std::istringstream args(line.substr(logits ? 8 : 6));
                     std::vector<int> tokens; std::string word; while (args >> word) tokens.push_back(integer(word));

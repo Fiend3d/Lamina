@@ -58,6 +58,35 @@ int main(int argc, char** argv) {
                 compare(expected_image_next, batched.step_hidden(299), "text after image");
             }
         }
+        // Layer-major long prompts must match the existing chunk-major path,
+        // including an existing prefix, a one-column tail and later decode.
+        for (const std::string cache : {"host", "device"}) for (int layers : {4,40}) {
+            const int count=layers==4 ? 4097 : 129,chunk=layers==4 ? 1024 : 32;
+            std::vector<int> tokens(count);
+            for(int i=0;i<count;++i)tokens[i]=42+(i*17%113);
+            std::vector<float> expected,next,resumed;
+            {
+                lamina::model::Inference regular(argv[1],131072,layers,true,cache);
+                regular.prefill_hidden({42,43});
+                for(int start=0;start<count;start+=chunk)
+                    expected=regular.prefill_hidden(std::vector<int>(tokens.begin()+start,tokens.begin()+std::min(start+chunk,count)));
+                next=regular.step_hidden(299);
+                regular.step_hidden(300); regular.step_hidden(301);
+                resumed=regular.prefill_hidden({302,303,304,305});
+            }
+            lamina::model::Inference long_prompt(argv[1],131072,layers,true,cache);
+            long_prompt.prefill_hidden({42,43});
+            std::printf("long layer-major layers=%d cache=%s tokens=%d chunk=%d\n",layers,cache.c_str(),count,chunk);
+            compare(expected,long_prompt.prefill_long(tokens,chunk),"layer-major residual");
+            compare(next,long_prompt.step_hidden(299),"layer-major later decode");
+            if(long_prompt.position()!=count+3 || long_prompt.rope_position()!=count+3)
+                throw std::runtime_error("long prefill positions differ");
+            long_prompt.step_hidden(300); long_prompt.step_hidden(301);
+            compare(resumed,long_prompt.prefill_long({302,303,304,305},chunk),"layer-major after captured decode");
+            long_prompt.reset();
+            long_prompt.prefill_long({42,43},chunk);
+            compare(expected,long_prompt.prefill_long(tokens,chunk),"layer-major reset");
+        }
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
 }

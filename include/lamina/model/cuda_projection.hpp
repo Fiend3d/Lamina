@@ -64,7 +64,7 @@ struct AttnWeights {
 // device or RAM-backed FP32 attention caches.
 class CudaProjection {
 public:
-    explicit CudaProjection(size_t vram_limit_mb = 0, bool host_kv = false, bool half_kv = false);
+    explicit CudaProjection(size_t vram_limit_mb = 0, bool host_kv = false, bool half_kv = false, bool fast = false);
     ~CudaProjection();
     CudaProjection(const CudaProjection&) = delete;
     CudaProjection& operator=(const CudaProjection&) = delete;
@@ -72,6 +72,22 @@ public:
     bool supports(uint32_t ggml_type) const;
     // Return batch scratch to the memory budget before decoding; retain KV and recurrent state.
     void finish_prefill();
+    // Optional direct DMA from the mapped model, with a staging fallback when
+    // the Windows driver refuses registration of a large read-only arena.
+    void register_weight_ram(const uint8_t* source, size_t bytes);
+    // Batched device chain: empty vector inputs below select its normalized
+    // activation. Only the last hidden row is downloaded at the chunk boundary.
+    void prefill_upload(const std::vector<float>& embeddings, int columns, const std::vector<std::array<int, 3>>& positions);
+    void prefill_rms(const strata::TensorInfo& gamma, const uint8_t* data, float epsilon);
+    void prefill_add_mix();
+    std::vector<float> prefill_download();
+    // Long prompts traverse all tiles of one layer before advancing layers.
+    // Only the complete residual is global (<=1 GiB); workspaces stay tiled.
+    void prefill_layer(int layer);
+    void prefill_long_upload(const std::vector<float>& embeddings, const std::vector<std::array<int, 3>>& positions);
+    void prefill_long_tile(int start, int columns);
+    void prefill_long_store(int start);
+    std::vector<float> prefill_long_download();
     std::vector<float> matvec(const strata::TensorInfo& tensor, const uint8_t* data,
                               const std::vector<float>& x, int64_t expert);
     std::vector<float> matvec_columns(const strata::TensorInfo& tensor, const uint8_t* data,
@@ -170,6 +186,9 @@ private:
     void project_columns_device(const strata::TensorInfo& tensor, const uint8_t* data,
                                  const float* x, float* y, int columns, int64_t expert);
     void delta_net_core(int layer, const float* x_dev, float* out_dev, const GdnWeights& w);
+    void moe_pipeline(const float* x_dev, float* out_dev, const MoeWeights& routed,
+                      const std::vector<int>& experts, const std::vector<float>& weights,
+                      const MoeWeights& shared, float shared_weight);
     void moe_core(const float* x_dev, float* out_dev, const MoeWeights& routed,
                   const std::vector<int>& experts, const std::vector<float>& weights,
                   const MoeWeights& shared, float shared_weight);

@@ -1,5 +1,11 @@
 # Qwen3.6 port status
 
+
+Current performance work adds optional fast computation and GPU layer-major long
+prefill. The **40 tokens/s target is not met**. See [current measurements and
+validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
+128K timings, EOS-correct retrieval and known failures.
+
 Lamina uses the pinned Unsloth Qwen3.6-35B-A3B UD-Q4_K_M GGUF at revision
 `a483e9e6cbd595906af30beda3187c2663a1118c`, engine architecture `qwen35moe`.
 Its 40-layer graph has 30 recurrent DeltaNet and ten gated attention layers,
@@ -27,7 +33,9 @@ Implemented in the native Lamina path:
   tokenizer/template, mmproj and portable CUDA/cuBLAS assets.
 
 The inherited Qwen3.8 graph remains disabled for Lamina. FP32 activation
-accuracy is retained; the faster Q8 activation path is not enabled. Structured
+accuracy is retained by default. Optional `--compute-mode fast` enables
+Strata Q8 activations and BF16 batched projections/matrix attention, checked
+against a separate KL/perplexity gate. It is lossy and is not FP32 equivalence. Structured
 JSON is prompted/validated, not guaranteed by a grammar decoder. Video, a web
 UI and full OpenAI API feature parity are not included.
 
@@ -37,7 +45,7 @@ four-token 40-layer reference passes at maximum hidden difference
 The state suite passes full-layer causal prefill/decode/reset and synthetic
 image mRoPE with both host/device KV, maximum difference `8.85501504e-6`,
 below the unchanged `1e-5` gate. Isolated attention checks exercise all
-131,072 positions including a distant-first-token signal. Seventeen Python
+131,072 positions including a distant-first-token signal. Twenty Python
 checks pass. These numerical tests cover specific inputs, not all generation.
 
 Measured on this machine: matched short decode reaches a three-run median
@@ -82,6 +90,42 @@ precision speed comparison or a semantic long-context quality test.
 
 See [the developer handoff](DEVELOPER_HANDOFF.md) for active files, exact build
 and validation commands, measurement records and remaining validation boundaries.
-Official Transformers generation comparison, semantic long-context retrieval
-and Linux GPU runtime remain unverified; compilation does not establish
+Official Transformers generation comparison and Linux GPU runtime remain
+unverified; semantic retrieval results and failures are recorded separately; compilation does not establish
 runtime performance.
+
+
+The Strata execution phase adds worker-backed RAM staging, a separate weight
+copy stream with reader-retirement fences, resident/miss overlap, optional
+whole-model RAM registration, GPU-resident layer-major prefill, bounded QK/PV
+matrix attention with full-history causal online softmax, and shared grouped-
+query KV reads during tiled decode. Optional quantized AVX2 CPU experts use
+pinned ggml; streaming remains the default after machine-specific comparisons.
+Default cache sizing remains conservative: enlarging it caused a regression.
+Whole-expert admission and frequency-aware eviction remain experimental options.
+
+Current correctness, quality and performance evidence is in
+[the Strata execution record](../bench/results/2026-10-06-strata-plan/VALIDATION.md).
+These changes do not by themselves establish 40 tokens/s or Strata parity.
+
+Long text prefill now has a complete GPU residual and traverses all work tiles
+of one layer before advancing. The PROMPT protocol retains model weights in
+RAM while reusing the current layer's expert slices across tiles. The whole
+residual is bounded to 1 GiB at 128K; query/softmax/MoE workspaces remain tiled.
+Existing-prefix/reset/later-decode comparisons pass against the earlier
+chunk-major path with host and device KV (including a one-column tail).
+
+Long prefill releases previous layers' dense/shared weight pins, synchronizes
+readers and invalidates graphs containing their addresses. Decode re-pins
+weights on lookup. The regression suite includes long prefill after graph
+capture, followed by reset. Retrieval benchmarks stop at both model stop IDs;
+continuing generation past EOS does not count as a semantic success.
+
+The <=8 GiB GPU cache target is capped at 5000 MiB after real-prompt cache
+comparisons; a larger target reduced throughput. User overrides remain explicit
+experiments. The CUDA copy-batch prototype faulted and is not included.
+
+The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
+for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
+32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
+[commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).

@@ -1,5 +1,16 @@
 # Lamina
 
+
+Current performance work adds optional fast computation and GPU layer-major long
+prefill. The **40 tokens/s target is not met**. See [current measurements and
+validation](bench/results/2026-10-06-strata-plan/VALIDATION.md) for real-prompt medians,
+128K timings, EOS-correct retrieval and known failures.
+
+The matched CUDA llama.cpp comparison on this RTX 4060 measured **25.47 tokens/s**
+for llama.cpp versus **16.40 tokens/s** for Lamina (nine resident-process runs,
+32K context, FP16 KV, fast Lamina computation). Lamina remains slower. See
+[commands and full results](bench/results/2026-10-07-llama-cuda/README.md).
+
 Lamina is a native [Strata](https://github.com/Niko1221/Strata) port for
 Qwen3.6-35B-A3B, pinned to Strata commit `6f32ec070f23ced9f50e704d854d775da52591ab`.
 Upstream MIT licenses and attribution are preserved. The inherited Qwen3.8
@@ -38,6 +49,22 @@ uses CPU RAM so it does not compete for the text engine's VRAM.
 ../Lamina-data/venv/Scripts/python.exe lamina.py serve --vision --max-context 131072 --kv-cache host
 ```
 
+For optional faster computation on this 8 GB GPU / 64 GB RAM machine:
+
+```powershell
+$env:LAMINA_HOST_REGISTER='1'
+../Lamina-data/venv/Scripts/python.exe lamina.py serve --compute-mode fast --prefill-chunk 2048
+```
+
+`fast` uses Strata Q8 activation kernels and BF16 prefill with FP32 accumulation.
+It is lossy; checked FP32 remains the default. Model RAM registration enables
+direct expert DMA, pins approximately 21 GiB of system RAM, and adds roughly
+several seconds to cold startup. Leave it unset on machines with limited RAM;
+worker-backed staging remains available. For a 128K fast configuration add
+`--max-context 131072 --kv-type f16 --kv-cache device`. FP16 KV is separately
+lossy. Capacity and retrieval results are in
+[the current measurement record](bench/results/2026-10-06-strata-plan/VALIDATION.md).
+
 The server binds to `127.0.0.1:8000`. Endpoints are `/health`, `/v1/models` and
 `POST /v1/chat/completions`. Requests support `stream`, `stream_options.include_usage`,
 `temperature`, `top_p`, `top_k`, `seed`, `stop`, `max_tokens`, thinking controls,
@@ -53,7 +80,10 @@ The context limit includes prompt, expanded image tokens and generated tokens.
 There is no KV history truncation. This machine has 64 GB RAM; RAM-backed caches
 and mapped model pages need ample system memory. `--vram-limit-mb` bounds engine
 CUDA allocations; automatic sizing leaves GPU headroom and includes scratch/KV.
-`--prefill-chunk` defaults to 2048 (maximum 2048). `--cpu` selects scalar inference.
+Long text prefill processes all prompt tiles one layer at a time, reusing that
+layer's expert weights. Its full residual needs at most 1 GiB of GPU memory;
+attention and projection workspaces remain tiled. `--prefill-chunk` defaults
+to 2048 (maximum 2048). `--cpu` selects scalar inference.
 `--expert-policy cpu-miss` is an optional CPU miss path; GPU streaming is default.
 
 `--kv-type f16` enables experimental, lossy FP16 KV storage with FP32 attention
@@ -64,7 +94,7 @@ choice above 32K. FP32 remains the default. FP16 can change routing and output;
 a 64-token sample showed 1.37% relative hidden-state drift against FP32.
 That sample does not establish generation quality at long contexts.
 
-## Measured on this machine
+## Earlier measurements on this machine
 
 RTX 4060 8 GB, Ryzen 7 1700X, 64 GB RAM, Release CUDA 13.3.
 The following FP32 capacity runs precede the attention/KV update:

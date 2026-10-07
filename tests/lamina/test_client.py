@@ -64,6 +64,35 @@ class ClientTest(unittest.TestCase):
                 command = start.call_args.args[0]
                 self.assertEqual(command[command.index("--kv-type") + 1], "f16")
 
+    def test_fast_mode_reaches_native_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine.compute_mode = "fast"
+            with patch("tools.lamina_chat.NativeProcess") as start:
+                engine._start_native()
+                command = start.call_args.args[0]
+                self.assertEqual(command[command.index("--compute-mode") + 1], "fast")
+
+    def test_long_text_uses_layer_major_prompt(self):
+        class Native:
+            def __init__(self): self.commands=[]
+            def command(self,value,acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            engine=self.engine(directory,tokens=tuple(range(64)))
+            native=Native();engine.native=native
+            self.assertEqual(engine.completion([{"role":"user","content":"Hi"}],1)[0],"Hello")
+            self.assertEqual(native.commands,["RESET","SAMPLE 0 1 20 0","PROMPT 32 "+" ".join(map(str,range(64)))])
+
+    def test_fast_rejected_for_cpu_before_loading_tokenizer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / name for name in ("model", "tokenizer", "engine")]
+            for path in paths: path.touch()
+            with self.assertRaisesRegex(ValueError, "fast.*CUDA"):
+                Engine(*paths, cuda=False, compute_mode="fast")
+
     def test_fp16_rejected_for_cpu_before_loading_tokenizer(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / name for name in ("model", "tokenizer", "engine")]

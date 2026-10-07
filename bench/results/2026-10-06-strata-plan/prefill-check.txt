@@ -1,0 +1,24 @@
+layers=4 cache=host tokens=1025 chunk=1024
+prefill max_abs_diff=2.38418579e-07
+decode after prefill max_abs_diff=1.78813934e-07
+reset after prefill max_abs_diff=1.78813934e-07
+image mRoPE prefill max_abs_diff=2.38418579e-06
+text after image max_abs_diff=1.1920929e-07
+layers=40 cache=host tokens=64 chunk=32
+prefill max_abs_diff=7.62939453e-06
+decode after prefill max_abs_diff=9.53674316e-07
+reset after prefill max_abs_diff=7.15255737e-07
+image mRoPE prefill max_abs_diff=8.85501504e-06
+text after image max_abs_diff=6.67572021e-06
+layers=4 cache=device tokens=1025 chunk=1024
+prefill max_abs_diff=2.38418579e-07
+decode after prefill max_abs_diff=1.78813934e-07
+reset after prefill max_abs_diff=1.78813934e-07
+image mRoPE prefill max_abs_diff=2.38418579e-06
+text after image max_abs_diff=1.1920929e-07
+layers=40 cache=device tokens=64 chunk=32
+prefill max_abs_diff=7.62939453e-06
+decode after prefill max_abs_diff=9.53674316e-07
+reset after prefill max_abs_diff=7.15255737e-07
+image mRoPE prefill max_abs_diff=8.85501504e-06
+text after image max_abs_diff=6.67572021e-06

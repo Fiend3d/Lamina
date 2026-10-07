@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#ifdef LAMINA_CPU_QUANT
+#include "ggml.h"
+#include "ggml-cpu.h"
+#endif
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
 #ifdef _MSC_VER
@@ -37,6 +41,29 @@ double avx_dot(const float* a, const float* b, int n) {
     return (sums[0] + sums[1]) + (sums[2] + sums[3]);
 }
 #endif
+#ifdef LAMINA_CPU_QUANT
+// Same ggml-cpu traits and quantizers as Strata's native expert adapter.
+std::vector<float> project_quantized(const strata::TensorInfo& t, const uint8_t* data,
+                                      int expert, const std::vector<float>& x,
+                                      std::vector<uint8_t>& quantized, bool quantize = true) {
+    const auto type = static_cast<ggml_type>(t.type);
+    const auto* wt = ggml_get_type_traits_cpu(type);
+    const auto* at = ggml_get_type_traits_cpu(wt->vec_dot_type);
+    if (!wt->vec_dot || !at->from_float) throw std::runtime_error("CPU quantized expert type unsupported");
+    const int width = int(t.shape[0]), rows = int(t.shape[1]);
+    if (x.size() != size_t(width)) throw std::invalid_argument("CPU quantized expert width");
+    const size_t row_bytes = ggml_row_size(type, width);
+    if (quantize) {
+        quantized.resize(ggml_row_size(wt->vec_dot_type, width));
+        at->from_float(x.data(), quantized.data(), width);
+    }
+    const uint8_t* source = data + size_t(expert) * rows * row_bytes;
+    std::vector<float> output(rows);
+    for (int row = 0; row < rows; ++row)
+        wt->vec_dot(width, &output[row], 0, source + size_t(row) * row_bytes, 0, quantized.data(), 0, 1);
+    return output;
+}
+#endif
 std::vector<float> project(const strata::TensorInfo& t, const uint8_t* data,
                            int expert, const std::vector<float>& x) {
     int block = 0, bytes = 0;
@@ -68,7 +95,16 @@ std::vector<float> project(const strata::TensorInfo& t, const uint8_t* data,
     return out;
 }
 }
-CpuExperts::CpuExperts(unsigned workers) {
+CpuExperts::CpuExperts(unsigned workers, bool fast) : fast_(fast) {
+#ifdef LAMINA_CPU_QUANT
+    if (fast) {
+        if (!avx2_available()) throw std::runtime_error("quantized CPU experts require AVX2");
+        static std::once_flag init;
+        std::call_once(init, [] { ggml_cpu_init(); });
+    }
+#else
+    if (fast) throw std::runtime_error("quantized CPU experts were not built");
+#endif
     try {
         for (unsigned i = 0; i < std::max(1u, workers); ++i) workers_.emplace_back([this] {
             while (true) {
@@ -93,7 +129,18 @@ CpuExperts::~CpuExperts() {
 }
 std::future<std::vector<float>> CpuExperts::submit(MoeWeights weights, int expert,
                                                  std::shared_ptr<const std::vector<float>> input) {
-    auto task = std::make_shared<std::packaged_task<std::vector<float>()>>([weights, expert, input] {
+    auto task = std::make_shared<std::packaged_task<std::vector<float>()>>([weights, expert, input, fast = fast_] {
+#ifdef LAMINA_CPU_QUANT
+        if (fast) {
+            std::vector<uint8_t> quantized;
+            auto gate = project_quantized(*weights.gate, weights.gate_data, expert, *input, quantized);
+            auto up = project_quantized(*weights.up, weights.up_data, expert, *input, quantized, false);
+            for (size_t i = 0; i < gate.size(); ++i) gate[i] = (gate[i] / (1.f + std::exp(-gate[i]))) * up[i];
+            return project_quantized(*weights.down, weights.down_data, expert, gate, quantized);
+        }
+#else
+        (void)fast;
+#endif
         auto gate = project(*weights.gate, weights.gate_data, expert, *input);
         auto up = project(*weights.up, weights.up_data, expert, *input);
         for (size_t i = 0; i < gate.size(); ++i) gate[i] = (gate[i] / (1.0f + std::exp(-gate[i]))) * up[i];

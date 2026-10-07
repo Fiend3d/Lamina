@@ -48,11 +48,17 @@ struct NativeF32Grouped {
     float* outputs[64];
     int n_outs[64];
     int count;
+    int clear_missing = 0;
 };
 // Reads the pointer table on the device at execution time. Captured expert
 // graphs can therefore replay after routing or weight-cache addresses change.
 void native_mmvq_f32_grouped_table(int ggml_type, const NativeF32Grouped* table,
                                    int count, int total_rows, int n_in, void* stream);
+// Optional Lamina fast path. Table inputs are Q8_1 buffers (opaque float*
+// addresses); uses the same pinned Strata weight/activation dot products.
+void native_mmvq_q8_grouped(int ggml_type, const NativeF32Grouped& args, int rows, int n_in, void* stream);
+void native_mmvq_q8_grouped_table(int ggml_type, const NativeF32Grouped* table,
+                                  int count, int total_rows, int n_in, void* stream);
 
 // Layout for ncols > 1. false: llama.cpp's generic multi-column table (upstream), equal to ncols == 1 to
 // float rounding, speed not yet measured. true (default): the ncols == 1 layout, every column bitwise equal to a

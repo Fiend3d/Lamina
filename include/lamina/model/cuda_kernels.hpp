@@ -6,6 +6,7 @@
 // are device pointers and all calls enqueue on the explicit non-null stream.
 
 namespace lamina::model::cuda {
+void to_bf16(const float* source, void* destination, int elements, void* stream);
 
 void swiglu(const float* gate, const float* up, float* out, int n, void* stream);
 
@@ -41,6 +42,10 @@ void attn_norm_rope(float* x, int heads, int stride, int n, int n_rot, const flo
 void attn_norm_mrope(float* x, int heads, int stride, int n, int n_rot, const float* gamma,
                      float epsilon, float rope_base, int t, int h, int w, void* stream);
 
+// Device positions are [columns,3]; all heads/columns share one launch.
+void attn_norm_mrope_columns(float* x, int heads, int stride, int columns,
+    const float* gamma, float epsilon, float rope_base, const int* positions, void* stream);
+
 // Single-token GQA attention: q is [heads, 2*head_dim] (query then gate),
 // k_cache/v_cache are [context, kv_heads*head_dim], one row per position.
 // out is [heads, head_dim].
@@ -67,6 +72,11 @@ void attn_fused_columns(const float* q, const void* k, const void* v, int count,
                         float* accumulator, bool first, bool half, void* stream);
 void attn_half_partials(const float* q, const void* k, const void* v, int count,
                         int offset, int tiles, float* partial, void* stream);
+// Bounded matrix attention adapters; head-major matrices for strided cuBLAS.
+void attn_matrix_queries(const float* q, int columns, void* packed, bool bf16, void* stream);
+void attn_matrix_kv(const void* k, const void* v, int count, bool half, void* packed_k, void* packed_v, bool bf16, void* stream);
+void attn_matrix_softmax(float* scores, int count, int columns, int key_start, int query_start, float* metadata, void* probability, bool bf16, void* stream);
+void attn_matrix_merge(const float* output, const float* metadata, int columns, float* accumulator, bool first, void* stream);
 void kv_store(const float* source, void* destination, int elements, bool half, void* stream);
 
 // Stable top-k over `n` logits with renormalised softmax weights; single block.

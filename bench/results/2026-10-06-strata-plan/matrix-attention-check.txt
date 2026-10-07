@@ -1,0 +1,24 @@
+matrix attention n=2057 columns=9 max_abs_diff=1.49520929e-09
+matrix attention n=131072 columns=9 max_abs_diff=0
+attention type=f32 n=1 max_abs_diff=8.9685172e-08
+attention type=f32 n=127 max_abs_diff=3.7775601e-09
+attention type=f32 n=128 max_abs_diff=4.0849431e-09
+attention type=f32 n=129 max_abs_diff=4.2023096e-09
+causal columns type=f32 n=129 max_abs_diff=4.3630229e-09
+attention type=f32 n=513 max_abs_diff=1.93293924e-09
+causal columns type=f32 n=513 max_abs_diff=1.98055343e-09
+attention type=f32 n=2049 max_abs_diff=9.9757786e-10
+causal columns type=f32 n=2049 max_abs_diff=1.00526257e-09
+attention type=f32 n=131072 max_abs_diff=0
+causal columns type=f32 n=131072 max_abs_diff=1.1176553e-08
+attention type=f16 n=1 max_abs_diff=8.61589392e-08
+attention type=f16 n=127 max_abs_diff=3.97302942e-09
+attention type=f16 n=128 max_abs_diff=4.08821365e-09
+attention type=f16 n=129 max_abs_diff=4.51591177e-09
+causal columns type=f16 n=129 max_abs_diff=4.51591177e-09
+attention type=f16 n=513 max_abs_diff=1.78258763e-09
+causal columns type=f16 n=513 max_abs_diff=1.84408526e-09
+attention type=f16 n=2049 max_abs_diff=1.29290878e-09
+causal columns type=f16 n=2049 max_abs_diff=1.31234337e-09
+attention type=f16 n=131072 max_abs_diff=0
+causal columns type=f16 n=131072 max_abs_diff=6.98534564e-10

@@ -1,0 +1,18 @@
+../Lamina-data/venv/Scripts/python.exe : .127.0.0.1 - - [07/Oct/2026 16:22:53] "POST /v1/chat/completions HTTP/1.1" 
+200 -
+At line:2 char:153
++ ... ff --check; ../Lamina-data/venv/Scripts/python.exe -m unittest discov ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (.127.0.0.1 - - ...HTTP/1.1" 200 -:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+127.0.0.1 - - [07/Oct/2026 16:22:53] "POST /v1/chat/completions HTTP/1.1" 200 -
+127.0.0.1 - - [07/Oct/2026 16:22:53] "POST /v1/chat/completions HTTP/1.1" 400 -
+127.0.0.1 - - [07/Oct/2026 16:22:53] "POST /v1/chat/completions HTTP/1.1" 400 -
+...................Model stream ended at 5/10; resuming
+.
+----------------------------------------------------------------------
+Ran 21 tests in 0.789s
+
+OK
+Verified model: C:\Users\RENDER~1\AppData\Local\Temp\tmpu2j11_x2\model.gguf
