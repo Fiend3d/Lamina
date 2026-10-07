@@ -1,5 +1,9 @@
 # Lamina developer handoff
 
+For the next optimization phase, follow the prioritized
+[Strata performance roadmap](STRATA_PERFORMANCE_ROADMAP.md), including measured
+gaps, profiling requirements, scheduling work and acceptance gates.
+
 
 Current performance work adds optional fast computation and GPU layer-major long
 prefill. The **40 tokens/s target is not met**. See [current measurements and
