@@ -24,10 +24,12 @@ Draft validation on an RTX 4060 / Ryzen 7 1700X / 64 GB Windows machine:
 - Engine DLL imports contain cuBLAS and Windows system DLLs; no MSVC runtime
   dependency. Embedded Python imports and START-HERE.bat setup passed in a
   fresh extracted directory with PATH limited to Windows system directories.
-- Full generation, streaming tools and MTP through this packaged engine are
-  pending: the existing local server was kept running at the owner's request.
-  Attempts with a restricted second-engine cache failed due to insufficient
-  pinned working-set capacity. RTX 30/50 kernels compiled; their runtime is
-  unverified. No new performance claim is made.
+- After the owner stopped the existing server, the exact uploaded portable ZIP
+  passed START-HERE.bat model preload, greedy generation with MTP enabled,
+  streaming text and usage, streaming function name/arguments, and streamed
+  reasoning on the RTX 4060, with only Windows system directories in PATH.
+- RTX 30/50 kernels compiled; their runtime is unverified. This is a functional
+  packaging check, not a performance benchmark or a clean-Windows-install test.
+  No new performance claim is made.
 
-Finish the pending runtime checks before publishing this draft.
+The release remains a draft at the owner's request.

@@ -15,6 +15,18 @@ runtime validation and the draft-release workflow. The initial ZIP is text-only;
 the optional CPU image encoder is not packaged. Generated release assets stay
 in `../Lamina-data/releases`. Hosted-runner builds have no GPU runtime evidence.
 
+The v0.1.0 portable assets were built from `321bd3a` and checked on the RTX 4060 /
+Ryzen 7 1700X / 64 GB Windows machine. Default CMake/lamina-gguf and 46 Python
+checks passed, as did portable native sampling, CUDA elementwise and attention
+checks. The extracted ZIP also passed startup preload, greedy MTP generation,
+streamed text/usage, a streamed function call, and streamed reasoning with PATH
+limited to Windows system directories. Local reproduction script/report are
+`../Lamina-data/releases/validate_portable.py` and `runtime-validation.json`;
+launcher output is under `releases/smoke-final/runtime-launcher.log`. Model
+assets were reused through test-directory junctions. This checks packaging on
+the developer PC; it is not a clean-OS test, RTX 30/50 runtime validation or a
+new speed claim. The GitHub release remains a draft at the owner's request.
+
 
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched
