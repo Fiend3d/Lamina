@@ -25,7 +25,8 @@ limited to Windows system directories. Local reproduction script/report are
 launcher output is under `releases/smoke-final/runtime-launcher.log`. Model
 assets were reused through test-directory junctions. This checks packaging on
 the developer PC; it is not a clean-OS test, RTX 30/50 runtime validation or a
-new speed claim. The GitHub release remains a draft at the owner's request.
+new speed claim. The GitHub v0.1.0 release is published as a prerelease; public
+ZIPs and checksums are available and source setup can download the pinned engine.
 
 
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:

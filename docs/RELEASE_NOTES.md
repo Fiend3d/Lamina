@@ -32,4 +32,4 @@ Draft validation on an RTX 4060 / Ryzen 7 1700X / 64 GB Windows machine:
   packaging check, not a performance benchmark or a clean-Windows-install test.
   No new performance claim is made.
 
-The release remains a draft at the owner's request.
+Published as v0.1.0 (prerelease). RTX 30/50 runtime validation remains unverified.

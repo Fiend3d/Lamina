@@ -16,9 +16,9 @@ the pinned model and assets, and starts the server. Later launches reuse them.
 The GPU driver is not bundled. The initial portable package supports text,
 tools and reasoning; the optional image encoder is not included.
 
-The first release is prepared as a draft. Repository owners can download its
-assets to test them; public download links and source setup's automatic engine
-download become available after publication.
+The first release, [v0.1.0](https://github.com/Fiend3d/Lamina/releases/tag/v0.1.0),
+is published as a prerelease. Both ZIPs and checksums are public; source setup
+can download the pinned engine automatically.
 
 Source checkouts also support downloading the pinned engine-only release on
 first setup. Its ZIP checksum and the manifest's per-file checksums are verified
