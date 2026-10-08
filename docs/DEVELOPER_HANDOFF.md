@@ -9,9 +9,12 @@ Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched
 comparison measured **35.84 tokens/s for Lamina versus 28.56 for CUDA
 llama.cpp b11474**, ahead in prose, code and math. Single-token decode now
-measures 37.15 tokens/s, and greedy MTP speculation 42.94 (see below), which
-passes the 40 tokens/s target for greedy requests only; prefill is still slower
-than llama.cpp; no Strata parity is claimed.
+measures 37.49 tokens/s, and greedy MTP speculation 45.87 (see below), which
+passes the 40 tokens/s target for greedy requests only. Hybrid prefill runs
+experts used by at most 12 prompt tokens on the CPU and cut the short-prompt
+first token from 2.18 to 0.69 s
+([record](../bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md)); no
+Strata parity is claimed.
 Exact commands, the stage timeline that drove the work, fixed bugs and limits
 are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
 and [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md),
@@ -51,9 +54,11 @@ generated tokens. Conventions (norm weights 1 + w, gate-first experts) are in
 command runs greedy speculation (`Inference::generate_greedy`): one MTP draft,
 one two-token verification pass (`step_pair_hidden`, the `pair_*` functions of
 `CudaProjection`), DeltaNet snapshots for rollback, and an acceptance guard.
-It measured 42.94 against 37.15 tokens/s (45.21 with `LAMINA_MTP_VOCAB=98304`);
+It measured 42.94 against 37.15 tokens/s (45.21 with `LAMINA_MTP_VOCAB=98304`),
+and 45.87 against 37.49 after hybrid prefill;
 see [the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md),
-which also lists the open first-token regression and the CPU-expert bound.
+which also describes the CPU-expert bound and a first-token regression that
+hybrid prefill made invisible but did not explain.
 `LAMINA_PAIR_PROFILE=1` prints a synchronizing per-stage profile of the pass,
 and `LAMINA_PREFILL_STATS=1` prints prefill uploads, evictions and allocations.
 The pair path requires fast mode and device KV. Two-column kernels are checked

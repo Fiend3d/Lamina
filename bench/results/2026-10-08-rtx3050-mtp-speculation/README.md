@@ -92,6 +92,9 @@ single steps before probing again.
 
 ## Open issues
 
+- Update: after [hybrid prefill](../2026-10-08-rtx3050-hybrid-prefill/README.md)
+  the regression below is no longer visible (0.70 s warm first token with
+  speculation), because prefill now uploads about 1.3 instead of 8.6 GB.
 - **First-token time rises by about 0.45 s** once the MTP head has drafted
   (2.18 s to 2.61 s warm). The cause is unknown. It persists after the first
   draft even through later non-speculative requests, and reproduces with only

@@ -1,0 +1,90 @@
+{
+  "command": [
+    "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--cuda",
+    "--max-context",
+    "32768",
+    "--compute-mode",
+    "fast",
+    "--interactive"
+  ],
+  "recorded_at_utc": "2026-10-08T14:31:17.311325+00:00",
+  "engine_sha256": "4d977ead0e0ebb4cca3f4a28789bb911cda9ea4457d91452113b3da962ee3a4f",
+  "benchmark_arguments": {
+    "model": "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "engine": "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "cuda": true,
+    "cache_mb": null,
+    "tokens": 64,
+    "input_tokens": null,
+    "prompt": null,
+    "prompt_file": "D:\\projects\\lamina\\Lamina-data\\retrieval-varied-32768.txt",
+    "prompt_tokens": 0,
+    "max_context": 32768,
+    "compute_mode": "fast",
+    "kv_type": null,
+    "kv_cache": null,
+    "vram_limit_mb": null,
+    "prefill_schedule": "layer",
+    "chunk": 2048,
+    "json": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\D--projects-lamina-Lamina\\c0d79f8f-a599-4d9f-b677-e209efc9f5b1\\scratchpad\\long-off\\retrieval-32768.json",
+    "quiet": true,
+    "warm_start": false,
+    "stop_at_eos": true,
+    "progress_file": "D:\\projects\\lamina\\Lamina-data\\retrieval-32768-progress.json"
+  },
+  "prompt_file_sha256": "f737b0b638441221cdd21313845347807ee563e81c55066e6ce0278ac1d0139e",
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1"
+  },
+  "first_token_seconds": 85.21781349997036,
+  "prompt_tokens": 32598,
+  "startup_seconds": null,
+  "generated_tokens": 9,
+  "eos_positions": [
+    8
+  ],
+  "prefill_tokens_per_second": 382.5256558596324,
+  "later_tokens_per_second": 11.71290555524593,
+  "later_median_seconds": 0.04412939999019727,
+  "peak_total_gpu_mib": 7198.7109375,
+  "idle_total_gpu_mib": 898.18359375,
+  "peak_process_ram_mib": 21972.16796875,
+  "seconds_per_token": [
+    85.21781349997036,
+    0.37167210003826767,
+    0.05146670003887266,
+    0.045539500075392425,
+    0.04453740001190454,
+    0.043721399968490005,
+    0.04292190005071461,
+    0.041687099961563945,
+    0.04146119998767972
+  ],
+  "next_tokens": [
+    244085,
+    30857,
+    23,
+    19,
+    22,
+    17,
+    21,
+    18,
+    248046
+  ],
+  "native_stderr_tail": [
+    "registered model RAM: 21109.1 MiB, direct expert DMA enabled"
+  ],
+  "platform": "Windows-10-10.0.26100-SP0",
+  "python": "3.11.9",
+  "system_ram_mib": 65458.37890625,
+  "cpu": "AMD Ryzen 7 5700X 8-Core Processor",
+  "gpu": "NVIDIA GeForce RTX 3050",
+  "driver": "616.92",
+  "gpu_total_mib": 8192.0,
+  "retrieval_filler": "varied",
+  "retrieval_answer": "LAMINA847263",
+  "expected_answer": "LAMINA847263",
+  "retrieval_passed": true
+}

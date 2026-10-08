@@ -111,6 +111,11 @@ struct CudaProjection::Impl {
     // Expert input published by the decode router before the doorbell, so CPU
     // experts start without a separate copy and stream synchronization.
     float* cpu_input_host = nullptr; float* cpu_input_dev = nullptr; size_t cpu_input_cap = 0;
+    // Hybrid prefill staging: the layer's expert inputs, CPU results, and the
+    // slot of each result (int32 values in a float-sized mapped buffer).
+    float* pf_in_host = nullptr; float* pf_in_dev = nullptr; size_t pf_in_cap = 0;
+    float* pf_out_host = nullptr; float* pf_out_dev = nullptr; size_t pf_out_cap = 0;
+    float* pf_map_host = nullptr; float* pf_map_dev = nullptr; size_t pf_map_cap = 0;
     bool cpu_input_published = false;
     cudaEvent_t cpu_down_copied = nullptr;  // CPU results consumed; staging may be rewritten
     int* argmax_host = nullptr; int* argmax_dev = nullptr;  // mapped greedy-token result
@@ -676,6 +681,7 @@ struct CudaProjection::Impl {
         if (kv_transfer) cudaStreamDestroy(kv_transfer);
         if (cpu_down_host) cudaFreeHost(cpu_down_host);
         if (cpu_input_host) cudaFreeHost(cpu_input_host);
+        for (float* host : {pf_in_host, pf_out_host, pf_map_host}) if (host) cudaFreeHost(host);
         if (argmax_host) cudaFreeHost(argmax_host);
         if (cpu_down_copied) cudaEventDestroy(cpu_down_copied);
         for (auto& a : admissions) cudaFree(a.device);
@@ -2332,6 +2338,23 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
     auto* shared_weight = static_cast<const float*>(impl_->weight(shared_gate, shared_gate_data, -1, 2048 * sizeof(float)));
     cuda::dot_sigmoid_columns(shared_weight, impl_->bm_x, columns, impl_->bm_scales, impl_->stream);
     cuda::router_topk_columns(impl_->bm_router, columns, impl_->bm_ids, impl_->bm_scales, impl_->stream);
+    // Hybrid prefill (fast CPU-miss mode): an expert routed by
+    // at most LAMINA_PREFILL_CPU_TOKENS prompt tokens runs on the CPU pool
+    // instead of being uploaded; the CPU reads an expert from RAM several times
+    // faster than PCIe delivers it, and prefill uploads are mostly discarded
+    // afterwards. The split depends on token counts only, never on residency,
+    // so output does not depend on earlier requests.
+    static const int cpu_tokens = [] {
+        const char* v = std::getenv("LAMINA_PREFILL_CPU_TOKENS");
+        return v && *v ? std::clamp(std::atoi(v), 0, CpuExperts::kMaxTokens) : 12;  // best of 2..16 on the RTX 3050
+    }();
+    // CPU staging stays bounded: at most 256 experts x cpu_tokens results per layer.
+    const bool hybrid = impl_->fast && impl_->cpu_misses && impl_->cpu_experts && cpu_tokens > 0;
+    if (hybrid) {
+        impl_->mapped_floats(impl_->pf_in_host, impl_->pf_in_dev, impl_->pf_in_cap, elements);
+        check(cudaMemcpyAsync(impl_->pf_in_host, impl_->bm_x, elements * sizeof(float), cudaMemcpyDeviceToHost, impl_->stream),
+              "publish prefill expert inputs");
+    }
     std::vector<int> ids(size_t(columns) * 8);
     check(cudaMemcpyAsync(ids.data(), impl_->bm_ids, ids.size() * sizeof(int), cudaMemcpyDeviceToHost, impl_->stream), "download prefill expert ids");
     check(cudaStreamSynchronize(impl_->stream), "finish prefill routing");
@@ -2350,6 +2373,41 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
     for (const auto& group : groups) map.insert(map.end(), group.begin(), group.end());
     for (int c = 0; c < columns; ++c) map.push_back(c*9+8);
     check(cudaMemcpyAsync(impl_->bm_map, map.data(), map.size() * sizeof(int), cudaMemcpyHostToDevice, impl_->stream), "publish prefill expert groups");
+    std::array<bool, 256> on_cpu{};
+    std::vector<CpuExperts::Job> cpu_jobs;
+    size_t cpu_results = 0;
+    if (hybrid) {
+        for (int e = 0; e < 256; ++e) {
+            const size_t count = groups[size_t(e)].size();
+            if (count && count <= size_t(cpu_tokens)) cpu_results += count;
+        }
+    }
+    if (cpu_results) {
+        impl_->mapped_floats(impl_->pf_out_host, impl_->pf_out_dev, impl_->pf_out_cap, cpu_results * hidden);
+        impl_->mapped_floats(impl_->pf_map_host, impl_->pf_map_dev, impl_->pf_map_cap, cpu_results);
+        auto* result_slots = reinterpret_cast<int*>(impl_->pf_map_host);
+        size_t next = 0;
+        for (int e = 0; e < 256; ++e) {
+            const auto& group = groups[size_t(e)];
+            if (group.empty() || group.size() > size_t(cpu_tokens)) continue;
+            on_cpu[size_t(e)] = true;
+            CpuExperts::Job job;
+            job.expert = e;
+            for (const int slot : group) {
+                const int k = job.tokens++;
+                job.inputs[size_t(k)] = impl_->pf_in_host + size_t(slot / 9) * hidden;
+                job.outputs[size_t(k)] = impl_->pf_out_host + next * hidden;
+                result_slots[next++] = slot;
+            }
+            cpu_jobs.push_back(job);
+        }
+        impl_->cpu_experts->start(routed, cpu_jobs);
+        impl_->stat_cpu_experts += cpu_jobs.size();
+    }
+    struct CpuBatchGuard {
+        CpuExperts* pool = nullptr;
+        ~CpuBatchGuard() { if (pool) try { pool->wait(); } catch (...) {} }
+    } cpu_batch{cpu_jobs.empty() ? nullptr : impl_->cpu_experts.get()};
     const auto apply = [&](const MoeWeights& w, int expert, int count, const float* input, const int* slots) {
         impl_->lease_active = true;
         for (const auto* t : {w.gate, w.up, w.down}) {
@@ -2371,11 +2429,18 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
         const int count = int(groups[expert].size());
         if (!count) continue;
         const int* slots = impl_->bm_map + offset;
+        offset += size_t(count);
+        if (on_cpu[size_t(expert)]) continue;
         cuda::gather_expert_inputs(impl_->bm_x, slots, count, hidden, impl_->bm_input, impl_->stream);
         apply(routed, expert, count, impl_->bm_input, slots);
-        offset += size_t(count);
     }
     apply(shared, -1, columns, impl_->bm_x, impl_->bm_map + offset);
+    if (!cpu_jobs.empty()) {
+        cpu_batch.pool = nullptr;
+        impl_->cpu_experts->wait();
+        cuda::scatter_expert_outputs(impl_->pf_out_dev, reinterpret_cast<const int*>(impl_->pf_map_dev), int(cpu_results),
+                                     hidden, impl_->bm_slots, impl_->stream);
+    }
     if (keep_prompt) impl_->keep_prompt_experts(routed);
     cuda::moe_combine_columns(impl_->bm_slots, impl_->bm_scales, columns, hidden, impl_->bm_x, impl_->stream);
     check(cudaGetLastError(), "launch grouped prefill experts");

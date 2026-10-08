@@ -14,9 +14,11 @@ fast-mode default and a coalesced DeltaNet step, the matched nine-run median is
 [the host-path update](../bench/results/2026-10-07-rtx3050-host-path/README.md) and
 [the greedy and cache update](../bench/results/2026-10-07-rtx3050-greedy-keep/README.md)), ahead in every prompt class
 and with identical output across repeats. Milestone 3 (40 tokens/s) is not
-reached by ordinary decode, which now measures 37.15 tokens/s. Greedy MTP
-speculation measures 42.94 tokens/s and is reported separately in
-[the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+reached by ordinary decode, which now measures 37.49 tokens/s. Greedy MTP
+speculation measures 45.87 tokens/s and is reported separately in
+[the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md)
+and [the hybrid prefill record](../bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md),
+which also cut the short-prompt first token from 2.18 to 0.69 s.
 The largest remaining cost is the RAM-bandwidth-bound CPU expert batch
 (it saturates near 16 GB/s of expert reads), then the DeltaNet projections,
 GPU experts, attention layers and the DeltaNet output path; see

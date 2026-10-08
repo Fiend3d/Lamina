@@ -13,11 +13,12 @@ matched Strata comparison. See
 and [the greedy and cache update](bench/results/2026-10-07-rtx3050-greedy-keep/README.md).
 
 Greedy speculative decoding with the model's own MTP head (`--mtp`, see below)
-now measures a **42.94 tokens/s nine-run median against 37.15 tokens/s** for
-single-token decode on the same machine and binary, and 45.21 tokens/s when
-drafts come from the first 98,304 token ids. It costs about 0.45 s of
-first-token time, for a reason not yet found. See
-[the speculation record](bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+now measures a **45.87 tokens/s nine-run median against 37.49 tokens/s** for
+single-token decode on the same machine and binary. Hybrid prefill, which runs
+experts used by few prompt tokens on the CPU, cut the warm first-token time of
+the short benchmark prompts from 2.18 s to 0.69 s. See
+[the speculation record](bench/results/2026-10-08-rtx3050-mtp-speculation/README.md)
+and [the hybrid prefill record](bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md).
 
 Earlier records from an RTX 4060 machine (where llama.cpp measured 25.47 and
 Lamina 16.40 tokens/s before these changes) are in
@@ -75,7 +76,9 @@ For faster, slightly lossy computation on an 8 GB GPU / 64 GB RAM machine:
 `fast` uses Strata Q8 activation kernels and BF16 prefill with FP32 accumulation.
 It is lossy; checked FP32 remains the default. In fast mode, experts missing from
 the GPU cache run on CPU worker threads (a quarter of the hardware threads by
-default) instead of being copied over PCIe. Optional `LAMINA_HOST_REGISTER=1`
+default) instead of being copied over PCIe. Prefill does the same for experts
+routed by at most 12 prompt tokens (`LAMINA_PREFILL_CPU_TOKENS`, 0 disables).
+Optional `LAMINA_HOST_REGISTER=1`
 pins about 21 GiB of model RAM and enables background admission of CPU experts
 into VRAM. In fast mode it measured no faster than leaving it unset, while it
 adds several seconds to startup, so it is not recommended there. For a 128K fast configuration add

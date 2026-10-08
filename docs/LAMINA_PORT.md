@@ -138,3 +138,8 @@ against an independent NumPy implementation (99.2-100% draft agreement), and
 with every expert on the GPU the speculative and single-token greedy outputs
 are identical. On the RTX 3050 it measured 42.94 against 37.15 tokens/s; see
 [the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+
+In fast CPU-miss mode, prefill runs experts routed by at most 12 prompt tokens
+on the CPU. The quality gate passes (mean KL 0.0028 nats, perplexity ratio
+0.993), 4K-32K retrieval passes, and the short-prompt first token fell from
+2.18 to 0.69 s; see [the hybrid prefill record](../bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md).
