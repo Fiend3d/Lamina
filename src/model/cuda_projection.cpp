@@ -270,6 +270,19 @@ struct CudaProjection::Impl {
     bool admission_enabled() const {
         return cpu_misses && admit_per_layer > 0 && registered_weights && !atomic_expert_cache();
     }
+    // While the expert cache is still filling, missing experts are frequent and
+    // the overlapping pipeline hides their uploads behind resident compute. Once
+    // it is nearly full it is mostly hits, and the serial path's single graph per
+    // layer beats the pipeline's two phases. CPU experts only run after an
+    // eviction, so until an eviction happens cpu-miss may safely use the pipeline;
+    // the cached_bytes guard switches earlier, before the cache thrashes.
+    bool pipeline_mode() const {
+        if (!cpu_misses) return true;
+        // LAMINA_HYBRID=0 restores the previous behavior (cpu-miss always serial).
+        static const bool disabled = [] { const char* v = std::getenv("LAMINA_HYBRID"); return v && v[0] == '0'; }();
+        if (disabled) return false;
+        return stat_evicted == 0 && cached_bytes < cache_limit - cache_limit / 10;
+    }
     // The base cache keeps the admission pool's share free.
     size_t base_limit() const {
         return admission_enabled() ? cache_limit - std::min(admit_limit, cache_limit / 2) : cache_limit;
@@ -1979,7 +1992,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     if (experts.empty() || experts.size() > 32)
         throw std::invalid_argument("CUDA MoE supports 1..32 routed experts");
     static const bool no_pipeline = env_is("LAMINA_EXPERT_PIPELINE", '0'), no_graphs = env_is("LAMINA_MOE_GRAPHS", '0');
-    if (!impl_->cpu_misses && experts.size() <= 8 && !no_pipeline && !no_graphs) {
+    if (impl_->pipeline_mode() && experts.size() <= 8 && !no_pipeline && !no_graphs) {
         moe_pipeline(x_dev, out_dev, routed, experts, weights, shared, shared_weight);
         return;
     }
@@ -3152,7 +3165,7 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
     // copy, which measured 20% slower; LAMINA_PREFETCH=1/0 overrides.
     static const char prefetch_mode = [] { const char* v = std::getenv("LAMINA_PREFETCH"); return v ? v[0] : char(0); }();
     const bool allowed = prefetch_mode ? prefetch_mode == '1' : impl_->registered_weights != nullptr;
-    const bool predict = allowed && next && next->router && !impl_->cpu_misses;
+    const bool predict = allowed && next && next->router && impl_->pipeline_mode();
     const bool publish = impl_->cpu_misses && impl_->stat_evicted;
     if (publish) {
         impl_->mapped_floats(impl_->cpu_input_host, impl_->cpu_input_dev, impl_->cpu_input_cap, static_cast<size_t>(n_in));
@@ -3185,7 +3198,7 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
     // it keeps the GPU busy while the host reads the routing and prepares the
     // routed experts, instead of running afterwards on the critical path.
     static const bool no_early = env_is("LAMINA_SHARED_EARLY", '0');
-    impl_->shared_early = impl_->fast && impl_->cpu_misses && !no_early;
+    impl_->shared_early = impl_->fast && impl_->cpu_misses && !impl_->pipeline_mode() && !no_early;
     if (impl_->shared_early) impl_->shared_expert_early(shared, impl_->norm_dev, top_k);
     impl_->tl_mark(kTlHostGap);  // the stream idles from here until the host submits the experts
     volatile const int* flag = impl_->h_flag_map;
