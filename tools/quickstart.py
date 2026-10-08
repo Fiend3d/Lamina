@@ -28,8 +28,30 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT.parent / "Lamina-data"
 VENV_PYTHON = DATA / "venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 CONFIG = DATA / "quickstart.json"
-ENGINE = ROOT / "build-cuda" / ("lamina-infer.exe" if sys.platform == "win32" else "lamina-infer")
+def local_engine():
+    name = "lamina-infer.exe" if sys.platform == "win32" else "lamina-infer"
+    # Ninja single-config builds put it in build-cuda/; Visual Studio multi-config
+    # builds put it in build-cuda/Release/.
+    for candidate in (ROOT / "build-cuda" / name, ROOT / "build-cuda" / "Release" / name):
+        if candidate.is_file():
+            return candidate
+    return ROOT / "build-cuda" / name
+
+
+ENGINE = local_engine()
 MTP_FILE = DATA / "mtp" / "qwen36-mtp-q8_0.gguf"
+
+
+def model_paths(config):
+    """Weights, tokenizer and MTP head for the selected model."""
+    from tools.lamina_model import FILENAME
+    if config.get("model") == "ornith":
+        return {"name": "Ornith-1.5-35B-A3B",
+                "model": DATA / "models" / "Ornith-1.5-35B-Q4_K_M.gguf",
+                "tokenizer": DATA / "ornith" / "tokenizer.json",
+                "mtp": DATA / "mtp" / "ornith-mtp.gguf"}
+    return {"name": "Qwen3.6-35B-A3B", "model": DATA / "models" / FILENAME,
+            "tokenizer": DATA / "tokenizer" / "tokenizer.json", "mtp": MTP_FILE}
 REQUIREMENTS = ["requirements.txt", "requirements-build.txt", "requirements-reference.txt", "requirements-benchmark.txt"]
 RUNTIME_REQUIREMENTS = ["requirements.txt", "requirements-reference.txt"]
 
@@ -39,15 +61,16 @@ def portable():
 
 
 def local_engine_supports(arch):
-    if not ENGINE.is_file() or ENGINE.parent != ROOT / "build-cuda":
+    if not ENGINE.is_file() or (ROOT / "build-cuda") not in ENGINE.parents:
         return False
-    try:
-        lines = (ENGINE.parent / "CMakeCache.txt").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    for line in lines:
-        if line.startswith("CMAKE_CUDA_ARCHITECTURES:"):
-            return arch in {part.split("-", 1)[0] for part in line.split("=", 1)[1].split(";")}
+    for cache in (ENGINE.parent / "CMakeCache.txt", ENGINE.parent.parent / "CMakeCache.txt"):
+        try:
+            lines = cache.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if line.startswith("CMAKE_CUDA_ARCHITECTURES:"):
+                return arch in {part.split("-", 1)[0] for part in line.split("=", 1)[1].split(";")}
     return False
 
 # Context lengths offered on first run. The KV cache is FP16 on the GPU in all
@@ -137,8 +160,17 @@ def prompt(text):
 
 
 def ask(config, reconfigure):
-    """Asks for the context length and MTP once; non-interactive runs take the defaults."""
+    """Asks for the model, context length and MTP once; non-interactive runs take the defaults."""
     interactive = sys.stdin.isatty()
+    if "model" not in config:                 # first run only; use --model to change it later
+        choice = 1
+        if interactive:
+            print("\nWhich model should Lamina run?")
+            print("  1) Qwen3.6-35B-A3B      the pinned model (recommended)")
+            print("  2) Ornith-1.5-35B-A3B   same architecture, coding-focused; needs the source-built engine")
+            answer = prompt("Choose 1-2 [1]: ")
+            choice = int(answer) if answer in ("1", "2") else 1
+        config["model"] = "ornith" if choice == 2 else "qwen3.6"
     if reconfigure or "max_context" not in config:
         choice = 2
         if interactive:
@@ -197,21 +229,29 @@ def setup(config, cuda_arch=None, build_source=False):
         step(f"Building the engine for compute capability {arch} (incremental)")
         run([sys.executable, "-m", "tools.build_windows", "--cuda-arch", arch])
 
-    if not (DATA / "models" / FILENAME).is_file():
-        step("Downloading the model (22 GB, resumable)")
-        run([sys.executable, "setup.py", "--download"])
-    if not (DATA / "tokenizer" / "tokenizer.json").is_file():
-        step("Downloading the tokenizer")
-        run([sys.executable, "setup.py", "--tokenizer"])
-    step("Checking the chat template and assets")
-    run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if portable() else [])])
+    paths = model_paths(config)
+    if config.get("model") == "ornith":
+        if not local_engine_supports(arch) and not build_source:
+            print("WARNING: Ornith needs the qwen35moe engine built from source; run"
+                  " START-HERE.bat --model ornith --build-source once, then serve normally.")
+        step("Setting up Ornith-1.5-35B-A3B (download, SSM fix, MTP pack)")
+        from tools.lamina_ornith import setup as ornith_setup
+        ornith_setup(DATA)
+    else:
+        if not paths["model"].is_file():
+            step("Downloading the model (22 GB, resumable)")
+            run([sys.executable, "setup.py", "--download"])
+        if not paths["tokenizer"].is_file():
+            step("Downloading the tokenizer")
+            run([sys.executable, "setup.py", "--tokenizer"])
+        step("Checking the chat template and assets")
+        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if portable() else [])])
+        if config.get("mtp") and not paths["mtp"].is_file():
+            step("Fetching and packing the MTP head (about 1.6 GB download)")
+            run([sys.executable, "-m", "tools.lamina_mtp", "fetch"])
+            run([sys.executable, "-m", "tools.lamina_mtp", "pack"])
     config["cuda_arch"] = arch
     config["engine"] = str(ENGINE.resolve())
-
-    if config.get("mtp") and not MTP_FILE.is_file():
-        step("Fetching and packing the MTP head (about 1.6 GB download)")
-        run([sys.executable, "-m", "tools.lamina_mtp", "fetch"])
-        run([sys.executable, "-m", "tools.lamina_mtp", "pack"])
     CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     print("\nSetup complete.")
 
@@ -227,20 +267,23 @@ def engine_environment():
 
 
 def engine_options(config, context):
+    paths = model_paths(config)
     options = ["--engine", ENGINE, "--cuda", "--compute-mode", "fast", "--kv-type", "f16", "--kv-cache", "device",
                "--max-context", str(context)]
-    if config.get("mtp") and MTP_FILE.is_file():
-        options += ["--mtp", MTP_FILE]
+    if config.get("model") == "ornith":
+        options += ["--model", str(paths["model"]), "--tokenizer", str(paths["tokenizer"])]
+    if config.get("mtp") and paths["mtp"].is_file():
+        options += ["--mtp", str(paths["mtp"])]
     return options
 
 
 def chat(config, context, thinking, max_tokens):
     os.environ.update(engine_environment())
     from tools.lamina_chat import Engine
-    from tools.lamina_model import FILENAME
-    engine = Engine(DATA / "models" / FILENAME, DATA / "tokenizer" / "tokenizer.json", ENGINE, cuda=True,
+    paths = model_paths(config)
+    engine = Engine(paths["model"], paths["tokenizer"], ENGINE, cuda=True,
                     max_context=context, kv_cache="device", kv_type="f16", compute_mode="fast",
-                    mtp=MTP_FILE if config.get("mtp") and MTP_FILE.is_file() else None)
+                    mtp=paths["mtp"] if config.get("mtp") and paths["mtp"].is_file() else None)
     print(f"\nLamina chat, context {context // 1024}K, MTP {'on' if engine.mtp else 'off'}. "
           "Commands: /new starts a new conversation, /exit quits.")
     print("The first answer takes longer while the model loads.\n")
@@ -291,8 +334,9 @@ def run_server(config, context, host, port, preload=True):
     if server_ready(port):
         sys.exit(f"Something already answers on port {port}, probably a Lamina server that is still running.\n"
                  f"Close it first, or start this one on another port: START-HERE.bat --port {port + 1}")
-    mtp = bool(config.get("mtp") and MTP_FILE.is_file())
-    print(f"\nStarting the Lamina server (context {context // 1024}K, MTP {'on' if mtp else 'off'}) ...")
+    paths = model_paths(config)
+    mtp = bool(config.get("mtp") and paths["mtp"].is_file())
+    print(f"\nStarting the Lamina server ({paths['name']}, context {context // 1024}K, MTP {'on' if mtp else 'off'}) ...")
     command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", host, "--port", str(port)]
     server = subprocess.Popen([str(c) for c in command], cwd=ROOT, env=engine_environment())
     try:
@@ -353,24 +397,33 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="serve: listening address")
     parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
     parser.add_argument("--no-preload", action="store_true", help="serve: do not load the model at startup (the first request does)")
+    parser.add_argument("--model", choices=("qwen3.6", "ornith"), help="which model to serve (default: qwen3.6)")
     args = parser.parse_args(argv)
     if portable() and args.build_source:
         parser.error("--build-source needs a source checkout; the portable release contains no build toolchain")
+    if args.model == "ornith" and not args.build_source and not (ROOT / "build-cuda").is_dir():
+        parser.error("--model ornith needs the qwen35moe source engine: add --build-source once")
 
     DATA.mkdir(parents=True, exist_ok=True)
-    config = ask(load_config(), args.reconfigure)
+    stored = load_config()
+    if args.model:
+        stored["model"] = args.model          # --model skips the first-run question
+    config = ask(stored, args.reconfigure)
+    if args.model:
+        config["model"] = args.model
+    config.setdefault("model", "qwen3.6")
     # A portable ZIP always uses its own matching binaries. Source checkouts
     # retain an already-built developer engine, or the last downloaded release.
     if not portable() and not args.build_source and not ENGINE.is_file():
         from tools.lamina_release import VERSION
         ENGINE = DATA / "engine" / VERSION / "lamina-infer.exe"
-    from tools.lamina_model import FILENAME
+    paths = model_paths(config)
     marker = DATA / ".quickstart-requirements"
     needs_setup = (args.command == "setup" or portable() or args.build_source or not ENGINE.is_file() or args.cuda_arch
-                   or not (DATA / "models" / FILENAME).is_file()
-                   or not (DATA / "tokenizer/tokenizer.json").is_file()
+                   or not paths["model"].is_file()
+                   or not paths["tokenizer"].is_file()
                    or not marker.is_file() or marker.read_text() != requirements_digest(RUNTIME_REQUIREMENTS)
-                   or (config.get("mtp") and not MTP_FILE.is_file()))
+                   or (config.get("mtp") and not paths["mtp"].is_file()))
     if needs_setup:
         setup(config, args.cuda_arch, args.build_source)
     if args.command == "setup":

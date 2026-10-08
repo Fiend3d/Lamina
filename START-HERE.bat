@@ -5,6 +5,7 @@ rem   START-HERE.bat chat            talk to the model in this window instead
 rem   START-HERE.bat setup           download and set up only
 rem   START-HERE.bat --build-source  compile locally (developers)
 rem   START-HERE.bat --reconfigure   choose context length and MTP again
+rem   START-HERE.bat --model ornith  serve Ornith-1.5-35B-A3B instead of Qwen3.6
 rem   START-HERE.bat --port 9000     use another port
 rem Close the window or press Ctrl+C to stop the server.
 setlocal
