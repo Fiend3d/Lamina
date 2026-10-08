@@ -35,8 +35,8 @@ it from a terminal in the repository folder:
 .\START-HERE.bat
 ```
 
-The first run asks two questions (see below), then sets everything up and opens
-a chat. All downloaded and generated files go to the sibling folder
+The first run asks two questions (see below), then sets everything up and starts
+the model server. All downloaded and generated files go to the sibling folder
 `..\Lamina-data`, never into the repository. The first run takes a while:
 
 1. It creates a Python environment and installs packages (a few minutes).
@@ -46,15 +46,26 @@ a chat. All downloaded and generated files go to the sibling folder
 4. If you enabled MTP, it downloads and packs the MTP head (about 1.6 GB).
 
 If a step fails, fix the cause shown in the message and run the same command
-again; finished steps are skipped. Later starts take only a few seconds.
+again; finished steps are skipped. Later starts skip setup.
 
-In the chat, type a message and press Enter. Type `/new` to start a new
-conversation and `/exit` to quit. Each answer ends with its length and speed.
+When everything is loaded, the window shows the address to use. Loading the
+model takes up to a minute or two, during which the PC can be slow:
 
 ```text
-You: What is the capital of France? Answer in one sentence.
-Lamina: The capital of France is Paris.
+ Lamina is ready.
+
+   Base URL : http://127.0.0.1:8000/v1
+   Model    : Qwen3.6-35B-A3B-UD-Q4_K_M
+   API key  : anything (it is not checked)
 ```
+
+Leave the window open while you use the model, and close it (or press Ctrl+C)
+to stop the server. Add the base URL as an "OpenAI-compatible" provider in a
+coding agent such as [pi](#connecting-pi-and-other-apps) or in any other app.
+
+To talk to the model right in the terminal instead, run
+`.\START-HERE.bat chat`. Type a message and press Enter; `/new` starts a new
+conversation and `/exit` quits. Each answer ends with its length and speed.
 
 ## The two setup questions
 
@@ -83,18 +94,18 @@ about 1.6 GB and about 100 MB of VRAM. Saying yes is recommended.
 
 | Command | What it does |
 | --- | --- |
-| `.\START-HERE.bat` | Chat in the terminal (sets up first if needed). |
-| `.\START-HERE.bat serve` | Starts the server on `http://127.0.0.1:8000`. |
+| `.\START-HERE.bat` | Starts the server on `http://127.0.0.1:8000/v1` and loads the model (sets up first if needed). |
+| `.\START-HERE.bat chat` | Talks to the model in the terminal instead of starting the server. |
 | `.\START-HERE.bat setup` | Installs, downloads and builds without starting anything; run it after updating the repository. |
 | `.\START-HERE.bat --reconfigure` | Asks the two setup questions again. |
 | `.\START-HERE.bat --max-context 65536` | Uses another context length for this run only. |
-| `.\START-HERE.bat --thinking` | Lets the model reason before answering (slower, often better on hard problems); the reasoning is printed separately. |
-| `.\START-HERE.bat --max-tokens 4096` | Allows longer answers (default 2048 tokens). |
-| `.\START-HERE.bat serve --port 9000` | Uses another port; `--host 0.0.0.0` exposes the server to your network, without any authentication. |
+| `.\START-HERE.bat chat --thinking` | Lets the model reason before answering (slower, often better on hard problems); the reasoning is printed separately. |
+| `.\START-HERE.bat chat --max-tokens 4096` | Allows longer answers in the terminal chat (default 2048 tokens). |
+| `.\START-HERE.bat --port 9000` | Uses another port; `--host 0.0.0.0` exposes the server to your network, without any authentication. |
 
 ## Using the server
 
-`.\START-HERE.bat serve` starts an OpenAI-compatible HTTP server. Any client
+`.\START-HERE.bat` starts an OpenAI-compatible HTTP server. Any client
 that supports a custom OpenAI base URL can use it, with base URL
 `http://127.0.0.1:8000/v1`, any API key, and the model name
 `Qwen3.6-35B-A3B-UD-Q4_K_M`. A quick test from PowerShell:
@@ -119,6 +130,56 @@ The server supports streaming, `temperature`, `top_p`, `top_k`, `seed`,
 output. It handles one request at a time. Speculative decoding speeds up
 requests with temperature 0; other requests run at the normal speed.
 
+## Connecting pi and other apps
+
+Start the server with `.\START-HERE.bat` and leave its window open. Then add
+Lamina to the app as an OpenAI-compatible provider. For the
+[pi coding agent](https://pi.dev) (needs Node.js 22.19 or newer and Git for
+Windows), put this in `~\.pi\agent\models.json`, creating the file if needed
+(set `contextWindow` to the context length you chose; `maxTokens` must stay
+well below it, because the server rejects an answer budget that does not fit
+beside the prompt):
+
+```json
+{
+  "providers": {
+    "lamina": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "lamina",
+      "models": [{
+        "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "name": "Qwen3.6-35B-A3B (Lamina)",
+        "reasoning": false,
+        "input": ["text"],
+        "contextWindow": 32768,
+        "maxTokens": 8192,
+        "compat": {
+          "supportsDeveloperRole": false,
+          "supportsReasoningEffort": false,
+          "supportsUsageInStreaming": true,
+          "maxTokensField": "max_tokens"
+        }
+      }]
+    }
+  }
+}
+```
+
+Then run `pi --model lamina/Qwen3.6-35B-A3B-UD-Q4_K_M` in your project folder
+and pick the model with `/model` if needed. The `compat` lines matter: the
+server accepts only the system, user, assistant and tool message roles, and
+answers `max_tokens`, not `max_completion_tokens`. If pi's bash tool reports
+that no shell is available, set `"shellPath"` in `~\.pi\agent\settings.json` to
+your Git Bash, for example `"C:\\Git\\bin\\bash.exe"`.
+
+What to expect from an agent: pi's own instructions take about 1,700 tokens
+and Lamina starts every request from scratch, so each step costs about 7
+seconds on an RTX 3050 even when the answer is short, and more as the
+conversation grows (reading a prompt runs at roughly 300-400 tokens per
+second). The model is a 4-bit 35B-parameter model, so check what it reports
+and what it changes.
+
 ## Troubleshooting
 
 | Problem | What to do |
@@ -129,7 +190,8 @@ requests with temperature 0; other requests run at the normal speed.
 | A download stopped | Run the same command again; downloads resume. |
 | Out of GPU memory, or the engine exits | Close other programs that use the GPU (browsers and video players take GPU memory), or run `.\START-HERE.bat --reconfigure` and pick a shorter context. When memory runs low Lamina now releases cached experts and keeps going, slower, with one "GPU memory is low" note in its log. |
 | Generation is slower than expected | With less than 48 GB of RAM the model cannot be pinned, which costs speed. Other GPU work (games, video) also competes. |
-| "prompt and response exceed the context" | Type `/new` to start a fresh conversation, or choose a longer context. |
+| "prompt and response exceed the context" | In the terminal chat type `/new` to start a fresh conversation. In an app, start a new conversation, or choose a longer context. |
+| "Something already answers on port 8000" | A Lamina server is still running in another window. Close it, or start this one with `--port 8001`. |
 
 ## How fast is it
 

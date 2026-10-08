@@ -1,9 +1,13 @@
 """One-command setup and launcher for Lamina on Windows.
 
-    python tools/quickstart.py            set up if needed, then chat
+    python tools/quickstart.py            set up if needed, then start the server
+    python tools/quickstart.py chat       talk to the model in this window instead
     python tools/quickstart.py setup      install, download and build only
-    python tools/quickstart.py serve      OpenAI-compatible server on 127.0.0.1:8000
-    python tools/quickstart.py chat --reconfigure   ask the questions again
+    python tools/quickstart.py --reconfigure   ask the questions again
+
+The server speaks the OpenAI API on http://127.0.0.1:8000/v1, so coding agents such as
+pi and other apps can use it. It loads the model at startup and stops when this window
+is closed or Ctrl+C is pressed.
 
 Every setup step is skipped when its result is already present, so re-running
 is cheap. Answers to the two questions (context length, MTP speculation) are
@@ -16,6 +20,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,11 +245,69 @@ def chat(config, context, thinking, max_tokens):
         engine.close()
 
 
+def server_ready(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def run_server(config, context, host, port):
+    """Starts lamina.py serve, loads the model, prints how to connect, and waits."""
+    from tools.lamina_chat import MODEL_NAME
+    if server_ready(port):
+        sys.exit(f"Something already answers on port {port}, probably a Lamina server that is still running.\n"
+                 f"Close it first, or start this one on another port: START-HERE.bat --port {port + 1}")
+    mtp = bool(config.get("mtp") and MTP_FILE.is_file())
+    print(f"\nStarting the Lamina server (context {context // 1024}K, MTP {'on' if mtp else 'off'}) ...")
+    command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", host, "--port", str(port)]
+    server = subprocess.Popen([str(c) for c in command], cwd=ROOT, env=engine_environment())
+    try:
+        for _ in range(240):
+            if server_ready(port) or server.poll() is not None:
+                break
+            time.sleep(0.5)
+        if server.poll() is not None:
+            sys.exit("The server stopped right after starting; see the messages above.")
+        print("Loading the model into memory. Your PC can be slow for a minute or two, and longest the first time.", flush=True)
+        # The engine starts with the first request; send a tiny one now so that the first real request is fast.
+        body = json.dumps({"model": MODEL_NAME, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}).encode()
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body, {"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(request, timeout=900).read()
+        except OSError as error:
+            sys.exit(f"The model did not load: {error}\nSee the messages above.")
+        shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        print(f"""
+================================================================
+ Lamina is ready.
+
+   Base URL : http://{shown}:{port}/v1
+   Model    : {MODEL_NAME}
+   API key  : anything (it is not checked)
+
+ In pi or another OpenAI-compatible app, add a provider with this
+ base URL. Close this window or press Ctrl+C to stop the server.
+================================================================""", flush=True)
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            print(f" WARNING: listening on {host} without any password; everyone who can reach this PC can use the model.", flush=True)
+        return server.wait()
+    finally:
+        if server.poll() is None:
+            subprocess.run(["taskkill", "/PID", str(server.pid), "/T", "/F"], capture_output=True)
+            try:
+                server.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+            print("Lamina stopped.")
+
+
 def main():
     argv = sys.argv[1:]
     ensure_venv(argv)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", default="chat", choices=("chat", "serve", "setup"))
+    parser.add_argument("command", nargs="?", default="serve", choices=("serve", "chat", "setup"))
     parser.add_argument("--reconfigure", action="store_true", help="ask for context length and MTP again")
     parser.add_argument("--max-context", type=int, help="override the stored context length for this run")
     parser.add_argument("--cuda-arch", help="override the detected compute capability, e.g. 86 or 89")
@@ -264,9 +328,7 @@ def main():
     if not 1024 <= context <= 131072:
         parser.error("--max-context must be 1024..131072")
     if args.command == "serve":
-        print(f"\nStarting the server on http://{args.host}:{args.port} (context {context // 1024}K). Ctrl+C stops it.")
-        command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", args.host, "--port", str(args.port)]
-        return subprocess.run([str(c) for c in command], cwd=ROOT, env=engine_environment()).returncode
+        return run_server(config, context, args.host, args.port)
     chat(config, context, args.thinking, min(args.max_tokens, context // 2))
     return 0
 

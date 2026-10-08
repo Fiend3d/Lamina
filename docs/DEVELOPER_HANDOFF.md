@@ -36,10 +36,12 @@ been remeasured.
 Users start with `START-HERE.bat`, which runs `tools/quickstart.py`: it asks
 for the context length and MTP once (stored in `../Lamina-data/quickstart.json`),
 performs every setup step that is not done yet, detects the GPU's compute
-capability for the build, and launches chat or `lamina.py serve` with the
-measured fast configuration (fast compute, FP16 device KV, MTP, host
-registration with at least 48 GB of RAM). The manual commands are in
-`docs/ADVANCED.md`.
+capability for the build, and launches `lamina.py serve` (default; `chat` is
+the terminal chat) with the measured fast configuration (fast compute, FP16
+device KV, MTP, host registration with at least 48 GB of RAM). Like Strata's
+launcher it loads the model at startup with a one-token request, prints the base
+URL, refuses to start when the port already answers, and stops the server tree
+when its window closes. The manual commands are in `docs/ADVANCED.md`.
 
 GPU memory pressure: `allocate` used to give up ("VRAM working set exceeds
 available headroom") once `evict_oldest()` found nothing, although the admission
