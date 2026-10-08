@@ -264,10 +264,14 @@ class Engine:
         ids = self.tokenizer.encode(prompt, add_special_tokens=False).ids
         self._prepared_prefix = []
         if not images and self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
-            # Cache only the stable system/tools block, before the first user.
+            # Cache the whole message history up to the generation prompt (the last
+            # "<|im_start|>assistant"). Agent clients resend the conversation each
+            # turn, so this checkpoint can be advanced - restore it, prefill only
+            # the new messages, then re-cache - instead of re-prefilling the full
+            # prompt every request. Non-monotonic conversations fall back to RESET.
             # Verify against full tokenization: splitting a string at an arbitrary
             # byte boundary can change the BPE token at the join.
-            boundary = prompt.find("<|im_start|>user\n")
+            boundary = prompt.rfind("<|im_start|>assistant\n")
             if boundary > 0:
                 prefix = self.tokenizer.encode(prompt[:boundary], add_special_tokens=False).ids
                 if 256 <= len(prefix) < len(ids) and ids[:len(prefix)] == prefix:
@@ -298,21 +302,36 @@ class Engine:
                 self.native.cancelled = cancelled
                 try:
                     prefix = self._prepared_prefix if getattr(self, "_cache_supported", False) else []
-                    cached = bool(prefix) and prefix == self._cache_prefix
-                    if cached:
+                    old = getattr(self, "_cache_prefix", [])
+                    reused = 0
+                    def feed(tokens):
+                        if len(tokens) > self.prefill_chunk:
+                            self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str, tokens)))
+                        else:
+                            self.native.command("BATCH " + " ".join(map(str, tokens)), True)
+                    if prefix and prefix == old:
                         self.native.command("RESTORE_PREFIX", True)
-                        self._log(f"  reused {len(prefix)} system/tool prefix tokens")
+                        reused = len(prefix)
+                        self._log(f"  reused {len(prefix)} prefix tokens")
+                    elif prefix and old and len(prefix) > len(old) and ids[:len(old)] == old:
+                        # The conversation grew by an append: keep the checkpoint's
+                        # KV and recurrent state, prefill only the new messages, and
+                        # move the checkpoint forward so the next turn reuses it.
+                        self.native.command("RESTORE_PREFIX", True)
+                        delta = prefix[len(old):]
+                        feed(delta)
+                        self.native.command("CACHE_PREFIX", True)
+                        reused = len(old)
+                        self._log(f"  extended prefix {len(old)} -> {len(prefix)} tokens (+{len(delta)})")
+                        self._cache_prefix = prefix
                     else:
                         self._cache_prefix = []
                         self.native.command("RESET", True)
-                    if prefix:
-                        if not cached:
-                            if len(prefix) > self.prefill_chunk:
-                                self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str, prefix)))
-                            else:
-                                self.native.command("BATCH " + " ".join(map(str, prefix)), True)
+                        if prefix:
+                            feed(prefix)
                             self.native.command("CACHE_PREFIX", True)
                             self._cache_prefix = prefix
+                    if prefix:
                         ids = ids[len(prefix):]
                     # Long prefix PROMPT returns an ignored token. Configure
                     # sampling afterwards so cache misses cannot consume this
@@ -333,7 +352,9 @@ class Engine:
                                     next_id = self.native.command(("PREFILL " if last else "BATCH ") + " ".join(map(str, pending)), not last)
                                     pending = []
                     first_token = time.perf_counter() - start
-                    self._log(f"  prompt read in {first_token:.1f} s ({prompt_count / max(first_token, 1e-9):.0f} tokens/s)")
+                    fresh = prompt_count - reused
+                    self._log(f"  prompt read in {first_token:.1f} s ({fresh} new of {prompt_count} tokens, "
+                              f"{fresh / max(first_token, 1e-9):.0f} tok/s, reused {reused})")
                     generation_start = last_progress = time.perf_counter()
                     generated, raw, prior_reason, prior_content = [], "", "", ""
                     finish = "length"
@@ -400,7 +421,7 @@ class Engine:
                     yield {"finish_reason": finish, "usage": {"prompt_tokens": prompt_count,
                            "completion_tokens": len(generated), "total_tokens": prompt_count + len(generated)},
                            "timings": {"first_token_seconds": first_token, "total_seconds": time.perf_counter()-start,
-                                       "cached_prompt_tokens": len(prefix) if cached else 0}}
+                                       "cached_prompt_tokens": reused}}
                 except BaseException:
                     self._stop_native()
                     raise

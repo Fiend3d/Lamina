@@ -1,12 +1,31 @@
 # Lamina developer handoff
 
-v0.1.1 adds one immutable system/tools prefix checkpoint for CUDA device KV.
-The Python server probes native capabilities and verifies exact BPE prefix IDs;
-older engines, host KV, images, changed prefixes and restarts use RESET.
-Independent recurrent snapshots are budgeted separately from MTP rollback;
-attention prefix KV stays in place while suffixes append. `LAMINA_PREFIX_CACHE=0`
-disables reuse. See [the RTX 4060 record](../bench/results/2026-10-08-rtx4060-prefix/README.md)
-for commands, measurements, numerical checks and limitations.
+v0.1.1 adds one prefix checkpoint for CUDA device KV. The Python server probes
+native capabilities and verifies exact BPE prefix IDs; older engines, host KV,
+images, changed prefixes and restarts use RESET. Independent recurrent snapshots
+are budgeted separately from MTP rollback; attention prefix KV stays in place
+while suffixes append. `LAMINA_PREFIX_CACHE=0` disables reuse. See
+[the RTX 4060 record](../bench/results/2026-10-08-rtx4060-prefix/README.md) for
+commands, measurements, numerical checks and limitations.
+
+The server now caches the whole message history up to the generation prompt, and
+advances that checkpoint across turns of an append-only conversation
+(`tools/lamina_chat.py`): restore the previous checkpoint, prefill only the new
+messages, re-cache. Agent clients that resend the conversation each turn reuse
+everything but the new content - pi's per-turn first token fell from 41-47 s to
+well under 1 s at 38K prompt tokens. A previous checkpoint that is not an exact
+token prefix (compaction, edits, host KV, images) still falls back to RESET. See
+[the conversation-prefix record](../bench/results/2026-10-09-conversation-prefix/README.md).
+
+Fast-mode `cpu-miss` now uses the overlapping expert pipeline while the GPU
+expert cache is still filling and switches to the serial path once it is warm
+(`Impl::pipeline_mode` in `src/model/cuda_projection.cpp`; `LAMINA_HYBRID=0`
+restores the previous always-serial behavior). CPU experts only run after an
+eviction, so this only removes exposed miss-upload latency during the fill. On
+the RTX 4060 Ti 16 GB the first 32 decode tokens roughly doubled (17 -> 29
+tokens/s), first-token time fell ~2.4 s, and steady decode was unchanged; the
+no-eviction output is byte-identical. See
+[the warm-up hybrid record](../bench/results/2026-10-09-rtx4060ti/README.md).
 
 v0.1.1 is published as a prerelease from `23f5a84`, authored by Vlad Tatintsev.
 The final extracted portable ZIP passed preload/startup, greedy MTP, streamed

@@ -1,9 +1,14 @@
 # Qwen3.6 port status
 
-CUDA device-KV server requests can reuse an exact unchanged system/tools prefix
-in v0.1.1. This saves prompt work on later agent turns, with independent DeltaNet
-state snapshots and unchanged prefix attention KV. Host KV and image requests
-retain RESET. See [validation and timings](../bench/results/2026-10-08-rtx4060-prefix/README.md).
+CUDA device-KV server requests can reuse a prefix checkpoint across turns. v0.1.1
+reused an exact unchanged system/tools prefix; v0.1.2 caches the whole message
+history up to the generation prompt and advances that checkpoint when the
+conversation grows by an append (restore, prefill only the new messages, re-cache),
+so an agent client reuses everything but the new content. Independent DeltaNet
+state snapshots and unchanged prefix attention KV; a checkpoint that is not an
+exact BPE prefix falls back to RESET, as do host KV and image requests. See the
+[conversation-prefix validation](../bench/results/2026-10-09-conversation-prefix/README.md)
+and the earlier [system/tools record](../bench/results/2026-10-08-rtx4060-prefix/README.md).
 
 Windows distribution: portable ZIP packaging includes Python, dependencies,
 SM86/89/120 native binaries and CUDA runtime DLLs; source setup can download a

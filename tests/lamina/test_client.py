@@ -118,6 +118,31 @@ class ClientTest(unittest.TestCase):
             engine._stop_native()
             self.assertEqual(engine._cache_prefix, [])
 
+    def test_prefix_checkpoint_advances_when_conversation_grows(self):
+        class Native:
+            def __init__(self): self.commands = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory); native = Native(); engine.native = native
+            engine._cache_supported = True; engine._cache_prefix = []
+            state = {"ids": list(range(66)), "prefix": list(range(64))}
+            def prepare(*args):
+                engine._prepared_prefix = list(state["prefix"])
+                return list(state["ids"]), [], len(state["ids"])
+            engine._prepare = prepare
+            list(engine.events([{"role": "user", "content": "a"}], 1))
+            # the next turn appends to the conversation: the checkpoint extends
+            state["prefix"] = list(range(70)); state["ids"] = list(range(70)) + [7, 8, 9]
+            list(engine.events([{"role": "user", "content": "b"}], 1))
+            self.assertEqual(native.commands.count("RESET"), 1)
+            self.assertEqual(native.commands.count("RESTORE_PREFIX"), 1)
+            self.assertEqual(native.commands.count("CACHE_PREFIX"), 2)
+            restore = native.commands.index("RESTORE_PREFIX")
+            self.assertIn("CACHE_PREFIX", native.commands[restore:])  # restore, then re-cache the longer prefix
+
     def test_fast_rejected_for_cpu_before_loading_tokenizer(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / name for name in ("model", "tokenizer", "engine")]
