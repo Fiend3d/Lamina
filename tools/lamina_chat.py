@@ -188,10 +188,17 @@ class Engine:
 
     def validate(self, messages, options):
         o = validate_options(options, self.max_context)
-        if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages) or messages[-1].get("role") not in ("user", "tool"):
+        if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages):
+            raise ValueError("messages must end with a user or tool message")
+        # OpenAI's "developer" role carries the same instruction payload as "system". The chat template
+        # takes a system message only at the start, so a late system/developer message becomes a user
+        # message in place (merging it into the first would move the prompt start and cost the cache).
+        messages = [dict(m, role="system") if m.get("role") == "developer" else m for m in messages]
+        messages = [dict(m, role="user") if m.get("role") == "system" and i > 0 else m for i, m in enumerate(messages)]
+        if messages[-1].get("role") not in ("user", "tool"):
             raise ValueError("messages must end with a user or tool message")
         for index, message in enumerate(messages):
-            if not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant", "tool"):
+            if message.get("role") not in ("system", "user", "assistant", "tool"):
                 raise ValueError("invalid message role")
             if message["role"] == "system" and index != 0: raise ValueError("system message must be first")
             content = message.get("content")

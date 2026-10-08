@@ -176,6 +176,18 @@ class ClientTest(unittest.TestCase):
             with self.assertRaises(ConnectionResetError): engine.completion([{"role": "user", "content": "Hi"}], 1)
             self.assertTrue(native.closed); self.assertIsNone(engine.native)
 
+    def test_developer_and_late_system_roles_normalize(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            messages, _, _ = engine.validate([
+                {"role": "developer", "content": "D"},
+                {"role": "user", "content": "u"},
+                {"role": "system", "content": "late"},
+                {"role": "developer", "content": "later"}], {})
+            self.assertEqual([m["role"] for m in messages], ["system", "user", "user", "user"])
+            with self.assertRaises(ValueError):
+                engine.validate([{"role": "robot", "content": "x"}], {})
+
     def test_invalid_tool_schema_and_selection(self):
         try: import jsonschema
         except ImportError: self.skipTest("jsonschema not installed")
