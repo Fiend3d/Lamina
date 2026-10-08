@@ -22,6 +22,9 @@ class CancellationTests(unittest.TestCase):
             self.assertFalse(writer.is_alive(),"blocked native write survived disconnect")
             self.assertEqual(len(errors),1)
             self.assertIsInstance(errors[0],ConnectionResetError)
+            # TerminateProcess closes the pipe before its process handle is
+            # necessarily signalled on Windows. Still require bounded exit.
+            native.process.wait(timeout=5)
             self.assertIsNotNone(native.process.poll())
         finally:
             native.close()
