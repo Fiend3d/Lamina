@@ -43,3 +43,22 @@ existing path. Old engine binaries are detected and use RESET. Disable reuse
 with `LAMINA_PREFIX_CACHE=0`. See the benchmark record for exact conditions.
 
 Fix runtime dependency installation and a Windows cancellation-test race in CI.
+# v0.1.2
+
+Reuse the whole conversation prefix across agent turns. v0.1.1 could only reuse an
+unchanged system/tools block, so coding agents that resend the conversation each
+turn re-prefilled the entire prompt every request: 41-47 s to the first token at
+38K prompt tokens. The server now caches the message history up to the generation
+prompt and advances that checkpoint when the conversation grows by an append,
+prefilling only the new messages. On the RTX 4060 Ti 16 GB the second turn of a
+grown conversation reached the first token in 0.5 s versus 5.2 s cold, with
+identical output; a checkpoint that is not an exact BPE prefix still falls back to
+RESET. The server log now reports new versus reused prompt tokens.
+
+Fast mode also uses the overlapping expert pipeline while the GPU expert cache is
+still filling and switches to the serial path once it is warm, roughly doubling
+the first ~32 decode tokens of a cold request without changing steady decode;
+`LAMINA_HYBRID=0` restores the previous behavior. Under cache eviction the
+selected trajectory can differ from the previous release, as it already does
+between the stream and cpu-miss policies. `LAMINA_PREFIX_CACHE=0` disables prefix
+reuse. See the conversation-prefix and warm-up benchmark records for conditions.

@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 REPOSITORY = "Fiend3d/Lamina"
-VERSION = "v0.1.1"
+VERSION = "v0.1.2"
 ENGINE_ASSET = "lamina-windows-x64-engine.zip"
 ARCHITECTURES = ("86", "89", "120")
 
