@@ -33,6 +33,14 @@ The RTX 4060 machine of the earlier records (llama.cpp 25.47 versus Lamina
 and [validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md)) has not
 been remeasured.
 
+Users start with `START-HERE.bat`, which runs `tools/quickstart.py`: it asks
+for the context length and MTP once (stored in `../Lamina-data/quickstart.json`),
+performs every setup step that is not done yet, detects the GPU's compute
+capability for the build, and launches chat or `lamina.py serve` with the
+measured fast configuration (fast compute, FP16 device KV, MTP, host
+registration with at least 48 GB of RAM). The manual commands are in
+`docs/ADVANCED.md`.
+
 Start here. Lamina targets the pinned Qwen3.6-35B-A3B UD-Q4_K_M GGUF,
 architecture `qwen35moe`. Strata baseline is
 `6f32ec070f23ced9f50e704d854d775da52591ab`. Model, tokenizer, mmproj,
@@ -346,9 +354,10 @@ The NumPy reference uses independent gguf-py dequantization.
 The default compute mode is checked FP32. Enable optional reduced-precision
 computation with `--compute-mode fast`; KV precision is a separate option.
 For the streaming policy on a 64 GiB RAM machine, set `LAMINA_HOST_REGISTER=1`
-to bypass staging memcpy and DMA directly from registered model pages. With the
-fast-mode CPU policy it measured no faster than leaving it unset on the RTX 3050
-machine; there it only enables admission. Registration failure
+to bypass staging memcpy and DMA directly from registered model pages. In fast
+CPU-miss mode it enables expert admission, which is now worth 44.8-46.2 against
+36.1-41.0 tokens/s with MTP on the RTX 3050 machine; `tools/quickstart.py`
+(behind `START-HERE.bat`) sets it automatically with at least 48 GB of RAM. Registration failure
 falls back to the persistent worker staging pool. Registration adds about
 several seconds to cold startup and reserves roughly 21 GiB of pinned RAM.
 It is not appropriate to set blindly on a low-RAM machine.

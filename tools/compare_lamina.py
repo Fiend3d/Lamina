@@ -27,10 +27,11 @@ def main():
     p.add_argument("--tokens", type=int, default=256)
     p.add_argument("--prompts", nargs="+", choices=list(PROMPTS), default=list(PROMPTS))
     p.add_argument("--prompt-file", type=Path)
+    p.add_argument("--host-register", choices=("0", "1"), default="1", help="LAMINA_HOST_REGISTER for the engine")
     p.add_argument("--mtp", type=Path, help="packed MTP head: generate with greedy speculation (GENERATE)")
     a = p.parse_args()
     a.report_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["LAMINA_HOST_REGISTER"] = "1"
+    os.environ["LAMINA_HOST_REGISTER"] = a.host_register
     command = [str(a.engine.resolve()), str(data / "models" / FILENAME), "--cuda", "--compute-mode", "fast",
                "--kv-type", "f16", "--kv-cache", "device", "--max-context", str(a.context)]
     if a.mtp:

@@ -1,0 +1,272 @@
+"""One-command setup and launcher for Lamina on Windows.
+
+    python tools/quickstart.py            set up if needed, then chat
+    python tools/quickstart.py setup      install, download and build only
+    python tools/quickstart.py serve      OpenAI-compatible server on 127.0.0.1:8000
+    python tools/quickstart.py chat --reconfigure   ask the questions again
+
+Every setup step is skipped when its result is already present, so re-running
+is cheap. Answers to the two questions (context length, MTP speculation) are
+stored in ../Lamina-data/quickstart.json.
+"""
+import argparse
+import ctypes
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT.parent / "Lamina-data"
+VENV_PYTHON = DATA / "venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+CONFIG = DATA / "quickstart.json"
+ENGINE = ROOT / "build-cuda" / ("lamina-infer.exe" if sys.platform == "win32" else "lamina-infer")
+MTP_FILE = DATA / "mtp" / "qwen36-mtp-q8_0.gguf"
+REQUIREMENTS = ["requirements.txt", "requirements-build.txt", "requirements-reference.txt", "requirements-benchmark.txt"]
+
+# Context lengths offered on first run. The KV cache is FP16 on the GPU in all
+# of them: that is the measured fast configuration, and MTP speculation needs
+# the cache on the GPU. Longer contexts leave less VRAM for the expert cache.
+CONTEXTS = [
+    (8192, "8K    short chats, most VRAM left for experts"),
+    (32768, "32K   recommended"),
+    (65536, "64K   long documents"),
+    (131072, "128K  very long documents; KV cache takes about 2.5 GiB of VRAM, decode is slower"),
+]
+
+
+def step(title):
+    print(f"\n== {title}", flush=True)
+
+
+def run(command, **kwargs):
+    print("   $ " + " ".join(str(c) for c in command), flush=True)
+    subprocess.run([str(c) for c in command], cwd=ROOT, check=True, **kwargs)
+
+
+def ensure_venv(argv):
+    """Creates the virtual environment and re-runs this script inside it."""
+    if Path(sys.prefix).resolve() == VENV_PYTHON.parents[1].resolve():
+        return
+    if sys.version_info < (3, 11):
+        sys.exit("Lamina needs Python 3.11 or newer: https://www.python.org/downloads/")
+    if not VENV_PYTHON.is_file():
+        step(f"Creating the Python environment in {VENV_PYTHON.parents[1]}")
+        DATA.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, "-m", "venv", str(VENV_PYTHON.parents[1])], check=True)
+    sys.exit(subprocess.run([str(VENV_PYTHON), "-m", "tools.quickstart", *argv], cwd=ROOT).returncode)
+
+
+def total_ram_gib():
+    if sys.platform != "win32":
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+
+    class Status(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                    ("available", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong),
+                    ("page_available", ctypes.c_ulonglong), ("virtual_total", ctypes.c_ulonglong),
+                    ("virtual_available", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]
+    status = Status(); status.length = ctypes.sizeof(Status)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+    return status.total / 2**30
+
+
+def gpu():
+    """Returns (name, compute capability as '86', VRAM MiB) of the first NVIDIA GPU."""
+    try:
+        line = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap,memory.total", "--format=csv,noheader,nounits"],
+                              capture_output=True, text=True, check=True).stdout.splitlines()[0]
+    except (OSError, subprocess.CalledProcessError, IndexError):
+        sys.exit("No NVIDIA GPU found (nvidia-smi failed). Lamina's fast path needs an NVIDIA GPU and driver.")
+    name, capability, memory = (part.strip() for part in line.split(","))
+    return name, capability.replace(".", ""), int(float(memory))
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def prompt(text):
+    try:
+        return input(text).strip()
+    except EOFError:  # closed input: take the default
+        print()
+        return ""
+
+
+def ask(config, reconfigure):
+    """Asks for the context length and MTP once; non-interactive runs take the defaults."""
+    interactive = sys.stdin.isatty()
+    if reconfigure or "max_context" not in config:
+        choice = 2
+        if interactive:
+            print("\nHow much context (prompt plus answer) should Lamina support?")
+            for i, (_, text) in enumerate(CONTEXTS, 1):
+                print(f"  {i}) {text}")
+            answer = prompt("Choose 1-4 [2]: ")
+            choice = int(answer) if answer in ("1", "2", "3", "4") else 2
+        config["max_context"] = CONTEXTS[choice - 1][0]
+    if reconfigure or "mtp" not in config:
+        enable = True
+        if interactive:
+            print("\nEnable MTP speculative decoding? It drafts one token ahead with the model's own")
+            print("multi-token-prediction head and verifies it in the same pass: about 20% faster")
+            print("generation at temperature 0 (the default), identical quality. It needs a one-time")
+            print("download of about 1.6 GB, packed to 857 MB, and about 100 MB of extra VRAM.")
+            enable = prompt("Enable MTP? [Y/n]: ").lower() not in ("n", "no")
+        config["mtp"] = enable
+    CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return config
+
+
+def requirements_digest():
+    digest = hashlib.sha256()
+    for name in REQUIREMENTS:
+        digest.update((ROOT / name).read_bytes())
+    return digest.hexdigest()
+
+
+def setup(config, cuda_arch=None):
+    from tools.lamina_model import FILENAME
+    name, capability, memory = gpu()
+    arch = cuda_arch or capability
+    print(f"GPU: {name}, compute capability {capability[0]}.{capability[1:]}, {memory} MiB; RAM: {total_ram_gib():.0f} GiB")
+
+    marker = DATA / ".quickstart-requirements"
+    if not marker.is_file() or marker.read_text() != requirements_digest():
+        step("Installing Python packages")
+        run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
+             *[arg for name in REQUIREMENTS for arg in ("-r", name)]])
+        marker.write_text(requirements_digest())
+
+    if not (DATA / "models" / FILENAME).is_file():
+        step("Downloading the model (22 GB, resumable)")
+        run([sys.executable, "setup.py", "--download"])
+    if not (DATA / "tokenizer" / "tokenizer.json").is_file():
+        step("Downloading the tokenizer")
+        run([sys.executable, "setup.py", "--tokenizer"])
+    step("Checking the chat template and assets")
+    run([sys.executable, "-m", "tools.lamina_assets"])
+    if not (DATA / "toolchains" / "cuda" / "bin" / ("nvcc.exe" if sys.platform == "win32" else "nvcc")).is_file():
+        step("Installing the pinned CUDA compiler into Lamina-data")
+        run([sys.executable, "-m", "tools.bootstrap_cuda"])
+
+    step(f"Building the engine for compute capability {arch} (incremental)")
+    run([sys.executable, "-m", "tools.build_windows", "--cuda-arch", arch])
+    config["cuda_arch"] = arch
+
+    if config.get("mtp") and not MTP_FILE.is_file():
+        step("Fetching and packing the MTP head (about 1.6 GB download)")
+        run([sys.executable, "-m", "tools.lamina_mtp", "fetch"])
+        run([sys.executable, "-m", "tools.lamina_mtp", "pack"])
+    CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    print("\nSetup complete.")
+
+
+def engine_environment():
+    env = dict(os.environ)
+    # Pinning the mapped model (about 21 GiB) enables direct expert uploads and
+    # expert admission: 44.8-46.2 instead of 36.1-41.0 tokens/s on the RTX 3050
+    # machine. Only with enough RAM to spare.
+    if "LAMINA_HOST_REGISTER" not in env and total_ram_gib() >= 48:
+        env["LAMINA_HOST_REGISTER"] = "1"
+    return env
+
+
+def engine_options(config, context):
+    options = ["--engine", ENGINE, "--cuda", "--compute-mode", "fast", "--kv-type", "f16", "--kv-cache", "device",
+               "--max-context", str(context)]
+    if config.get("mtp") and MTP_FILE.is_file():
+        options += ["--mtp", MTP_FILE]
+    return options
+
+
+def chat(config, context, thinking, max_tokens):
+    os.environ.update(engine_environment())
+    from tools.lamina_chat import Engine
+    from tools.lamina_model import FILENAME
+    engine = Engine(DATA / "models" / FILENAME, DATA / "tokenizer" / "tokenizer.json", ENGINE, cuda=True,
+                    max_context=context, kv_cache="device", kv_type="f16", compute_mode="fast",
+                    mtp=MTP_FILE if config.get("mtp") and MTP_FILE.is_file() else None)
+    print(f"\nLamina chat, context {context // 1024}K, MTP {'on' if engine.mtp else 'off'}. "
+          "Commands: /new starts a new conversation, /exit quits.")
+    print("The first answer takes longer while the model loads.\n")
+    history = []
+    try:
+        while True:
+            try:
+                text = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print(); break
+            if text in ("/exit", "/quit"): break
+            if text == "/new": history = []; print("(new conversation)"); continue
+            if not text: continue
+            history.append({"role": "user", "content": text})
+            reply = ""
+            print("Lamina: ", end="", flush=True)
+            try:
+                for event in engine.events(history, max_tokens, temperature=0, enable_thinking=thinking):
+                    delta = event.get("delta", {})
+                    if delta.get("reasoning_content"): print(delta["reasoning_content"], end="", file=sys.stderr, flush=True)
+                    if delta.get("content"): print(delta["content"], end="", flush=True); reply += delta["content"]
+                    if "timings" in event and event.get("usage"):
+                        seconds = event["timings"]["total_seconds"] - event["timings"]["first_token_seconds"]
+                        tokens = event["usage"]["completion_tokens"]
+                        if tokens > 1 and seconds > 0:
+                            print(f"\n[{tokens} tokens, {(tokens - 1) / seconds:.1f} tokens/s]", end="")
+            except ValueError as error:  # context full and similar request errors
+                print(f"\n[{error}; use /new to start over]")
+                history.pop()
+                continue
+            print("\n")
+            history.append({"role": "assistant", "content": reply})
+    finally:
+        engine.close()
+
+
+def main():
+    argv = sys.argv[1:]
+    ensure_venv(argv)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", nargs="?", default="chat", choices=("chat", "serve", "setup"))
+    parser.add_argument("--reconfigure", action="store_true", help="ask for context length and MTP again")
+    parser.add_argument("--max-context", type=int, help="override the stored context length for this run")
+    parser.add_argument("--cuda-arch", help="override the detected compute capability, e.g. 86 or 89")
+    parser.add_argument("--thinking", action="store_true", help="chat: let the model think before answering")
+    parser.add_argument("--max-tokens", type=int, default=2048, help="chat: longest answer in tokens (default 2048)")
+    parser.add_argument("--host", default="127.0.0.1", help="serve: listening address")
+    parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
+    args = parser.parse_args(argv)
+
+    config = ask(load_config(), args.reconfigure)
+    needs_setup = (args.command == "setup" or not ENGINE.is_file() or args.cuda_arch
+                   or (config.get("mtp") and not MTP_FILE.is_file()))
+    if needs_setup:
+        setup(config, args.cuda_arch)
+    if args.command == "setup":
+        return 0
+    context = args.max_context or config["max_context"]
+    if not 1024 <= context <= 131072:
+        parser.error("--max-context must be 1024..131072")
+    if args.command == "serve":
+        print(f"\nStarting the server on http://{args.host}:{args.port} (context {context // 1024}K). Ctrl+C stops it.")
+        command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", args.host, "--port", str(args.port)]
+        return subprocess.run([str(c) for c in command], cwd=ROOT, env=engine_environment()).returncode
+    chat(config, context, args.thinking, min(args.max_tokens, context // 2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT))
+    try:
+        sys.exit(main())
+    except subprocess.CalledProcessError as error:
+        sys.exit(f"\nA setup step failed (exit code {error.returncode}). Fix the error above and run the same command again;"
+                 " finished steps are skipped.")
+    except KeyboardInterrupt:
+        sys.exit(130)
