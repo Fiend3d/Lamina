@@ -100,7 +100,9 @@ public:
                               const std::vector<float>& x, int64_t expert);
     // Greedy selection on the GPU: the index of the first maximum of tensor . x,
     // or -1 if any output is not finite (the caller then takes the full path).
-    int matvec_argmax(const strata::TensorInfo& tensor, const uint8_t* data, const std::vector<float>& x);
+    // rows > 0 limits the search to the first `rows` outputs (a draft head).
+    int matvec_argmax(const strata::TensorInfo& tensor, const uint8_t* data, const std::vector<float>& x,
+                      int rows = 0);
     std::vector<float> matvec_columns(const strata::TensorInfo& tensor, const uint8_t* data,
                                       const std::vector<float>& x, int columns, int64_t expert = -1);
     std::vector<float> normalize_columns(const strata::TensorInfo& gamma, const uint8_t* data,
@@ -156,6 +158,37 @@ public:
     void mix_upload(const std::vector<float>& x);
     void hidden_rms(const strata::TensorInfo& gamma, const uint8_t* data, float epsilon);
     void add_hidden_mix();
+    // hidden = tensor . x for a host vector x (decode projection kernels).
+    void hidden_project(const strata::TensorInfo& tensor, const uint8_t* data, const std::vector<float>& x);
+
+    // Two-token decode step for speculative verification (fast mode, device KV).
+    // The pair hidden state holds two columns: the current token and a draft.
+    // Every weight is read once for both columns. Column 0's result equals a
+    // single-token step's up to which experts run on the CPU; column 1 sees
+    // column 0 causally. pair_delta snapshots each DeltaNet state after column 0
+    // so pair_commit(false) can drop column 1's effect on the recurrence.
+    bool supports_pair() const;
+    void pair_upload(const std::vector<float>& x);  // 2 * 2048
+    std::vector<float> pair_download();
+    void pair_rms(const strata::TensorInfo& gamma, const uint8_t* data, float epsilon);
+    void pair_add_mix();
+    void pair_delta(int layer, const GdnWeights& w);
+    // pair_rms, pair_delta, pair_add_mix, pair_rms as one CUDA graph per layer.
+    void pair_delta_layer(int layer, const GdnWeights& w, const strata::TensorInfo& input_norm,
+                          const uint8_t* input_norm_data, const strata::TensorInfo& post_norm,
+                          const uint8_t* post_norm_data, float epsilon);
+    void pair_attention(int layer, const AttnWeights& w, int position, float rope_base,
+                        const std::array<std::array<int, 3>, 2>& rope_positions);
+    void pair_moe(const strata::TensorInfo& router, const uint8_t* router_data,
+                  const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
+                  const MoeWeights& routed, const MoeWeights& shared);
+    // keep_second: column 1 was accepted. Otherwise DeltaNet states return to
+    // their post-column-0 snapshots; attention KV beyond the position is unused.
+    void pair_commit(bool keep_second);
+    // Greedy tokens for two normalized columns (2 * n_in) in one LM-head read;
+    // an entry is -1 when that column's logits are not finite.
+    std::array<int, 2> matvec_argmax2(const strata::TensorInfo& tensor, const uint8_t* data,
+                                      const std::vector<float>& x);
     void delta_net_into_mix(int layer, const GdnWeights& w);
     void moe_into_mix(const strata::TensorInfo& router, const uint8_t* router_data,
                       const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
@@ -208,6 +241,7 @@ public:
         // Next-layer prefetch: experts uploaded early, experts predicted, and
         // how many predictions the next router then actually selected.
         uint64_t prefetch_uploaded = 0, prefetch_predicted = 0, prefetch_useful = 0;
+        uint64_t device_mallocs = 0, free_trims = 0;  // cudaMalloc calls and free-list trims
     };
     Stats stats() const;
 
@@ -216,7 +250,7 @@ private:
                                  const float* x, float* y, int columns, int64_t expert);
     // Uploads x and projects it into the device output buffer; returns rows.
     int project_output(const strata::TensorInfo& tensor, const uint8_t* data,
-                       const std::vector<float>& x, int64_t expert);
+                       const std::vector<float>& x, int64_t expert, int rows = 0);
     void delta_net_core(int layer, const float* x_dev, float* out_dev, const GdnWeights& w);
     void moe_pipeline(const float* x_dev, float* out_dev, const MoeWeights& routed,
                       const std::vector<int>& experts, const std::vector<float>& weights,

@@ -535,6 +535,47 @@ __global__ void router_finish_kernel(const float* __restrict__ logits, int n, in
     if (threadIdx.x == 0) atomicExch(flag, value);
 }
 
+// router_finish for a two-token step: column c's logits at logits + c * n and
+// input at x + c * n_in, ids and weights at c * k, the shared gate in
+// shared_out[c]; publishes both inputs. Per column the same arithmetic as
+// router_finish. The barriers keep a column's shared reductions from racing
+// with the next column's.
+__global__ void router_finish_pair_kernel(const float* __restrict__ logits, int n, int k,
+                                          int* __restrict__ ids, float* __restrict__ weights,
+                                          const float* __restrict__ gate_weight, const float* __restrict__ x,
+                                          int n_in, float* __restrict__ shared_out,
+                                          float* __restrict__ publish, int* flag, int value) {
+    for (int c = 0; c < 2; ++c) {
+        const float shared = block_dot_sigmoid(gate_weight, x + size_t(c) * n_in, n_in);
+        if (threadIdx.x == 0) shared_out[c] = shared;
+        __syncthreads();
+        block_router_topk(logits + size_t(c) * n, n, k, ids + c * k, weights + c * k);
+        __syncthreads();
+    }
+    if (publish) for (int i = threadIdx.x; i < 2 * n_in; i += blockDim.x) publish[i] = x[i];
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) atomicExch(flag, value);
+}
+
+// moe_combine where the slots set in cpu_mask are read from host_down (mapped
+// CPU-expert results) instead of down; blockIdx.y selects the column, whose
+// slots are c * slots + s. Same summation order as moe_combine.
+__global__ void moe_combine_mixed_kernel(const float* __restrict__ down, const float* __restrict__ host_down,
+                                         unsigned long long cpu_mask, const float* __restrict__ scales,
+                                         int slots, int hidden, float* __restrict__ out) {
+    const int o = blockIdx.x * blockDim.x + threadIdx.x;
+    if (o >= hidden) return;
+    const int first = int(blockIdx.y) * slots;
+    float sum = 0.0f;
+    for (int s = 0; s < slots; ++s) {
+        const int slot = first + s;
+        const float* source = (cpu_mask >> slot) & 1ull ? host_down : down;
+        sum += scales[slot] * source[static_cast<size_t>(slot) * hidden + o];
+    }
+    out[static_cast<size_t>(blockIdx.y) * hidden + o] = sum;
+}
+
 __global__ void doorbell_signal_kernel(int* flag, int value) {
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         __threadfence_system();
@@ -547,6 +588,8 @@ __global__ void gemv_f32_kernel(const float* __restrict__ w, const float* __rest
     __shared__ float partial[kThreads];
     const int row = blockIdx.x;
     const int tid = threadIdx.x;
+    x += static_cast<size_t>(blockIdx.y) * n_in;  // column (gemv_f32_batch)
+    y += static_cast<size_t>(blockIdx.y) * n_out;
     float sum = 0.0f;
     for (int i = tid; i < n_in; i += blockDim.x) sum += w[static_cast<size_t>(row) * n_in + i] * x[i];
     partial[tid] = sum;
@@ -634,6 +677,28 @@ void add_inplace(float* x, const float* y, int n, void* stream) {
 void gemv_f32(const float* weights, const float* x, float* y, int n_in, int n_out, void* stream) {
     gemv_f32_kernel<<<static_cast<unsigned>(n_out), kThreads, 0,
                       static_cast<cudaStream_t>(stream)>>>(weights, x, y, n_in, n_out);
+}
+
+void gemv_f32_batch(const float* weights, const float* x, float* y, int n_in, int n_out, int columns,
+                    void* stream) {
+    gemv_f32_kernel<<<dim3(static_cast<unsigned>(n_out), static_cast<unsigned>(columns)), kThreads, 0,
+                      static_cast<cudaStream_t>(stream)>>>(weights, x, y, n_in, n_out);
+}
+
+void router_finish_pair(const float* logits, int n, int k, int* ids, float* weights,
+                        const float* gate_weight, const float* x, int n_in, float* shared_out,
+                        float* publish, int* flag, int value, void* stream) {
+    if (n < 1 || n > kTopkMaxExperts || k < 1 || k > kTopkMaxK || k > n || n_in < 1)
+        throw std::invalid_argument("router finish shape");
+    router_finish_pair_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+        logits, n, k, ids, weights, gate_weight, x, n_in, shared_out, publish, flag, value);
+}
+
+void moe_combine_mixed(const float* down, const float* host_down, unsigned long long cpu_mask,
+                       const float* scales, int slots, int hidden, int columns, float* out, void* stream) {
+    if (slots < 1 || columns < 1 || slots * columns > 64) throw std::invalid_argument("mixed combine shape");
+    moe_combine_mixed_kernel<<<dim3(blocks(hidden), columns), kThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+        down, host_down, cpu_mask, scales, slots, hidden, out);
 }
 
 void gdn_out_norm_silu(const float* x, const float* z, const float* gamma, float* out, int heads,

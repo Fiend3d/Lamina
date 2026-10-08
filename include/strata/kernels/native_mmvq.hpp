@@ -57,6 +57,21 @@ void native_mmvq_f32_grouped_table(int ggml_type, const NativeF32Grouped* table,
 // Optional Lamina fast path. Table inputs are Q8_1 buffers (opaque float*
 // addresses); uses the same pinned Strata weight/activation dot products.
 void native_mmvq_q8_grouped(int ggml_type, const NativeF32Grouped& args, int rows, int n_in, void* stream);
+// Matrices applied to two activation columns with explicit per-column Q8_1 inputs and
+// outputs (an MoE expert routed by both tokens of a two-token decode step).
+struct NativeF32Pairs {
+    const void* weights[32];
+    const float* inputs[2][32];
+    float* outputs[2][32];
+    int n_outs[32];
+    int count;
+};
+void native_mmvq_q8_pairs(int ggml_type, const NativeF32Pairs& args, int rows, int n_in, void* stream);
+// Two activation columns per weight read: column c reads inputs[m] + c * x_stride_blocks
+// Q8_1 blocks and writes outputs[m] + c * y_stride. Each column is bitwise equal to
+// native_mmvq_q8_grouped on that column alone.
+void native_mmvq_q8_grouped2(int ggml_type, const NativeF32Grouped& args, int rows, int n_in,
+                             int x_stride_blocks, int y_stride, void* stream);
 void native_mmvq_q8_grouped_table(int ggml_type, const NativeF32Grouped* table,
                                   int count, int total_rows, int n_in, void* stream);
 

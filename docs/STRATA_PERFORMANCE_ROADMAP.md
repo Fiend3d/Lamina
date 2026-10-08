@@ -14,7 +14,10 @@ fast-mode default and a coalesced DeltaNet step, the matched nine-run median is
 [the host-path update](../bench/results/2026-10-07-rtx3050-host-path/README.md) and
 [the greedy and cache update](../bench/results/2026-10-07-rtx3050-greedy-keep/README.md)), ahead in every prompt class
 and with identical output across repeats. Milestone 3 (40 tokens/s) is not
-reached. The largest remaining cost is the RAM-bandwidth-bound CPU expert batch
+reached by ordinary decode, which now measures 37.15 tokens/s. Greedy MTP
+speculation measures 42.94 tokens/s and is reported separately in
+[the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+The largest remaining cost is the RAM-bandwidth-bound CPU expert batch
 (it saturates near 16 GB/s of expert reads), then the DeltaNet projections,
 GPU experts, attention layers and the DeltaNet output path; see
 [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md).
@@ -293,7 +296,9 @@ Primary implementation files: `src/model/cuda_projection.cpp`,
 evidence in `README.md`, `docs/DEVELOPER_HANDOFF.md`, `docs/LAMINA_PORT.md`
 and a dated directory under `bench/results/`.
 
-Speculative decoding can be a later, separately measured project if a compatible
-draft/MTP path is available and verified. It requires acceptance, quality and
-VRAM measurements; it must not conceal the ordinary decode gap or be assumed
-to exist for this pinned model.
+Speculative decoding is now a separately measured greedy-only path using the
+official checkpoint's MTP head, with acceptance, VRAM, determinism and
+all-GPU identity measurements in
+[its record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+It must not conceal the ordinary decode gap: report single-token and
+speculative throughput side by side.

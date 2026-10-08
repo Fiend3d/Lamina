@@ -304,6 +304,8 @@ target_link_libraries(lamina-sampling-check PRIVATE strata_artifact)
 if(LAMINA_ENABLE_CUDA)
   add_executable(lamina-cuda-projection-check tests/lamina/cuda_projection_check.cpp)
   target_link_libraries(lamina-cuda-projection-check PRIVATE lamina_model)
+  add_executable(lamina-cuda-ncols-check tests/lamina/cuda_ncols_check.cpp)
+  target_link_libraries(lamina-cuda-ncols-check PRIVATE lamina_model CUDA::cudart)
 endif()
 
 # The copied Strata engine below this point still executes Qwen3.8. Keep it

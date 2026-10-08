@@ -36,6 +36,24 @@ public:
     std::vector<float> step_hidden_embedding(const std::vector<float>& embedding,
                                             const std::array<int, 3>& positions);
     void reset();
+    // Multi-token prediction draft head (tools/lamina_mtp.py pack). After the
+    // main model produced hidden state h_t and greedy token x_{t+1}, mtp_draft
+    // runs the head's single layer and returns its greedy guess for x_{t+2}.
+    // The head attends only to its own drafts since reset (no prompt context).
+    // rope_position is h_t's position; the default numbers drafts from zero.
+    void load_mtp(const std::string& path);
+    bool has_mtp() const { return mtp_file_ != nullptr; }
+    int mtp_draft(int next_token, const std::vector<float>& hidden, int rope_position = -1);
+
+    // Greedy generation of `count` tokens. `token` is the last emitted token,
+    // not yet fed; `hidden` is the hidden state that predicted it and is
+    // updated to the one that predicted the last returned token. With an MTP
+    // head on the CUDA fast path, each step drafts one token and verifies it
+    // together with `token` in a single two-token pass (greedy speculation);
+    // otherwise it steps one token at a time.
+    struct SpecStats { uint64_t steps = 0, drafted = 0, accepted = 0, backoffs = 0; double draft_ms = 0, verify_ms = 0; };
+    std::vector<int> generate_greedy(int token, std::vector<float>& hidden, int count);
+    const SpecStats& spec_stats() const { return spec_stats_; }
     int position() const { return position_; }
     int rope_position() const { return rope_position_; }
 
@@ -59,6 +77,17 @@ private:
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;
     std::unique_ptr<CudaProjection> cuda_;
+    std::unique_ptr<strata::GgufFile> mtp_file_;
+    int mtp_position_ = 0;
+    SpecStats spec_stats_;
+    double spec_rate_ = 0.87;  // running acceptance (exponential average)
+    int spec_backoff_ = 0;     // single steps left before speculation is probed again
+    bool pair_supported();
+    // Two-token pass over `first` and `second` at the next two positions.
+    // Returns both hidden columns; commit_pair advances by one or two tokens.
+    std::vector<float> step_pair_hidden(int first, int second);
+    void commit_pair(bool keep_second);
+    int greedy_token(const std::vector<float>& hidden);
 
     const strata::TensorInfo& tensor(const std::string& name) const;
     void row(const strata::TensorInfo& t, int64_t index, float* out) const;

@@ -45,7 +45,7 @@ def main():
     targets = "lamina-gguf lamina-infer lamina-sampling-check"
     if not args.cpu:
         configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DLAMINA_CPU_QUANT=ON -DCMAKE_CUDA_ARCHITECTURES={args.cuda_arch} -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
-        targets += " lamina-cuda-projection-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check lamina-quality-check"
+        targets += " lamina-cuda-projection-check lamina-cuda-ncols-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check lamina-quality-check"
     else: configure += " -DLAMINA_ENABLE_CUDA=OFF -DLAMINA_PREFILL_BLAS=OFF -DLAMINA_CPU_QUANT=OFF"
     commands = ["@echo off", "call " + quoted(Path(visual_studio) / "VC/Auxiliary/Build/vcvars64.bat"),
                 "if errorlevel 1 exit /b 1", configure, "if errorlevel 1 exit /b 1",

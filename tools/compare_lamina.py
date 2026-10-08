@@ -27,11 +27,15 @@ def main():
     p.add_argument("--tokens", type=int, default=256)
     p.add_argument("--prompts", nargs="+", choices=list(PROMPTS), default=list(PROMPTS))
     p.add_argument("--prompt-file", type=Path)
+    p.add_argument("--mtp", type=Path, help="packed MTP head: generate with greedy speculation (GENERATE)")
     a = p.parse_args()
     a.report_dir.mkdir(parents=True, exist_ok=True)
     os.environ["LAMINA_HOST_REGISTER"] = "1"
     command = [str(a.engine.resolve()), str(data / "models" / FILENAME), "--cuda", "--compute-mode", "fast",
-               "--kv-type", "f16", "--kv-cache", "device", "--max-context", str(a.context), "--interactive"]
+               "--kv-type", "f16", "--kv-cache", "device", "--max-context", str(a.context)]
+    if a.mtp:
+        command += ["--mtp", str(a.mtp.resolve())]
+    command.append("--interactive")
     tokenizer = Tokenizer.from_file(str(data / "tokenizer/tokenizer.json"))
     import pynvml
     pynvml.nvmlInit()
@@ -62,7 +66,10 @@ def main():
                 first = time.perf_counter()
                 tokens = [token]
                 finish = first
-                for _ in range(a.tokens-1):
+                if a.mtp and not a.prompt_file and a.tokens > 1:
+                    tokens += native.generate(a.tokens-1, token)
+                    finish = time.perf_counter()
+                for _ in range(a.tokens-len(tokens)):
                     if a.prompt_file and token in (248044,248046):
                         break
                     token = native.command(str(token))

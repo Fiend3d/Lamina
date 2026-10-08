@@ -113,12 +113,15 @@ def tool_message(content, tools, choice):
 class Engine:
     def __init__(self, model, tokenizer, executable, cuda=False, max_context=32768,
                  kv_cache="auto", vram_limit_mb=0, prefill_chunk=2048, vision_engine=None,
-                 max_image_tokens=1024, cpu_threads=8, kv_type="f32", compute_mode="f32"):
+                 max_image_tokens=1024, cpu_threads=8, kv_type="f32", compute_mode="f32", mtp=None):
         if kv_type not in ("f32", "f16") or (kv_type == "f16" and not cuda):
             raise ValueError("kv-type must be f32, or f16 with CUDA")
         if compute_mode not in ("f32", "fast") or (compute_mode == "fast" and not cuda):
             raise ValueError("compute-mode must be f32, or fast with CUDA")
         self.compute_mode = compute_mode
+        if mtp is not None and (compute_mode != "fast" or not Path(mtp).is_file()):
+            raise ValueError("an MTP head needs --compute-mode fast and an existing packed file")
+        self.mtp = mtp
         self.kv_type = kv_type
         from tokenizers import Tokenizer
         from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -156,7 +159,9 @@ class Engine:
         if self.native is None:
             command = [str(self.executable.resolve()), str(self.model.resolve()), *(["--cuda"] if self.cuda else []),
                        "--max-context", str(self.max_context), "--kv-cache", self.kv_cache, "--kv-type", self.kv_type, "--compute-mode", getattr(self, "compute_mode", "f32"),
-                       "--vram-limit-mb", str(self.vram_limit_mb), "--interactive"]
+                       "--vram-limit-mb", str(self.vram_limit_mb)]
+            if getattr(self, "mtp", None): command += ["--mtp", str(Path(self.mtp).resolve())]
+            command.append("--interactive")
             self.native = NativeProcess(command)
 
     def validate(self, messages, options):
@@ -265,6 +270,11 @@ class Engine:
                     first_token = time.perf_counter() - start
                     generated, raw, prior_reason, prior_content = [], "", "", ""
                     finish = "length"
+                    # Greedy requests with an MTP head take tokens in chunks from
+                    # GENERATE (speculative); a chunk may run past a stop token,
+                    # which costs only time because every request starts with RESET.
+                    speculative = bool(getattr(self, "mtp", None)) and o["temperature"] == 0
+                    queued = []
                     for index in range(o["max_tokens"]):
                         if next_id in STOP_IDS: finish = "stop"; break
                         generated.append(next_id)
@@ -282,7 +292,10 @@ class Engine:
                             if delta: yield {"delta": delta}
                         prior_reason, prior_content = reason, content
                         if stopped or index + 1 == o["max_tokens"]: break
-                        next_id = self.native.command(str(next_id))
+                        if speculative:
+                            if not queued: queued = self.native.generate(min(8, o["max_tokens"] - index - 1), next_id)
+                            next_id = queued.pop(0)
+                        else: next_id = self.native.command(str(next_id))
                     reason, content = split_reasoning(raw, o["enable_thinking"])
                     calls = []
                     if o.get("tools"):

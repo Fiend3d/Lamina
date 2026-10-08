@@ -8,8 +8,10 @@ gaps, profiling requirements, scheduling work and acceptance gates.
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched
 comparison measured **35.84 tokens/s for Lamina versus 28.56 for CUDA
-llama.cpp b11474**, ahead in prose, code and math. The **40 tokens/s target is
-not met**; prefill is still slower than llama.cpp; no Strata parity is claimed.
+llama.cpp b11474**, ahead in prose, code and math. Single-token decode now
+measures 37.15 tokens/s, and greedy MTP speculation 42.94 (see below), which
+passes the 40 tokens/s target for greedy requests only; prefill is still slower
+than llama.cpp; no Strata parity is claimed.
 Exact commands, the stage timeline that drove the work, fixed bugs and limits
 are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
 and [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md),
@@ -38,6 +40,24 @@ the next layer's predicted experts (`LAMINA_PREFETCH`, default on only with
 Build for a non-Ada GPU with `python -m tools.build_windows --cuda-arch 86`
 (default 89 is the RTX 4060; a mismatched architecture silently gives wrong
 kernels).
+
+Speculative decoding: the checkpoint's MTP head is fetched and packed by
+`tools/lamina_mtp.py` (19 tensors, 857 MiB Q8_0 GGUF in `../Lamina-data/mtp`),
+and `tools/mtp_acceptance.py` measures its greedy draft acceptance from
+`lamina-infer --trace` output: 87.8% overall, 86.9% when the head sees only
+generated tokens. Conventions (norm weights 1 + w, gate-first experts) are in
+[the MTP record](../bench/results/2026-10-08-mtp-acceptance/README.md).
+`lamina-infer --mtp PATH` loads the head and the interactive `GENERATE N TOKEN`
+command runs greedy speculation (`Inference::generate_greedy`): one MTP draft,
+one two-token verification pass (`step_pair_hidden`, the `pair_*` functions of
+`CudaProjection`), DeltaNet snapshots for rollback, and an acceptance guard.
+It measured 42.94 against 37.15 tokens/s (45.21 with `LAMINA_MTP_VOCAB=98304`);
+see [the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md),
+which also lists the open first-token regression and the CPU-expert bound.
+`LAMINA_PAIR_PROFILE=1` prints a synchronizing per-stage profile of the pass,
+and `LAMINA_PREFILL_STATS=1` prints prefill uploads, evictions and allocations.
+The pair path requires fast mode and device KV. Two-column kernels are checked
+by `lamina-cuda-ncols-check MODEL`.
 
 Profile a change with `LAMINA_TIMELINE=1` before choosing the next one. It
 prints per-token averages of stream-ordered stage times (dense, router,

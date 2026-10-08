@@ -55,6 +55,7 @@ def main():
                         help="CPU threads for the image encoder (default 8) and CPU experts (engine default: a quarter of hardware threads)")
     parser.add_argument("--expert-policy", choices=("auto", "stream", "cpu-miss"), default="auto",
                         help="auto: CPU experts for cache misses in fast mode, GPU streaming in f32")
+    parser.add_argument("--mtp", type=Path, help="packed MTP head (python -m tools.lamina_mtp pack): greedy speculative decoding, needs --compute-mode fast")
     parser.add_argument("--prefill-chunk", type=int, default=2048)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0)
@@ -78,7 +79,7 @@ def main():
     cuda = args.cuda if args.cuda is not None else "build-cuda" in str(args.engine)
     engine = Engine(args.model, args.tokenizer, args.engine, cuda, args.max_context, args.kv_cache,
                     args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image else None,
-                    args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode)
+                    args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode, args.mtp)
     atexit.register(engine.close)
     try:
         if args.command == "serve":

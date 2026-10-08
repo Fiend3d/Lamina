@@ -12,6 +12,13 @@ matched Strata comparison. See
 [the host-path update](bench/results/2026-10-07-rtx3050-host-path/README.md)
 and [the greedy and cache update](bench/results/2026-10-07-rtx3050-greedy-keep/README.md).
 
+Greedy speculative decoding with the model's own MTP head (`--mtp`, see below)
+now measures a **42.94 tokens/s nine-run median against 37.15 tokens/s** for
+single-token decode on the same machine and binary, and 45.21 tokens/s when
+drafts come from the first 98,304 token ids. It costs about 0.45 s of
+first-token time, for a reason not yet found. See
+[the speculation record](bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).
+
 Earlier records from an RTX 4060 machine (where llama.cpp measured 25.47 and
 Lamina 16.40 tokens/s before these changes) are in
 [the previous comparison](bench/results/2026-10-07-llama-cuda/README.md) and
@@ -75,6 +82,24 @@ adds several seconds to startup, so it is not recommended there. For a 128K fast
 `--max-context 131072 --kv-type f16 --kv-cache device`. FP16 KV is separately
 lossy. Capacity and retrieval results are in
 [the current measurement record](bench/results/2026-10-06-strata-plan/VALIDATION.md).
+
+Greedy requests (temperature 0) can decode speculatively with the checkpoint's
+multi-token-prediction head. The head is not in the GGUF; fetch it once from
+the official BF16 checkpoint (range requests for 19 tensors) and pack it:
+
+```powershell
+../Lamina-data/venv/Scripts/python.exe -m tools.lamina_mtp fetch
+../Lamina-data/venv/Scripts/python.exe -m tools.lamina_mtp pack
+../Lamina-data/venv/Scripts/python.exe lamina.py serve --compute-mode fast --mtp ../Lamina-data/mtp/qwen36-mtp-q8_0.gguf
+```
+
+Each step drafts one token and verifies it together with the current token in
+one two-token pass, so greedy output stays the model's own. In fast CPU-miss
+mode the result can still differ in late tokens from single-token decode,
+because different experts land on the CPU, whose results differ in their last
+bits. Text the head drafts poorly falls back to single steps automatically.
+`LAMINA_MTP_VOCAB=98304` drafts from the first 98,304 token ids only, which is
+faster for English text but can never draft tokens above that bound.
 
 The server binds to `127.0.0.1:8000`. Endpoints are `/health`, `/v1/models` and
 `POST /v1/chat/completions`. Requests support `stream`, `stream_options.include_usage`,

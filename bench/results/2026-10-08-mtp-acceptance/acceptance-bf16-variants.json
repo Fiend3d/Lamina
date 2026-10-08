@@ -1,0 +1,33 @@
+{
+  "compute_mode": "fast",
+  "tokens": 256,
+  "prompts": {
+    "prose": {
+      "prompt_tokens": 89,
+      "pre-norm hidden, gate-first": 0.7529411764705882,
+      "pre-norm hidden, up-first": 0.38823529411764707,
+      "post-norm hidden, gate-first": 0.7529411764705882,
+      "post-norm hidden, up-first": 0.43137254901960786
+    },
+    "code": {
+      "prompt_tokens": 95,
+      "pre-norm hidden, gate-first": 0.9098039215686274,
+      "pre-norm hidden, up-first": 0.5803921568627451,
+      "post-norm hidden, gate-first": 0.9215686274509803,
+      "post-norm hidden, up-first": 0.611764705882353
+    },
+    "math": {
+      "prompt_tokens": 100,
+      "pre-norm hidden, gate-first": 0.9529411764705882,
+      "pre-norm hidden, up-first": 0.6078431372549019,
+      "post-norm hidden, gate-first": 0.9607843137254902,
+      "post-norm hidden, up-first": 0.6352941176470588
+    }
+  },
+  "overall": {
+    "pre-norm hidden, gate-first": 0.8718954248366013,
+    "pre-norm hidden, up-first": 0.5254901960784314,
+    "post-norm hidden, gate-first": 0.8784313725490196,
+    "post-norm hidden, up-first": 0.5594771241830065
+  }
+}

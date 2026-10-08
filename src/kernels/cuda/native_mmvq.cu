@@ -873,6 +873,24 @@ __device__ __forceinline__ int group_count(const NativeGroupedArgs& args) { retu
 __device__ __forceinline__ int group_count(const NativeGroupedView& args) { return args.runtime_count ? *args.runtime_count : args.count; }
 __device__ __forceinline__ bool group_clear(const NativeGroupedArgs& args) { return args.clear_missing != 0; }
 __device__ __forceinline__ bool group_clear(const NativeGroupedView& args) { return *args.clear_missing != 0; }
+__device__ __forceinline__ int group_count(const NativeF32Pairs& args) { return args.count; }
+__device__ __forceinline__ bool group_clear(const NativeF32Pairs&) { return false; }
+// Column c of matrix m: a fixed stride for the strided layouts, explicit
+// per-column pointers for NativeF32Pairs (MoE experts shared by two tokens).
+template<typename Group>
+__device__ __forceinline__ const Q81Block* group_x(const Group& g, int m, int c, int x_stride) {
+    return reinterpret_cast<const Q81Block*>(g.inputs[m]) + size_t(c) * x_stride;
+}
+__device__ __forceinline__ const Q81Block* group_x(const NativeF32Pairs& g, int m, int c, int) {
+    return reinterpret_cast<const Q81Block*>(g.inputs[c][m]);
+}
+template<typename Group>
+__device__ __forceinline__ float* group_y(const Group& g, int m, int c, int y_stride) {
+    return g.outputs[m] + size_t(c) * y_stride;
+}
+__device__ __forceinline__ float* group_y(const NativeF32Pairs& g, int m, int c, int) {
+    return g.outputs[c][m];
+}
 
 template<int TYPE, class Group>
 __global__ void native_mmvq_f32_grouped_kernel(const Group args, int n_in) {
@@ -1437,33 +1455,48 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
 
 // Strata generic MMVQ dot products with a runtime expert pointer table.
 // One row per block preserves the four-warp single-column reduction.
-template<typename F, typename Group>
-__global__ void native_q8_table_kernel(Group table, int n_in) {
+// NCOLS > 1 applies each loaded weight block to NCOLS activation columns
+// (column c at input + c * x_stride Q8_1 blocks, output + c * y_stride); each
+// column keeps its own accumulator in the single-column order, so every column
+// is bitwise equal to an NCOLS = 1 launch on that column.
+template<typename F, typename Group, int NCOLS = 1>
+__global__ void native_q8_table_kernel(Group table, int n_in, int x_stride = 0, int y_stride = 0) {
     const int count=group_count(table),tid=int(threadIdx.x)+32*int(threadIdx.y);
     const int blocks=n_in/F::DIV;
-    __shared__ float partial[3][32];
+    __shared__ float partial[NCOLS][3][32];
     for(int linear=int(blockIdx.x);;linear+=int(gridDim.x)) {
         int row=linear,matrix=0;
         while(matrix<count && row>=table.n_outs[matrix])row-=table.n_outs[matrix++];
         if(matrix==count)break;
         if(!table.weights[matrix]) {
-            if(!threadIdx.x && !threadIdx.y && group_clear(table))table.outputs[matrix][row]=0.f;
+            if(!threadIdx.x && !threadIdx.y && group_clear(table))
+                for(int c=0;c<NCOLS;++c)group_y(table,matrix,c,y_stride)[row]=0.f;
             continue;
         }
         const auto* w=static_cast<const typename F::Block*>(table.weights[matrix]);
-        const auto* x=reinterpret_cast<const Q81Block*>(table.inputs[matrix]);
-        float sum=0.f;
+        const Q81Block* x[NCOLS];
+#pragma unroll
+        for(int c=0;c<NCOLS;++c)x[c]=group_x(table,matrix,c,x_stride);
+        float sum[NCOLS];
+#pragma unroll
+        for(int c=0;c<NCOLS;++c)sum[c]=0.f;
         for(int bx=tid/F::T;bx<blocks;bx+=F::BPI) {
             const int qs=F::kqs(tid);
             const auto value=F::load(w+size_t(row)*blocks+bx,qs);
-            sum+=F::apply(value,x+bx*F::KBY,qs);
+#pragma unroll
+            for(int c=0;c<NCOLS;++c)sum[c]+=F::apply(value,x[c]+bx*F::KBY,qs);
         }
-        if(threadIdx.y)partial[threadIdx.y-1][threadIdx.x]=sum;
+#pragma unroll
+        for(int c=0;c<NCOLS;++c)if(threadIdx.y)partial[c][threadIdx.y-1][threadIdx.x]=sum[c];
         __syncthreads();
         if(!threadIdx.y) {
-            for(int i=0;i<3;++i)sum+=partial[i][threadIdx.x];
-            sum=warp_sum(sum);
-            if(!threadIdx.x)table.outputs[matrix][row]=sum;
+#pragma unroll
+            for(int c=0;c<NCOLS;++c) {
+                float total=sum[c];
+                for(int i=0;i<3;++i)total+=partial[c][i][threadIdx.x];
+                total=warp_sum(total);
+                if(!threadIdx.x)group_y(table,matrix,c,y_stride)[row]=total;
+            }
         }
         __syncthreads();
     }
@@ -1477,8 +1510,8 @@ __global__ void native_q8_table_kernel(Group table, int n_in) {
 // (warp 0, then warps 1, 2 and 3) before the same warp reduction. Results are
 // therefore bitwise equal, without two block barriers and a shared-memory
 // reduction for every row of only a few hundred bytes.
-template<typename F, typename Group>
-__global__ void native_q8_table_warp_kernel(Group table, int n_in) {
+template<typename F, typename Group, int NCOLS = 1>
+__global__ void native_q8_table_warp_kernel(Group table, int n_in, int x_stride = 0, int y_stride = 0) {
     const int count=group_count(table),lane=int(threadIdx.x);
     const int blocks=n_in/F::DIV;
     for(int linear=int(blockIdx.x)*int(blockDim.y)+int(threadIdx.y);;linear+=int(gridDim.x)*int(blockDim.y)) {
@@ -1486,41 +1519,51 @@ __global__ void native_q8_table_warp_kernel(Group table, int n_in) {
         while(matrix<count && row>=table.n_outs[matrix])row-=table.n_outs[matrix++];
         if(matrix==count)break;
         if(!table.weights[matrix]) {
-            if(!lane && group_clear(table))table.outputs[matrix][row]=0.f;
+            if(!lane && group_clear(table))
+                for(int c=0;c<NCOLS;++c)group_y(table,matrix,c,y_stride)[row]=0.f;
             continue;
         }
         const auto* w=static_cast<const typename F::Block*>(table.weights[matrix]);
-        const auto* x=reinterpret_cast<const Q81Block*>(table.inputs[matrix]);
-        float partial[WARPS];
+        const Q81Block* x[NCOLS];
+#pragma unroll
+        for(int c=0;c<NCOLS;++c)x[c]=group_x(table,matrix,c,x_stride);
+        float partial[NCOLS][WARPS];
 #pragma unroll
         for(int v=0;v<WARPS;++v) {
             const int tid=v*WARP+lane;
-            float sum=0.f;
+            float sum[NCOLS];
+#pragma unroll
+            for(int c=0;c<NCOLS;++c)sum[c]=0.f;
             for(int bx=tid/F::T;bx<blocks;bx+=F::BPI) {
                 const int qs=F::kqs(tid);
                 const auto value=F::load(w+size_t(row)*blocks+bx,qs);
-                sum+=F::apply(value,x+bx*F::KBY,qs);
-            }
-            partial[v]=sum;
-        }
-        float sum=partial[0];
 #pragma unroll
-        for(int v=1;v<WARPS;++v)sum+=partial[v];
-        sum=warp_sum(sum);
-        if(!lane)table.outputs[matrix][row]=sum;
+                for(int c=0;c<NCOLS;++c)sum[c]+=F::apply(value,x[c]+bx*F::KBY,qs);
+            }
+#pragma unroll
+            for(int c=0;c<NCOLS;++c)partial[c][v]=sum[c];
+        }
+#pragma unroll
+        for(int c=0;c<NCOLS;++c) {
+            float sum=partial[c][0];
+#pragma unroll
+            for(int v=1;v<WARPS;++v)sum+=partial[c][v];
+            sum=warp_sum(sum);
+            if(!lane)group_y(table,matrix,c,y_stride)[row]=sum;
+        }
     }
 }
 
-template<typename F, typename Group>
-void launch_q8_table(const Group& args, int rows, int n_in, cudaStream_t s) {
+template<typename F, typename Group, int NCOLS = 1>
+void launch_q8_table(const Group& args, int rows, int n_in, cudaStream_t s, int x_stride = 0, int y_stride = 0) {
     const dim3 threads(32, 4);
     // Read once: these launches run per layer and getenv is slow on Windows.
     static const bool bounded=[]{ const char* v=std::getenv("LAMINA_Q8_PERSISTENT"); return v && v[0]=='1'; }();
     static const int warp_limit=[]{ const char* v=std::getenv("LAMINA_WARP_ROWS"); return v && *v ? std::atoi(v) : WARPS*WARP; }();
     if ((n_in / F::DIV) * F::T <= warp_limit) {
         const int blocks=(rows+3)/4;
-        native_q8_table_warp_kernel<F><<<bounded ? std::min(blocks,128) : blocks, threads, 0, s>>>(args, n_in);
-    } else native_q8_table_kernel<F><<<bounded ? std::min(rows,128) : rows, threads, 0, s>>>(args, n_in);
+        native_q8_table_warp_kernel<F, Group, NCOLS><<<bounded ? std::min(blocks,128) : blocks, threads, 0, s>>>(args, n_in, x_stride, y_stride);
+    } else native_q8_table_kernel<F, Group, NCOLS><<<bounded ? std::min(rows,128) : rows, threads, 0, s>>>(args, n_in, x_stride, y_stride);
 }
 
 template<typename F, int NCOLS>
@@ -1783,6 +1826,31 @@ void native_mmvq_f32_grouped(int ggml_type, const void* const* weights,
     const auto error = cudaGetLastError();
     if (error != cudaSuccess)
         throw std::runtime_error(std::string("native grouped FP32 MMVQ launch: ") + cudaGetErrorString(error));
+}
+
+void native_mmvq_q8_grouped2(int type, const NativeF32Grouped& args, int rows, int n_in,
+                             int x_stride_blocks, int y_stride, void* stream) {
+    auto s = static_cast<cudaStream_t>(stream);
+    switch (type) {
+    case 8: launch_q8_table<SmallTraits<Q80Block, 8>, NativeF32Grouped, 2>(args, rows, n_in, s, x_stride_blocks, y_stride); break;
+    case 12: launch_q8_table<Q4KTraits, NativeF32Grouped, 2>(args, rows, n_in, s, x_stride_blocks, y_stride); break;
+    case 13: launch_q8_table<Q5KTraits, NativeF32Grouped, 2>(args, rows, n_in, s, x_stride_blocks, y_stride); break;
+    case 14: launch_q8_table<Q6KTraits, NativeF32Grouped, 2>(args, rows, n_in, s, x_stride_blocks, y_stride); break;
+    default: throw std::invalid_argument("unsupported Q8 grouped format");
+    }
+    launch_check();
+}
+
+void native_mmvq_q8_pairs(int type, const NativeF32Pairs& args, int rows, int n_in, void* stream) {
+    auto s = static_cast<cudaStream_t>(stream);
+    switch (type) {
+    case 8: launch_q8_table<SmallTraits<Q80Block, 8>, NativeF32Pairs, 2>(args, rows, n_in, s); break;
+    case 12: launch_q8_table<Q4KTraits, NativeF32Pairs, 2>(args, rows, n_in, s); break;
+    case 13: launch_q8_table<Q5KTraits, NativeF32Pairs, 2>(args, rows, n_in, s); break;
+    case 14: launch_q8_table<Q6KTraits, NativeF32Pairs, 2>(args, rows, n_in, s); break;
+    default: throw std::invalid_argument("unsupported Q8 pair format");
+    }
+    launch_check();
 }
 
 void native_mmvq_q8_grouped(int type, const NativeF32Grouped& args, int rows, int n_in, void* stream) {

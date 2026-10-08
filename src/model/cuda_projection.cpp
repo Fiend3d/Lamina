@@ -596,7 +596,7 @@ struct CudaProjection::Impl {
         cudaGraphExec_t exec = nullptr;
         bool warmed = false;
     };
-    std::vector<MixerGraph> mixer_graphs;
+    std::vector<MixerGraph> mixer_graphs, pair_graphs;
     struct MoeGraph {
         cudaGraphExec_t exec = nullptr;
         uint64_t used = 0;
@@ -647,8 +647,9 @@ struct CudaProjection::Impl {
             cudaFree(state.conv);
             cudaFree(state.rec);
         }
-        for (auto& graph : mixer_graphs)
-            if (graph.exec) cudaGraphExecDestroy(graph.exec);
+        for (auto* graphs : {&mixer_graphs, &pair_graphs})
+            for (auto& graph : *graphs)
+                if (graph.exec) cudaGraphExecDestroy(graph.exec);
         for (auto& [key, graph] : moe_graphs)
             if (graph.exec) cudaGraphExecDestroy(graph.exec);
         if (expert_table_host) cudaFreeHost(expert_table_host);
@@ -728,7 +729,9 @@ struct CudaProjection::Impl {
         }
     }
 
+    uint64_t stat_mallocs = 0, stat_trims = 0;
     void trim_free() {
+        ++stat_trims;
         for (auto& [bytes, blocks] : free_blocks) {
             for (void* block : blocks) release(block);
             blocks.clear();
@@ -751,6 +754,7 @@ struct CudaProjection::Impl {
             if (!evict_oldest()) throw std::runtime_error("VRAM working set exceeds available headroom (request=" + std::to_string(bytes / MIB) + " MiB, free=" + std::to_string(available / MIB) + " MiB); use --kv-cache host or --kv-type f16");
         }
         check(cudaMalloc(pointer, bytes), "allocate bounded device memory");
+        ++stat_mallocs;
         allocations[*pointer] = bytes;
         allocated_bytes += bytes;
     }
@@ -832,7 +836,9 @@ struct CudaProjection::Impl {
             strata::kernels::native_mmvq_f32_grouped(type, weights, inputs, outputs, rows, count, total_rows, width, launch_stream);
             return;
         }
-        ensure(dense_q8, dense_q8_cap, strata::kernels::native_q8_1_bytes(4096));
+        // Sized for two columns up front: captured DeltaNet graphs hold this
+        // pointer, so the two-token step must never reallocate it.
+        ensure(dense_q8, dense_q8_cap, 2 * strata::kernels::native_q8_1_bytes(4096));
         strata::kernels::native_quantize_q8_1(inputs[0], dense_q8, width, 1, launch_stream);
         strata::kernels::NativeF32Grouped args{};
         args.count = count;
@@ -842,6 +848,62 @@ struct CudaProjection::Impl {
             args.inputs[i] = reinterpret_cast<const float*>(dense_q8);
         }
         strata::kernels::native_mmvq_q8_grouped(type, args, total_rows, width, launch_stream);
+    }
+
+    // Two-token step scratch. Index names keep the pair functions readable.
+    enum PairBuffer { kPHidden, kPNorm, kPMix, kPQkv, kPZ, kPAlpha, kPBeta, kPGate, kPConvRaw, kPConvSilu,
+                      kPOutNorm, kPY, kPQ, kPK, kPV, kPCtx, kPLogits, kPHead, kPairBuffers };
+    std::array<float*, kPairBuffers> pair_buf{};
+    std::array<size_t, kPairBuffers> pair_cap{};
+    float* pair(PairBuffer index, size_t elements) {
+        ensure(pair_buf[index], pair_cap[index], elements);
+        return pair_buf[index];
+    }
+    // DeltaNet states after the pair's first column, per layer.
+    struct GdnSnapshot { float* conv = nullptr; float* rec = nullptr; bool taken = false; };
+    std::vector<GdnSnapshot> gdn_snapshots;
+    // decode_group for two columns: inputs[i] holds two contiguous width-wide
+    // columns, outputs[i] two contiguous rows[i]-long columns. Each column is
+    // bitwise equal to decode_group on that column.
+    void decode_pair(int type, const void* const* weights, const float* input, float* const* outputs,
+                     const int* rows, int count, int total_rows, int width) {
+        if (!fast) throw std::logic_error("the two-token step requires fast mode");
+        if (count > 32) throw std::invalid_argument("too many pair matrices");
+        const size_t q_bytes = strata::kernels::native_q8_1_bytes(width);
+        ensure(dense_q8, dense_q8_cap, 2 * strata::kernels::native_q8_1_bytes(4096));
+        strata::kernels::native_quantize_q8_1(input, dense_q8, width, 2, stream);
+        strata::kernels::NativeF32Pairs args{};
+        args.count = count;
+        for (int i = 0; i < count; ++i) {
+            args.weights[i] = weights[i]; args.n_outs[i] = rows[i];
+            for (int c = 0; c < 2; ++c) {
+                args.inputs[c][i] = reinterpret_cast<const float*>(dense_q8 + c * q_bytes);
+                args.outputs[c][i] = outputs[i] + size_t(c) * rows[i];
+            }
+        }
+        strata::kernels::native_mmvq_q8_pairs(type, args, total_rows, width, stream);
+    }
+    // Grows a layer's device KV cache to hold `needed` positions.
+    void grow_kv(AttnState& state, int needed) {
+        if (state.capacity >= needed) return;
+        int capacity = state.capacity ? state.capacity : std::min(2048, std::max(needed, 1));
+        while (capacity < needed) capacity *= 2;
+        if (capacity > max_context) capacity = max_context;
+        if (capacity < needed) throw std::out_of_range("CUDA attention context exceeded");
+        float* keys = nullptr;
+        float* values = nullptr;
+        allocate(reinterpret_cast<void**>(&keys), kv_bytes(capacity));
+        allocate(reinterpret_cast<void**>(&values), kv_bytes(capacity));
+        if (state.keys) {
+            const size_t bytes = kv_bytes(state.capacity);
+            check(cudaMemcpy(keys, state.keys, bytes, cudaMemcpyDeviceToDevice), "grow KV keys");
+            check(cudaMemcpy(values, state.values, bytes, cudaMemcpyDeviceToDevice), "grow KV values");
+            release(state.keys);
+            release(state.values);
+        }
+        state.keys = keys;
+        state.values = values;
+        state.capacity = capacity;
     }
 
     void expert_layout(const MoeWeights& w) {
@@ -1138,7 +1200,7 @@ CudaProjection::CudaProjection(size_t vram_limit_mb, bool host_kv, bool half_kv,
     check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->h_ids_map),
                         impl_->kRouteMax * sizeof(int), cudaHostAllocMapped), "allocate router ids");
     check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->h_scales_map),
-                        (impl_->kRouteMax + 1) * sizeof(float), cudaHostAllocMapped),
+                        (impl_->kRouteMax + 2) * sizeof(float), cudaHostAllocMapped),
           "allocate router scales");
     check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->h_flag_map), sizeof(int),
                         cudaHostAllocMapped), "allocate router flag");
@@ -1164,6 +1226,7 @@ void CudaProjection::register_weight_ram(const uint8_t* source, size_t bytes) {
     }
 }
 
+
 bool CudaProjection::supports(uint32_t type) const {
     return type == 8 || type == 12 || type == 13 || type == 14;
 }
@@ -1183,11 +1246,11 @@ std::vector<float> CudaProjection::matvec(const strata::TensorInfo& tensor, cons
 }
 
 int CudaProjection::matvec_argmax(const strata::TensorInfo& tensor, const uint8_t* data,
-                                  const std::vector<float>& x) {
-    const int n_out = project_output(tensor, data, x, -1);
+                                  const std::vector<float>& x, int rows) {
+    const int n_out = project_output(tensor, data, x, -1, rows);
     impl_->tl_mark(kTlHeadCopy);
     if (!impl_->argmax_host) {
-        check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->argmax_host), 2 * sizeof(int), cudaHostAllocMapped), "allocate argmax result");
+        check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->argmax_host), 4 * sizeof(int), cudaHostAllocMapped), "allocate argmax result");
         check(cudaHostGetDevicePointer(reinterpret_cast<void**>(&impl_->argmax_dev), impl_->argmax_host, 0), "map argmax result");
     }
     cuda::argmax_f32(impl_->output, n_out, impl_->argmax_dev, impl_->stream);
@@ -1197,13 +1260,15 @@ int CudaProjection::matvec_argmax(const strata::TensorInfo& tensor, const uint8_
 }
 
 int CudaProjection::project_output(const strata::TensorInfo& tensor, const uint8_t* data,
-                                   const std::vector<float>& x, int64_t expert) {
+                                   const std::vector<float>& x, int64_t expert, int rows) {
     if (!supports(tensor.type) || tensor.shape.size() != (expert < 0 ? 2u : 3u) ||
         tensor.shape[0] != x.size())
         throw std::invalid_argument("unsupported CUDA projection: " + tensor.name);
     const int n_in = static_cast<int>(x.size());
-    const int n_out = static_cast<int>(tensor.shape[1]);
-    const size_t bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, n_in, n_out);
+    const int all_rows = static_cast<int>(tensor.shape[1]);
+    const size_t bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, n_in, all_rows);
+    // The whole matrix stays the cached unit; only the kernel stops early.
+    const int n_out = rows > 0 ? std::min(rows, all_rows) : all_rows;
     if (expert >= 0 && expert >= static_cast<int64_t>(tensor.shape[2]))
         throw std::out_of_range("expert index");
     impl_->reserve(x.size(), static_cast<size_t>(n_out));
@@ -1213,7 +1278,7 @@ int CudaProjection::project_output(const strata::TensorInfo& tensor, const uint8
                           cudaMemcpyHostToDevice, impl_->stream), "upload activation");
     impl_->tl_mark(kTlHeadKernel);
     if (impl_->fast) {
-        impl_->ensure(impl_->dense_q8, impl_->dense_q8_cap, strata::kernels::native_q8_1_bytes(4096));
+        impl_->ensure(impl_->dense_q8, impl_->dense_q8_cap, 2 * strata::kernels::native_q8_1_bytes(4096));
         strata::kernels::native_quantize_q8_1(impl_->input, impl_->dense_q8, n_in, 1, impl_->stream);
         strata::kernels::native_mmvq(tensor.type, device_weight, impl_->dense_q8, impl_->output, n_in, n_out, 1, impl_->stream);
     } else strata::kernels::native_mmvq_f32(tensor.type, device_weight, impl_->input, impl_->output,
@@ -1238,10 +1303,11 @@ void CudaProjection::prefill_layer(int layer) {
     // Cached decode graphs capture dense addresses. Complete their readers
     // before making previous layers eligible for eviction, then invalidate.
     check(cudaStreamSynchronize(impl_->stream), "retire previous prefill layer");
-    for (auto& graph : impl_->mixer_graphs) {
-        if (graph.exec) check(cudaGraphExecDestroy(graph.exec), "invalidate dense graph");
-        graph = {};
-    }
+    for (auto* graphs : {&impl_->mixer_graphs, &impl_->pair_graphs})
+        for (auto& graph : *graphs) {
+            if (graph.exec) check(cudaGraphExecDestroy(graph.exec), "invalidate dense graph");
+            graph = {};
+        }
     const std::string current = "blk." + std::to_string(layer) + ".";
     for (auto& [key, entry] : impl_->weights) {
         if (key.rfind("blk.", 0) != 0 || key.find("#expert=-1") == std::string::npos) continue;
@@ -2199,16 +2265,21 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         const auto h_wait = HostClock::now();
         impl_->cpu_experts->wait();  // the host thread helps with the remaining CPU rows
         if (impl_->timeline) impl_->tl_host[2] += host_ms(h_wait, HostClock::now());
-        for (const size_t slot : cpu_slots)
-            cuda::copy_f32(impl_->cpu_down_dev + slot * hidden, impl_->down_dev + slot * hidden, hidden, impl_->stream);
-        if (!impl_->cpu_down_copied)
-            check(cudaEventCreateWithFlags(&impl_->cpu_down_copied, cudaEventDisableTiming), "create CPU staging event");
-        check(cudaEventRecord(impl_->cpu_down_copied, impl_->stream), "record CPU staging reuse");
     }
     const auto t_after_down = std::chrono::steady_clock::now();
     impl_->tl_mark(kTlCombine);
-    cuda::moe_combine(impl_->down_dev, impl_->scales_dev, static_cast<int>(slots), hidden, out_dev,
-                      impl_->stream);
+    if (!cpu_slots.empty()) {
+        // The combine reads the CPU slots straight from mapped memory, which
+        // replaces one copy launch per CPU expert.
+        unsigned long long mask = 0;
+        for (const size_t slot : cpu_slots) mask |= 1ull << slot;
+        cuda::moe_combine_mixed(impl_->down_dev, impl_->cpu_down_dev, mask, impl_->scales_dev, static_cast<int>(slots),
+                                hidden, 1, out_dev, impl_->stream);
+        if (!impl_->cpu_down_copied)
+            check(cudaEventCreateWithFlags(&impl_->cpu_down_copied, cudaEventDisableTiming), "create CPU staging event");
+        check(cudaEventRecord(impl_->cpu_down_copied, impl_->stream), "record CPU staging reuse");
+    } else cuda::moe_combine(impl_->down_dev, impl_->scales_dev, static_cast<int>(slots), hidden, out_dev,
+                             impl_->stream);
     check(cudaGetLastError(), "launch MoE");
     // Copy this layer's CPU experts into the cache in the background, highest
     // router weight first, so following tokens run them on the GPU. Evicted
@@ -2436,6 +2507,428 @@ void CudaProjection::add_hidden_mix() {
                       impl_->stream);
 }
 
+void CudaProjection::hidden_project(const strata::TensorInfo& tensor, const uint8_t* data, const std::vector<float>& x) {
+    if (!supports(tensor.type) || tensor.shape.size() != 2 || tensor.shape[0] != x.size() || tensor.shape[1] != 2048)
+        throw std::invalid_argument("unsupported hidden projection: " + tensor.name);
+    const int n_in = int(x.size()), n_out = 2048;
+    impl_->ensure(impl_->hidden_dev, impl_->hidden_cap, size_t(n_out));
+    const void* weight = impl_->projection_weight(tensor, data, -1);
+    float* input = impl_->pair(Impl::kPHead, x.size());
+    check(cudaMemcpyAsync(input, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice, impl_->stream), "upload projection input");
+    float* output = impl_->hidden_dev;
+    impl_->decode_group(int(tensor.type), &weight, &input, &output, &n_out, 1, n_out, n_in, impl_->stream);
+    check(cudaGetLastError(), "launch hidden projection");
+}
+
+bool CudaProjection::supports_pair() const { return impl_->fast && !impl_->host_kv; }
+
+void CudaProjection::pair_upload(const std::vector<float>& x) {
+    if (x.size() != 2 * 2048) throw std::invalid_argument("pair hidden width");
+    if (!supports_pair()) throw std::logic_error("the two-token step requires fast mode and device KV");
+    if (impl_->cpu_misses) impl_->promote_admissions();
+    float* hidden = impl_->pair(Impl::kPHidden, x.size());
+    check(cudaMemcpyAsync(hidden, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice, impl_->stream),
+          "upload pair hidden");
+    for (auto& snapshot : impl_->gdn_snapshots) snapshot.taken = false;
+}
+
+std::vector<float> CudaProjection::pair_download() {
+    std::vector<float> result(2 * 2048);
+    check(cudaMemcpyAsync(result.data(), impl_->pair_buf[Impl::kPHidden], result.size() * sizeof(float),
+                          cudaMemcpyDeviceToHost, impl_->stream), "download pair hidden");
+    check(cudaStreamSynchronize(impl_->stream), "finish pair step");
+    return result;
+}
+
+void CudaProjection::pair_rms(const strata::TensorInfo& gamma, const uint8_t* data, float epsilon) {
+    float* norm = impl_->pair(Impl::kPNorm, 2 * 2048);
+    check(cudaMemcpyAsync(norm, impl_->pair_buf[Impl::kPHidden], 2 * 2048 * sizeof(float),
+                          cudaMemcpyDeviceToDevice, impl_->stream), "copy pair hidden");
+    const auto* weight = static_cast<const float*>(impl_->weight(gamma, data, -1, size_t(gamma.shape[0]) * sizeof(float)));
+    for (int c = 0; c < 2; ++c) cuda::rms_norm(norm + c * 2048, weight, 2048, epsilon, impl_->stream);
+}
+
+void CudaProjection::pair_add_mix() {
+    cuda::add_inplace(impl_->pair_buf[Impl::kPHidden], impl_->pair_buf[Impl::kPMix], 2 * 2048, impl_->stream);
+}
+
+void CudaProjection::pair_delta(int layer, const GdnWeights& w) {
+    constexpr int kHidden = 2048, kChannels = 8192, kHeads = 32, kS = 128;
+    constexpr float kEps = 1e-6f;
+    if (!supports_gdn(w) || layer < 0 || size_t(layer) >= impl_->gdn_states.size() ||
+        !impl_->gdn_states[size_t(layer)].rec)
+        throw std::invalid_argument("pair DeltaNet needs a decoded layer");
+    auto& state = impl_->gdn_states[size_t(layer)];
+    if (size_t(layer) >= impl_->gdn_snapshots.size()) impl_->gdn_snapshots.resize(size_t(layer) + 1);
+    auto& snapshot = impl_->gdn_snapshots[size_t(layer)];
+    const size_t conv_bytes = size_t(kChannels) * 3 * sizeof(float), rec_bytes = size_t(kS) * kHeads * kS * sizeof(float);
+    if (!snapshot.conv) impl_->allocate(reinterpret_cast<void**>(&snapshot.conv), conv_bytes);
+    if (!snapshot.rec) impl_->allocate(reinterpret_cast<void**>(&snapshot.rec), rec_bytes);
+    const float* x = impl_->pair_buf[Impl::kPNorm];
+    float* qkv = impl_->pair(Impl::kPQkv, 2 * kChannels);
+    float* z = impl_->pair(Impl::kPZ, 2 * 4096);
+    float* alpha = impl_->pair(Impl::kPAlpha, 2 * kHeads);
+    float* beta = impl_->pair(Impl::kPBeta, 2 * kHeads);
+    float* gate = impl_->pair(Impl::kPGate, 2 * kHeads);
+    float* raw = impl_->pair(Impl::kPConvRaw, 2 * kChannels);
+    float* silu = impl_->pair(Impl::kPConvSilu, 2 * kChannels);
+    float* outnorm = impl_->pair(Impl::kPOutNorm, 2 * 4096);
+    float* y = impl_->pair(Impl::kPY, 2 * 4096);
+    float* mix = impl_->pair(Impl::kPMix, 2 * kHidden);
+
+    const void* weights[2] = {impl_->projection_weight(*w.qkv, w.qkv_data, -1),
+                              impl_->projection_weight(*w.gate, w.gate_data, -1)};
+    float* outputs[2] = {qkv, z};
+    const int rows[2] = {kChannels, 4096};
+    impl_->decode_pair(int(w.qkv->type), weights, x, outputs, rows, 2, kChannels + 4096, kHidden);
+    const auto dense = [&](const strata::TensorInfo* t, const uint8_t* data, size_t count) {
+        return static_cast<const float*>(impl_->weight(*t, data, -1, count * sizeof(float)));
+    };
+    const float* alpha_w = dense(w.alpha, w.alpha_data, size_t(kHidden) * kHeads);
+    const float* beta_w = dense(w.beta, w.beta_data, size_t(kHidden) * kHeads);
+    const float* conv_w = dense(w.conv, w.conv_data, size_t(4) * kChannels);
+    const float* a_w = dense(w.a, w.a_data, kHeads);
+    const float* dt_w = dense(w.dt, w.dt_data, kHeads);
+    const float* gamma = dense(w.norm, w.norm_data, kS);
+    const strata::kernels::GdnShapes shapes{kS, 16, kHeads};
+    // The recurrence is sequential: column 0 updates the states in place, they
+    // are snapshotted, then column 1 continues from them.
+    for (int c = 0; c < 2; ++c) {
+        float* sc = silu + size_t(c) * kChannels;
+        cuda::gemv_f32(alpha_w, x + c * kHidden, alpha + c * kHeads, kHidden, kHeads, impl_->stream);
+        cuda::gemv_f32(beta_w, x + c * kHidden, beta + c * kHeads, kHidden, kHeads, impl_->stream);
+        strata::kernels::native_gdn_conv_silu(state.conv, qkv + size_t(c) * kChannels, conv_w,
+                                              raw + size_t(c) * kChannels, sc, kChannels, 4, impl_->stream);
+        strata::kernels::native_gdn_l2_norm(sc, 16, kS, kEps, impl_->stream);
+        strata::kernels::native_gdn_l2_norm(sc + 2048, 16, kS, kEps, impl_->stream);
+        strata::kernels::native_gdn_beta_gate(beta + c * kHeads, kHeads, impl_->stream);
+        strata::kernels::native_gdn_gate(alpha + c * kHeads, dt_w, a_w, gate + c * kHeads, kHeads, impl_->stream);
+        strata::kernels::native_gdn_step(state.rec, sc, sc + 2048, sc + 4096, gate + c * kHeads, beta + c * kHeads,
+                                         outnorm + c * 4096, shapes, impl_->stream);
+        if (c == 0) {
+            check(cudaMemcpyAsync(snapshot.conv, state.conv, conv_bytes, cudaMemcpyDeviceToDevice, impl_->stream), "snapshot conv");
+            check(cudaMemcpyAsync(snapshot.rec, state.rec, rec_bytes, cudaMemcpyDeviceToDevice, impl_->stream), "snapshot recurrence");
+            snapshot.taken = true;
+        }
+    }
+    // Per-head norm: the two columns are 64 consecutive heads.
+    cuda::gdn_out_norm_silu(outnorm, z, gamma, y, 2 * kHeads, kEps, impl_->stream);
+    const void* out_weight = impl_->projection_weight(*w.out, w.out_data, -1);
+    const int out_rows = kHidden;
+    impl_->decode_pair(int(w.out->type), &out_weight, y, &mix, &out_rows, 1, kHidden, 4096);
+    check(cudaGetLastError(), "launch pair DeltaNet");
+}
+
+void CudaProjection::pair_delta_layer(int layer, const GdnWeights& w, const strata::TensorInfo& input_norm,
+                                      const uint8_t* input_norm_data, const strata::TensorInfo& post_norm,
+                                      const uint8_t* post_norm_data, float epsilon) {
+    if (layer < 0) throw std::invalid_argument("CUDA DeltaNet layer index");
+    if (size_t(layer) >= impl_->pair_graphs.size()) impl_->pair_graphs.resize(size_t(layer) + 1);
+    auto& graph = impl_->pair_graphs[size_t(layer)];
+    const auto record = [&] {
+        pair_rms(input_norm, input_norm_data, epsilon);
+        pair_delta(layer, w);
+        pair_add_mix();
+        pair_rms(post_norm, post_norm_data, epsilon);
+    };
+    if (graph.exec) {
+        check(cudaGraphLaunch(graph.exec, impl_->stream), "launch pair DeltaNet graph");
+        impl_->gdn_snapshots[size_t(layer)].taken = true;  // the replay refreshed the snapshot
+        return;
+    }
+    // The first pass allocates every buffer and caches every weight, so the
+    // captured second pass performs no allocations.
+    if (!graph.warmed) { graph.warmed = true; record(); return; }
+    check(cudaStreamSynchronize(impl_->stream), "flush before pair capture");
+    check(cudaStreamBeginCapture(impl_->stream, cudaStreamCaptureModeThreadLocal), "begin pair capture");
+    record();
+    cudaGraph_t captured = nullptr;
+    check(cudaStreamEndCapture(impl_->stream, &captured), "end pair capture");
+    const auto status = cudaGraphInstantiate(&graph.exec, captured, nullptr, nullptr, 0);
+    cudaGraphDestroy(captured);
+    check(status, "instantiate pair graph");
+    check(cudaGraphLaunch(graph.exec, impl_->stream), "launch pair DeltaNet graph");
+}
+
+void CudaProjection::pair_attention(int layer, const AttnWeights& w, int position, float rope_base,
+                                    const std::array<std::array<int, 3>, 2>& rope_positions) {
+    constexpr int kHidden = 2048, kHeads = 16, kKvHeads = 2, kHeadDim = 256, kRot = 64;
+    constexpr int kQ = kHeads * 2 * kHeadDim, kKv = kKvHeads * kHeadDim;
+    constexpr float kEps = 1e-6f;
+    if (!supports_attention(w) || layer < 0 || position < 0) throw std::invalid_argument("pair attention layer");
+    if (position + 2 > impl_->max_context) throw std::out_of_range("CUDA attention context exceeded");
+    const float* x = impl_->pair_buf[Impl::kPNorm];
+    float* q = impl_->pair(Impl::kPQ, 2 * kQ);
+    float* k = impl_->pair(Impl::kPK, 2 * kKv);
+    float* v = impl_->pair(Impl::kPV, 2 * kKv);
+    float* ctx = impl_->pair(Impl::kPCtx, 2 * kHeads * kHeadDim);
+    float* mix = impl_->pair(Impl::kPMix, 2 * kHidden);
+    const void* weights[3] = {impl_->projection_weight(*w.q, w.q_data, -1), impl_->projection_weight(*w.k, w.k_data, -1),
+                              impl_->projection_weight(*w.v, w.v_data, -1)};
+    float* outputs[3] = {q, k, v};
+    const int rows[3] = {kQ, kKv, kKv};
+    impl_->decode_pair(int(w.q->type), weights, x, outputs, rows, 3, kQ + 2 * kKv, kHidden);
+    const auto* q_norm = static_cast<const float*>(impl_->weight(*w.q_norm, w.q_norm_data, -1, kHeadDim * sizeof(float)));
+    const auto* k_norm = static_cast<const float*>(impl_->weight(*w.k_norm, w.k_norm_data, -1, kHeadDim * sizeof(float)));
+    if (size_t(layer) >= impl_->attn_states.size()) impl_->attn_states.resize(size_t(layer) + 1);
+    auto& state = impl_->attn_states[size_t(layer)];
+    impl_->grow_kv(state, position + 2);
+    for (int c = 0; c < 2; ++c) {
+        const auto& r = rope_positions[size_t(c)];
+        cuda::attn_norm_mrope(q + c * kQ, kHeads, 2 * kHeadDim, kHeadDim, kRot, q_norm, kEps, rope_base,
+                              r[0], r[1], r[2], impl_->stream);
+        cuda::attn_norm_mrope(k + c * kKv, kKvHeads, kHeadDim, kHeadDim, kRot, k_norm, kEps, rope_base,
+                              r[0], r[1], r[2], impl_->stream);
+        cuda::kv_store(k + c * kKv, impl_->kv_offset(state.keys, position + c), kKv, impl_->half_kv, impl_->stream);
+        cuda::kv_store(v + c * kKv, impl_->kv_offset(state.values, position + c), kKv, impl_->half_kv, impl_->stream);
+    }
+    // Causal: column c attends to positions 0..position+c. Tiles are reused in
+    // order, so column 1's partials overwrite column 0's after its merge.
+    for (int c = 0; c < 2; ++c) {
+        const int needed = position + 1 + c, tiles = (needed + 127) / 128;
+        impl_->ensure(impl_->a_partial, impl_->a_partial_cap, size_t(kHeads) * tiles * (kHeadDim + 2));
+        if (impl_->half_kv) cuda::attn_half_partials(q + c * kQ, state.keys, state.values, needed, 0, tiles,
+                                                    impl_->a_partial, impl_->stream);
+        else cuda::attn_partials(q + c * kQ, state.keys, state.values, needed, 0, tiles, kHeads, kKvHeads, kHeadDim,
+                                 1.0f / 16.0f, impl_->a_partial, impl_->stream);
+        cuda::attn_merge(q + c * kQ, impl_->a_partial, tiles, kHeads, kHeadDim, ctx + c * kHeads * kHeadDim, impl_->stream);
+    }
+    const void* out_weight = impl_->projection_weight(*w.out, w.out_data, -1);
+    const int out_rows = kHidden;
+    impl_->decode_pair(int(w.out->type), &out_weight, ctx, &mix, &out_rows, 1, kHidden, kHeads * kHeadDim);
+    check(cudaGetLastError(), "launch pair attention");
+}
+
+void CudaProjection::pair_moe(const strata::TensorInfo& router, const uint8_t* router_data,
+                              const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,
+                              const MoeWeights& routed, const MoeWeights& shared) {
+    constexpr int kTopK = 8, kSlots = kTopK + 1;  // per column: routed experts, then the shared expert
+    if (!supports_moe(routed, shared)) throw std::invalid_argument("unsupported pair MoE block");
+    impl_->expert_layout(routed);
+    const int n_in = int(routed.gate->shape[0]), ff = int(routed.gate->shape[1]), hidden = int(routed.down->shape[1]);
+    const int experts_count = int(router.shape[1]);
+    const float* x = impl_->pair_buf[Impl::kPNorm];
+    float* mix = impl_->pair(Impl::kPMix, 2 * size_t(hidden));
+    float* logits = impl_->pair(Impl::kPLogits, 2 * size_t(experts_count));
+    const auto* router_w = static_cast<const float*>(impl_->weight(router, router_data, -1, size_t(n_in) * experts_count * sizeof(float)));
+    const auto* shared_w = static_cast<const float*>(impl_->weight(shared_gate, shared_gate_data, -1, size_t(n_in) * sizeof(float)));
+    // Both routings, then one doorbell. Mapped layout: ids [c*8+k], scales
+    // [c*8+k], shared gates [16+c].
+    const bool cpu_route = impl_->cpu_misses && impl_->stat_evicted;
+    if (cpu_route) impl_->mapped_floats(impl_->cpu_input_host, impl_->cpu_input_dev, impl_->cpu_input_cap, 2 * size_t(n_in));
+    const unsigned seq = ++impl_->route_seq;
+    cuda::gemv_f32_batch(router_w, x, logits, n_in, experts_count, 2, impl_->stream);
+    cuda::router_finish_pair(logits, experts_count, kTopK, impl_->d_ids_map, impl_->d_scales_map, shared_w, x, n_in,
+                             impl_->d_scales_map + 2 * kTopK, cpu_route ? impl_->cpu_input_dev : nullptr,
+                             impl_->d_flag_map, int(seq), impl_->stream);
+    // LAMINA_PAIR_PROFILE=1: host milliseconds per call for the routing wait,
+    // the setup and launches, and the CPU-expert wait, every 2560 calls.
+    static const bool profile = env_is("LAMINA_PAIR_PROFILE", '1');
+    static double prof_ms[3] = {};
+    static uint64_t prof_calls = 0, prof_union = 0, prof_cpu = 0;
+    const auto route_start = std::chrono::steady_clock::now();
+    volatile const int* flag = impl_->h_flag_map;
+    unsigned polls = 0;
+    while (*flag != int(seq)) {
+        if (!(polls & 1023)) {
+            const auto status = cudaStreamQuery(impl_->stream);
+            if (status != cudaSuccess && status != cudaErrorNotReady) check(status, "wait for pair router");
+        }
+        if (!(++polls & 131071) && std::chrono::steady_clock::now() - route_start > std::chrono::seconds(30))
+            throw std::runtime_error("CUDA pair router timed out");
+    }
+    const auto routed_at = std::chrono::steady_clock::now();
+    int ids[2][kTopK];
+    float scales[2 * kSlots];
+    std::memcpy(ids, impl_->h_ids_map, sizeof(ids));
+    for (int c = 0; c < 2; ++c) {
+        for (int k = 0; k < kTopK; ++k) scales[c * kSlots + k] = impl_->h_scales_map[c * kTopK + k];
+        scales[c * kSlots + kTopK] = impl_->h_scales_map[2 * kTopK + c];
+    }
+
+    // The union of both routings. slot[u][c] is expert u's slot in column c, or -1.
+    struct Unique { int expert; int slot[2]; bool cpu; };
+    std::vector<Unique> unique;
+    for (int c = 0; c < 2; ++c)
+        for (int k = 0; k < kTopK; ++k) {
+            auto found = std::find_if(unique.begin(), unique.end(), [&](const Unique& u) { return u.expert == ids[c][k]; });
+            if (found == unique.end()) { unique.push_back({ids[c][k], {-1, -1}, false}); found = unique.end() - 1; }
+            found->slot[c] = c * kSlots + k;
+        }
+    // Non-resident experts run on the CPU pool (both tokens per row read).
+    std::vector<int> cpu_ids;
+    std::vector<std::array<float*, CpuExperts::kMaxTokens>> cpu_outputs;
+    if (cpu_route) {
+        impl_->mapped_floats(impl_->cpu_down_host, impl_->cpu_down_dev, impl_->cpu_down_cap, 2 * kSlots * size_t(hidden));
+        if (impl_->cpu_down_copied) check(cudaEventSynchronize(impl_->cpu_down_copied), "reuse CPU expert staging");
+        for (auto& u : unique) {
+            u.cpu = !(impl_->resident(*routed.gate, u.expert) && impl_->resident(*routed.up, u.expert) &&
+                      impl_->resident(*routed.down, u.expert));
+            if (!u.cpu) continue;
+            cpu_ids.push_back(u.expert);
+            std::array<float*, CpuExperts::kMaxTokens> out{};
+            for (int c = 0; c < 2; ++c) if (u.slot[c] >= 0) out[size_t(c)] = impl_->cpu_down_host + size_t(u.slot[c]) * hidden;
+            cpu_outputs.push_back(out);
+        }
+    }
+    struct CpuBatchGuard {
+        CpuExperts* pool = nullptr;
+        ~CpuBatchGuard() { if (pool) try { pool->wait(); } catch (...) {} }
+    } cpu_batch;
+    if (!cpu_ids.empty()) {
+        impl_->cpu_experts->start(routed, cpu_ids, {impl_->cpu_input_host, impl_->cpu_input_host + n_in}, 2, cpu_outputs);
+        cpu_batch.pool = impl_->cpu_experts.get();
+        impl_->stat_cpu_experts += cpu_ids.size();
+    }
+
+    const size_t iq = strata::kernels::native_q8_1_bytes(n_in), dq = strata::kernels::native_q8_1_bytes(ff);
+    impl_->ensure(impl_->expert_q8, impl_->expert_q8_cap, 2 * iq + 2 * kSlots * dq);
+    impl_->ensure(impl_->gate_dev, impl_->gate_capacity, 2 * kSlots * size_t(ff));
+    impl_->ensure(impl_->up_dev, impl_->up_capacity, 2 * kSlots * size_t(ff));
+    impl_->ensure(impl_->swiglu_dev, impl_->swiglu_capacity, 2 * kSlots * size_t(ff));
+    impl_->ensure(impl_->down_dev, impl_->down_capacity, 2 * kSlots * size_t(hidden));
+    impl_->ensure(impl_->scales_dev, impl_->scales_capacity, 2 * kSlots);
+    if (!impl_->scales_host)
+        check(cudaMallocHost(reinterpret_cast<void**>(&impl_->scales_host), 65 * sizeof(float)), "allocate expert scales staging");
+    std::copy(scales, scales + 2 * kSlots, impl_->scales_host);
+    check(cudaMemcpyAsync(impl_->scales_dev, impl_->scales_host, 2 * kSlots * sizeof(float), cudaMemcpyHostToDevice,
+                          impl_->stream), "upload pair MoE scales");
+
+    // Weight pointers, leased so that uploads for later experts cannot evict them.
+    impl_->lease_active = true;
+    struct GpuExpert { const void* gate; const void* up; const void* down; int slot[2]; };
+    std::vector<GpuExpert> gpu;
+    for (const auto& u : unique)
+        if (!u.cpu) gpu.push_back({impl_->projection_weight(*routed.gate, routed.gate_data, u.expert),
+                                   impl_->projection_weight(*routed.up, routed.up_data, u.expert),
+                                   impl_->projection_weight(*routed.down, routed.down_data, u.expert), {u.slot[0], u.slot[1]}});
+    const GpuExpert shared_expert{impl_->projection_weight(*shared.gate, shared.gate_data, -1),
+                                  impl_->projection_weight(*shared.up, shared.up_data, -1),
+                                  impl_->projection_weight(*shared.down, shared.down_data, -1), {kTopK, kSlots + kTopK}};
+    const auto q8 = [&](size_t offset) { return reinterpret_cast<const float*>(impl_->expert_q8 + offset); };
+    const auto x_q8 = [&](int slot) { return q8(size_t(slot / kSlots) * iq); };          // the slot's column input
+    const auto swiglu_q8 = [&](int slot) { return q8(2 * iq + size_t(slot) * dq); };
+    // Experts routed by both tokens use the two-column kernel; the rest run as
+    // ordinary grouped matrices, each on its own column's input.
+    const auto launch = [&](int type, int width, bool down, const std::vector<const GpuExpert*>& experts) {
+        strata::kernels::NativeF32Pairs both{};
+        strata::kernels::NativeF32Grouped single{};
+        int both_rows = 0, single_rows = 0;
+        for (const auto* e : experts) {
+            const int rows = down ? hidden : ff;
+            const void* matrices[2] = {down ? e->down : e->gate, e->up};
+            float* bases[2] = {down ? impl_->down_dev : impl_->gate_dev, impl_->up_dev};
+            for (int j = 0; j < (down ? 1 : 2); ++j) {
+                const void* weight = matrices[j];
+                float* base = bases[j];
+                if (e->slot[0] >= 0 && e->slot[1] >= 0) {
+                    const int i = both.count++;
+                    both.weights[i] = weight; both.n_outs[i] = rows; both_rows += rows;
+                    for (int c = 0; c < 2; ++c) {
+                        both.inputs[c][i] = down ? swiglu_q8(e->slot[c]) : x_q8(e->slot[c]);
+                        both.outputs[c][i] = base + size_t(e->slot[c]) * rows;
+                    }
+                } else {
+                    const int slot = e->slot[0] >= 0 ? e->slot[0] : e->slot[1];
+                    const int i = single.count++;
+                    single.weights[i] = weight; single.n_outs[i] = rows; single_rows += rows;
+                    single.inputs[i] = down ? swiglu_q8(slot) : x_q8(slot);
+                    single.outputs[i] = base + size_t(slot) * rows;
+                }
+            }
+        }
+        if (both.count) strata::kernels::native_mmvq_q8_pairs(type, both, both_rows, width, impl_->stream);
+        if (single.count) strata::kernels::native_mmvq_q8_grouped(type, single, single_rows, width, impl_->stream);
+    };
+    std::vector<const GpuExpert*> routed_gpu;
+    for (const auto& e : gpu) routed_gpu.push_back(&e);
+    strata::kernels::native_quantize_q8_1(x, impl_->expert_q8, n_in, 2, impl_->stream);
+    launch(int(routed.gate->type), n_in, false, routed_gpu);
+    launch(int(shared.gate->type), n_in, false, {&shared_expert});
+    cuda::swiglu(impl_->gate_dev, impl_->up_dev, impl_->swiglu_dev, 2 * kSlots * ff, impl_->stream);
+    for (int base = 0; base < 2 * kSlots; base += 8)
+        strata::kernels::native_quantize_q8_1(impl_->swiglu_dev + size_t(base) * ff, impl_->expert_q8 + 2 * iq + size_t(base) * dq,
+                                              ff, std::min(8, 2 * kSlots - base), impl_->stream);
+    launch(int(routed.down->type), int(routed.down->shape[0]), true, routed_gpu);
+    launch(int(shared.down->type), int(shared.down->shape[0]), true, {&shared_expert});
+    impl_->lease_active = false;
+    impl_->leases.clear();
+    const auto launched = std::chrono::steady_clock::now();
+    if (profile) {
+        prof_ms[0] += std::chrono::duration<double, std::milli>(routed_at - route_start).count();
+        prof_ms[1] += std::chrono::duration<double, std::milli>(launched - routed_at).count();
+        prof_union += unique.size(); prof_cpu += cpu_ids.size();
+    }
+    if (!cpu_ids.empty()) {
+        cpu_batch.pool = nullptr;
+        impl_->cpu_experts->wait();
+        if (profile) prof_ms[2] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - launched).count();
+    }
+    unsigned long long cpu_mask = 0;
+    for (const auto& u : unique)
+        if (u.cpu) for (int c = 0; c < 2; ++c) if (u.slot[c] >= 0) cpu_mask |= 1ull << u.slot[c];
+    cuda::moe_combine_mixed(impl_->down_dev, cpu_mask ? impl_->cpu_down_dev : impl_->down_dev, cpu_mask, impl_->scales_dev,
+                            kSlots, hidden, 2, mix, impl_->stream);
+    if (cpu_mask) {
+        if (!impl_->cpu_down_copied)
+            check(cudaEventCreateWithFlags(&impl_->cpu_down_copied, cudaEventDisableTiming), "create CPU staging event");
+        check(cudaEventRecord(impl_->cpu_down_copied, impl_->stream), "record CPU staging reuse");
+    }
+    check(cudaGetLastError(), "launch pair MoE");
+    // Admit CPU experts into the cache as the single-token path does, first
+    // column's highest router weight first.
+    int admitted = 0;
+    for (const auto& u : unique) {
+        if (!u.cpu) continue;
+        if (admitted++ >= impl_->admit_per_layer) break;
+        if (!(impl_->admit(*routed.gate, routed.gate_data, u.expert) && impl_->admit(*routed.up, routed.up_data, u.expert) &&
+              impl_->admit(*routed.down, routed.down_data, u.expert))) break;
+    }
+    if (profile && ++prof_calls % 2560 == 0)
+        std::fprintf(stderr, "pair moe calls=%llu route_wait_ms=%.3f setup_ms=%.3f cpu_wait_ms=%.3f union=%.2f cpu=%.2f\n",
+                     static_cast<unsigned long long>(prof_calls), prof_ms[0] / double(prof_calls), prof_ms[1] / double(prof_calls),
+                     prof_ms[2] / double(prof_calls), double(prof_union) / double(prof_calls), double(prof_cpu) / double(prof_calls));
+}
+
+void CudaProjection::pair_commit(bool keep_second) {
+    if (keep_second) return;
+    for (size_t layer = 0; layer < impl_->gdn_snapshots.size(); ++layer) {
+        auto& snapshot = impl_->gdn_snapshots[layer];
+        if (!snapshot.taken) continue;
+        auto& state = impl_->gdn_states[layer];
+        check(cudaMemcpyAsync(state.conv, snapshot.conv, size_t(8192) * 3 * sizeof(float), cudaMemcpyDeviceToDevice,
+                              impl_->stream), "restore conv");
+        check(cudaMemcpyAsync(state.rec, snapshot.rec, size_t(128) * 32 * 128 * sizeof(float), cudaMemcpyDeviceToDevice,
+                              impl_->stream), "restore recurrence");
+        snapshot.taken = false;
+    }
+}
+
+std::array<int, 2> CudaProjection::matvec_argmax2(const strata::TensorInfo& tensor, const uint8_t* data,
+                                                  const std::vector<float>& x) {
+    if (!impl_->fast || !supports(tensor.type) || tensor.shape.size() != 2 || 2 * tensor.shape[0] != x.size())
+        throw std::invalid_argument("unsupported two-column LM head: " + tensor.name);
+    const int n_in = int(tensor.shape[0]), n_out = int(tensor.shape[1]);
+    const size_t bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, n_in, n_out);
+    void* weight = impl_->weight(tensor, data, -1, bytes);
+    float* input = impl_->pair(Impl::kPHead, x.size());
+    impl_->reserve(size_t(n_in), 2 * size_t(n_out));
+    check(cudaMemcpyAsync(input, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice, impl_->stream), "upload pair head input");
+    impl_->ensure(impl_->dense_q8, impl_->dense_q8_cap, 2 * strata::kernels::native_q8_1_bytes(4096));
+    strata::kernels::native_quantize_q8_1(input, impl_->dense_q8, n_in, 2, impl_->stream);
+    // Generic MMVQ with two columns: bitwise per column in the default exact layout.
+    strata::kernels::native_mmvq(tensor.type, weight, impl_->dense_q8, impl_->output, n_in, n_out, 2, impl_->stream);
+    if (!impl_->argmax_host) {
+        check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->argmax_host), 4 * sizeof(int), cudaHostAllocMapped), "allocate argmax result");
+        check(cudaHostGetDevicePointer(reinterpret_cast<void**>(&impl_->argmax_dev), impl_->argmax_host, 0), "map argmax result");
+    }
+    cuda::argmax_f32(impl_->output, n_out, impl_->argmax_dev, impl_->stream);
+    cuda::argmax_f32(impl_->output + n_out, n_out, impl_->argmax_dev + 2, impl_->stream);
+    check(cudaGetLastError(), "launch pair argmax");
+    check(cudaStreamSynchronize(impl_->stream), "finish pair argmax");
+    return {impl_->argmax_host[1] ? -1 : impl_->argmax_host[0], impl_->argmax_host[3] ? -1 : impl_->argmax_host[2]};
+}
+
 void CudaProjection::delta_net_into_mix(int layer, const GdnWeights& w) {
     impl_->ensure(impl_->mix_dev, impl_->mix_cap, 2048);
     delta_net_core(layer, impl_->norm_dev, impl_->mix_dev, w);
@@ -2661,26 +3154,7 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
             check(cudaEventRecord(slot.consumed, impl_->stream), "record KV consumer");
         }
     } else {
-    if (state.capacity < needed) {
-        int capacity = state.capacity ? state.capacity : std::min(2048, std::max(needed, 1));
-        while (capacity < needed) capacity *= 2;
-        if (capacity > impl_->max_context) capacity = impl_->max_context;
-        if (capacity < needed) throw std::out_of_range("CUDA attention context exceeded");
-        float* keys = nullptr;
-        float* values = nullptr;
-        impl_->allocate(reinterpret_cast<void**>(&keys), impl_->kv_bytes(capacity));
-        impl_->allocate(reinterpret_cast<void**>(&values), impl_->kv_bytes(capacity));
-        if (state.keys) {
-            const size_t bytes = impl_->kv_bytes(state.capacity);
-            check(cudaMemcpy(keys, state.keys, bytes, cudaMemcpyDeviceToDevice), "grow KV keys");
-            check(cudaMemcpy(values, state.values, bytes, cudaMemcpyDeviceToDevice), "grow KV values");
-            impl_->release(state.keys);
-            impl_->release(state.values);
-        }
-        state.keys = keys;
-        state.values = values;
-        state.capacity = capacity;
-    }
+    impl_->grow_kv(state, needed);
     cuda::kv_store(impl_->a_k, impl_->kv_offset(state.keys, position), kKv, impl_->half_kv, impl_->stream);
     cuda::kv_store(impl_->a_v, impl_->kv_offset(state.values, position), kKv, impl_->half_kv, impl_->stream);
     if (impl_->half_kv) cuda::attn_half_partials(impl_->a_q, state.keys, state.values, needed, 0, tiles,
@@ -2898,6 +3372,8 @@ CudaProjection::Stats CudaProjection::stats() const {
     stats.cache_limit = impl_->cache_limit;
     stats.allocated_bytes = impl_->allocated_bytes;
     stats.memory_limit = impl_->memory_limit;
+    stats.device_mallocs = impl_->stat_mallocs;
+    stats.free_trims = impl_->stat_trims;
     stats.graph_hits = impl_->moe_graph_hits;
     stats.graph_misses = impl_->moe_graph_misses;
     stats.cpu_experts = impl_->stat_cpu_experts;
@@ -2941,10 +3417,10 @@ std::vector<float> CudaProjection::matvec(const strata::TensorInfo&, const uint8
                                           const std::vector<float>&, int64_t) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
-int CudaProjection::matvec_argmax(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
+int CudaProjection::matvec_argmax(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&, int) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
-int CudaProjection::project_output(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&, int64_t) {
+int CudaProjection::project_output(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&, int64_t, int) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
 std::vector<std::vector<float>> CudaProjection::matvec_many(
@@ -2986,6 +3462,30 @@ void CudaProjection::hidden_rms(const strata::TensorInfo&, const uint8_t*, float
     throw std::runtime_error("Lamina was built without CUDA");
 }
 void CudaProjection::add_hidden_mix() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::hidden_project(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+bool CudaProjection::supports_pair() const { return false; }
+void CudaProjection::pair_upload(const std::vector<float>&) { throw std::runtime_error("Lamina was built without CUDA"); }
+std::vector<float> CudaProjection::pair_download() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::pair_rms(const strata::TensorInfo&, const uint8_t*, float) { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::pair_add_mix() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::pair_delta(int, const GdnWeights&) { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::pair_delta_layer(int, const GdnWeights&, const strata::TensorInfo&, const uint8_t*,
+                                      const strata::TensorInfo&, const uint8_t*, float) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+void CudaProjection::pair_attention(int, const AttnWeights&, int, float, const std::array<std::array<int, 3>, 2>&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+void CudaProjection::pair_moe(const strata::TensorInfo&, const uint8_t*, const strata::TensorInfo&, const uint8_t*,
+                              const MoeWeights&, const MoeWeights&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+void CudaProjection::pair_commit(bool) { throw std::runtime_error("Lamina was built without CUDA"); }
+std::array<int, 2> CudaProjection::matvec_argmax2(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
 void CudaProjection::delta_net_into_mix(int, const GdnWeights&) {
     throw std::runtime_error("Lamina was built without CUDA");
 }

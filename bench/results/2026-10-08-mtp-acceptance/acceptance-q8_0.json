@@ -1,0 +1,21 @@
+{
+  "compute_mode": "fast",
+  "tokens": 256,
+  "prompts": {
+    "prose": {
+      "prompt_tokens": 89,
+      "post-norm hidden, gate-first": 0.7568627450980392
+    },
+    "code": {
+      "prompt_tokens": 95,
+      "post-norm hidden, gate-first": 0.9176470588235294
+    },
+    "math": {
+      "prompt_tokens": 100,
+      "post-norm hidden, gate-first": 0.9607843137254902
+    }
+  },
+  "overall": {
+    "post-norm hidden, gate-first": 0.8784313725490196
+  }
+}

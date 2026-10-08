@@ -106,6 +106,15 @@ class NativeProcess:
             raise RuntimeError("native token outside vocabulary")
         return token
 
+    def generate(self, count, token):
+        """GENERATE: feed the last returned token, return the next count greedy tokens."""
+        self.process.stdin.write(f"GENERATE {int(count)} {int(token)}\n")
+        self.process.stdin.flush()
+        tokens = [int(word) for word in self.read().split()]
+        if len(tokens) != count or not all(0 <= t < 248320 for t in tokens):
+            raise RuntimeError("unexpected native GENERATE result")
+        return tokens
+
     def close(self):
         self.cancelled = None
         if self.process.poll() is None:

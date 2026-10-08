@@ -131,3 +131,10 @@ RTX 4060 machine measured **25.47 tokens/s** for llama.cpp versus **16.40
 tokens/s** for Lamina (nine resident-process runs, 32K context, FP16 KV, fast
 Lamina computation). See [commands and full results](../bench/results/2026-10-07-llama-cuda/README.md).
 That machine has not been remeasured with the current code.
+
+The MTP head of the official checkpoint is ported as a draft model for greedy
+speculative decoding (fast mode, device KV). Its forward pass was checked
+against an independent NumPy implementation (99.2-100% draft agreement), and
+with every expert on the GPU the speculative and single-token greedy outputs
+are identical. On the RTX 3050 it measured 42.94 against 37.15 tokens/s; see
+[the speculation record](../bench/results/2026-10-08-rtx3050-mtp-speculation/README.md).

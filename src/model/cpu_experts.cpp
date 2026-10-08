@@ -70,14 +70,17 @@ void quantize_for(const strata::TensorInfo& t, const float* x, std::vector<uint8
 }
 
 void project_quantized_rows(const strata::TensorInfo& t, const uint8_t* data, int expert,
-                            const uint8_t* quantized, float* out, int begin, int end) {
+                            const std::array<const uint8_t*, CpuExperts::kMaxTokens>& quantized,
+                            const std::array<float*, CpuExperts::kMaxTokens>& out, int begin, int end) {
     const auto type = static_cast<ggml_type>(t.type);
     const auto* wt = ggml_get_type_traits_cpu(type);
     const int width = int(t.shape[0]), rows = int(t.shape[1]);
     const size_t row_bytes = ggml_row_size(type, width);
     const uint8_t* source = data + size_t(expert) * rows * row_bytes;
+    // Row-outer, token-inner: a row read from RAM serves every routed token from L1.
     for (int row = begin; row < end; ++row)
-        wt->vec_dot(width, &out[row], 0, source + size_t(row) * row_bytes, 0, quantized, 0, 1);
+        for (int k = 0; k < CpuExperts::kMaxTokens; ++k)
+            if (out[size_t(k)]) wt->vec_dot(width, &out[size_t(k)][row], 0, source + size_t(row) * row_bytes, 0, quantized[size_t(k)], 0, 1);
 }
 
 bool same_dot_type(const strata::TensorInfo& a, const strata::TensorInfo& b) {
@@ -86,9 +89,11 @@ bool same_dot_type(const strata::TensorInfo& a, const strata::TensorInfo& b) {
 }
 #endif
 
-// Dequantizes rows [begin, end) of one expert matrix and dots them with x in FP64.
-void project_rows(const strata::TensorInfo& t, const uint8_t* data, int expert, const float* x,
-                  float* out, int begin, int end) {
+// Dequantizes rows [begin, end) of one expert matrix and dots them with each
+// token's x in FP64; the decoded row is reused for every routed token.
+void project_rows(const strata::TensorInfo& t, const uint8_t* data, int expert,
+                  const std::array<const float*, CpuExperts::kMaxTokens>& x,
+                  const std::array<float*, CpuExperts::kMaxTokens>& out, int begin, int end) {
     int block = 0, bytes = 0;
     if (!strata::block_geometry(t.type, block, bytes))
         throw std::invalid_argument("CPU expert projection shape or type");
@@ -108,13 +113,17 @@ void project_rows(const strata::TensorInfo& t, const uint8_t* data, int expert, 
             default: throw std::invalid_argument("unsupported CPU expert quantization");
             }
         }
-        double sum = 0;
+        for (int k = 0; k < CpuExperts::kMaxTokens; ++k) {
+            if (!out[size_t(k)]) continue;
+            const float* xk = x[size_t(k)];
+            double sum = 0;
 #if defined(_M_X64) || defined(__x86_64__)
-        if (avx && width % 8 == 0) sum = avx_dot(decoded.data(), x, width);
-        else
+            if (avx && width % 8 == 0) sum = avx_dot(decoded.data(), xk, width);
+            else
 #endif
-        for (int i = 0; i < width; ++i) sum += double(decoded[i]) * x[i];
-        out[row] = float(sum);
+            for (int i = 0; i < width; ++i) sum += double(decoded[i]) * xk[i];
+            out[size_t(k)][row] = float(sum);
+        }
     }
 }
 }
@@ -164,8 +173,25 @@ void CpuExperts::worker_loop() {
 
 void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids, const float* input,
                        const std::vector<float*>& outputs) {
-    if (ids.empty() || ids.size() != outputs.size() || !input)
+    std::vector<std::array<float*, kMaxTokens>> paired(outputs.size());
+    for (size_t i = 0; i < outputs.size(); ++i) paired[i] = {outputs[i], nullptr};
+    start(weights, ids, {input, nullptr}, 1, paired);
+}
+
+void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids,
+                       const std::array<const float*, kMaxTokens>& inputs, int tokens,
+                       const std::vector<std::array<float*, kMaxTokens>>& outputs) {
+    if (ids.empty() || ids.size() != outputs.size() || tokens < 1 || tokens > kMaxTokens)
         throw std::invalid_argument("CPU expert batch");
+    for (int k = 0; k < tokens; ++k) if (!inputs[size_t(k)]) throw std::invalid_argument("CPU expert batch input");
+    for (const auto& out : outputs) {
+        bool any = false;
+        for (int k = 0; k < kMaxTokens; ++k) {
+            if (out[size_t(k)] && k >= tokens) throw std::invalid_argument("CPU expert output for a missing token");
+            any |= out[size_t(k)] != nullptr;
+        }
+        if (!any) throw std::invalid_argument("CPU expert without a routed token");
+    }
     const auto& g = *weights.gate;
     const auto& u = *weights.up;
     const auto& d = *weights.down;
@@ -176,19 +202,24 @@ void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids, c
         if (id < 0 || id >= int(g.shape[2])) throw std::out_of_range("CPU expert index");
     // wait() left next_ at kIdle, so no worker can claim an item while the
     // batch is rebuilt.
-    weights_ = weights; ids_ = ids; input_ = input; outputs_ = outputs;
+    weights_ = weights; ids_ = ids; tokens_ = tokens; inputs_ = inputs; outputs_ = outputs;
 #ifdef LAMINA_CPU_QUANT
     if (fast_) {
-        quantize_for(g, input, input_q_);
-        if (!same_dot_type(g, u)) quantize_for(u, input, input_q_up_);
-        else input_q_up_.clear();
+        for (int k = 0; k < tokens; ++k) {
+            quantize_for(g, inputs[size_t(k)], input_q_[size_t(k)]);
+            if (!same_dot_type(g, u)) quantize_for(u, inputs[size_t(k)], input_q_up_[size_t(k)]);
+            else input_q_up_[size_t(k)].clear();
+        }
     }
 #endif
     while (experts_.size() < ids.size()) experts_.push_back(std::make_unique<ExpertState>());
     items_.clear();
     for (int e = 0; e < int(ids.size()); ++e) {
         auto& state = *experts_[size_t(e)];
-        state.gate.resize(size_t(ff)); state.up.resize(size_t(ff)); state.swiglu.resize(size_t(ff));
+        for (int k = 0; k < tokens; ++k) {
+            state.gate[size_t(k)].resize(size_t(ff)); state.up[size_t(k)].resize(size_t(ff));
+            state.swiglu[size_t(k)].resize(size_t(ff));
+        }
         state.pending.store(2 * ((ff + kGateRows - 1) / kGateRows), std::memory_order_relaxed);
         state.ready.store(false, std::memory_order_relaxed);
         for (int b = 0; b < ff; b += kGateRows) {
@@ -255,41 +286,59 @@ void CpuExperts::work() {
 void CpuExperts::run(const Item& item) {
     auto& state = *experts_[size_t(item.expert)];
     const int expert = ids_[size_t(item.expert)];
+    const auto& routed = outputs_[size_t(item.expert)];  // non-null for every token that routed this expert
     if (item.matrix == 2) {
         while (!state.ready.load(std::memory_order_acquire)) pause();
         if (failed_.load(std::memory_order_acquire)) return;
-        float* out = outputs_[size_t(item.expert)];
 #ifdef LAMINA_CPU_QUANT
         if (fast_) {
-            project_quantized_rows(*weights_.down, weights_.down_data, expert, state.swiglu_q.data(), out, item.begin, item.end);
+            std::array<const uint8_t*, kMaxTokens> q{};
+            for (int k = 0; k < kMaxTokens; ++k) if (routed[size_t(k)]) q[size_t(k)] = state.swiglu_q[size_t(k)].data();
+            project_quantized_rows(*weights_.down, weights_.down_data, expert, q, routed, item.begin, item.end);
             return;
         }
 #endif
-        project_rows(*weights_.down, weights_.down_data, expert, state.swiglu.data(), out, item.begin, item.end);
+        std::array<const float*, kMaxTokens> x{};
+        for (int k = 0; k < kMaxTokens; ++k) if (routed[size_t(k)]) x[size_t(k)] = state.swiglu[size_t(k)].data();
+        project_rows(*weights_.down, weights_.down_data, expert, x, routed, item.begin, item.end);
         return;
     }
     const auto& tensor = item.matrix == 0 ? *weights_.gate : *weights_.up;
     const uint8_t* data = item.matrix == 0 ? weights_.gate_data : weights_.up_data;
-    float* out = item.matrix == 0 ? state.gate.data() : state.up.data();
+    std::array<float*, kMaxTokens> out{};
+    for (int k = 0; k < kMaxTokens; ++k)
+        if (routed[size_t(k)]) out[size_t(k)] = (item.matrix == 0 ? state.gate : state.up)[size_t(k)].data();
 #ifdef LAMINA_CPU_QUANT
     if (fast_) {
-        const auto& quantized = item.matrix == 1 && !input_q_up_.empty() ? input_q_up_ : input_q_;
-        project_quantized_rows(tensor, data, expert, quantized.data(), out, item.begin, item.end);
+        std::array<const uint8_t*, kMaxTokens> q{};
+        for (int k = 0; k < kMaxTokens; ++k) {
+            if (!routed[size_t(k)]) continue;
+            const auto& quantized = item.matrix == 1 && !input_q_up_[size_t(k)].empty() ? input_q_up_[size_t(k)] : input_q_[size_t(k)];
+            q[size_t(k)] = quantized.data();
+        }
+        project_quantized_rows(tensor, data, expert, q, out, item.begin, item.end);
         return;
     }
 #endif
-    project_rows(tensor, data, expert, input_, out, item.begin, item.end);
+    project_rows(tensor, data, expert, inputs_, out, item.begin, item.end);
 }
 
 void CpuExperts::finish_gate_up(int expert) {
     auto& state = *experts_[size_t(expert)];
+    const auto& routed = outputs_[size_t(expert)];
     if (!failed_.load(std::memory_order_acquire)) {
         try {
-            for (size_t i = 0; i < state.gate.size(); ++i)
-                state.swiglu[i] = (state.gate[i] / (1.0f + std::exp(-state.gate[i]))) * state.up[i];
+            for (int k = 0; k < kMaxTokens; ++k) {
+                if (!routed[size_t(k)]) continue;
+                auto& gate = state.gate[size_t(k)];
+                auto& up = state.up[size_t(k)];
+                auto& swiglu = state.swiglu[size_t(k)];
+                for (size_t i = 0; i < gate.size(); ++i)
+                    swiglu[i] = (gate[i] / (1.0f + std::exp(-gate[i]))) * up[i];
 #ifdef LAMINA_CPU_QUANT
-            if (fast_) quantize_for(*weights_.down, state.swiglu.data(), state.swiglu_q);
+                if (fast_) quantize_for(*weights_.down, swiglu.data(), state.swiglu_q[size_t(k)]);
 #endif
+            }
         } catch (...) {
             std::lock_guard lock(mutex_);
             if (!error_) error_ = std::current_exception();

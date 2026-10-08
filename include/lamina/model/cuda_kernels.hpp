@@ -20,6 +20,10 @@ void add_inplace(float* x, const float* y, int n, void* stream);
 // (element (row, i) at row * n_in + i).
 void gemv_f32(const float* weights, const float* x, float* y, int n_in, int n_out,
                void* stream);
+// gemv_f32 on `columns` contiguous inputs and outputs in one launch; each
+// column is bitwise equal to a gemv_f32 call on it.
+void gemv_f32_batch(const float* weights, const float* x, float* y, int n_in, int n_out, int columns,
+                    void* stream);
 void gemv_f32_columns(const float* weights, const float* x, float* y, int n_in,
                        int n_out, int columns, void* stream);
 void rms_norm_columns(float* x, const float* weight, int width, int columns,
@@ -87,6 +91,16 @@ void router_topk(const float* logits, int n, int k, int* ids, float* weights, vo
 void router_finish(const float* logits, int n, int k, int* ids, float* weights,
                    const float* gate_weight, const float* x, int n_in, float* shared_out,
                    float* publish, int* flag, int value, void* stream);
+// router_finish for two columns (logits [2, n], x [2, n_in]): ids and weights
+// at c * k, shared gates in shared_out[0..1], publishes 2 * n_in floats.
+void router_finish_pair(const float* logits, int n, int k, int* ids, float* weights,
+                        const float* gate_weight, const float* x, int n_in, float* shared_out,
+                        float* publish, int* flag, int value, void* stream);
+// moe_combine over `columns` columns of `slots` slots each (slot c * slots + s),
+// reading the slots set in cpu_mask from host_down, a mapped buffer of the same
+// layout holding CPU-expert results. Same order and arithmetic as moe_combine.
+void moe_combine_mixed(const float* down, const float* host_down, unsigned long long cpu_mask,
+                       const float* scales, int slots, int hidden, int columns, float* out, void* stream);
 void router_topk_columns(const float* logits, int columns, int* ids, float* scales, void* stream);
 void dot_sigmoid_columns(const float* weights, const float* x, int columns, float* scales, void* stream);
 void gather_expert_inputs(const float* x, const int* slot_map, int count, int hidden,

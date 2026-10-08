@@ -186,7 +186,96 @@ void Inference::reset() {
         std::fill(state.recurrent.begin(), state.recurrent.end(), 0.0f);
     }
     for (auto& state : attention_) { state.keys.clear(); state.values.clear(); }
+    mtp_position_ = 0;
+    spec_rate_ = 0.87;
+    spec_backoff_ = 0;
     if (cuda_) cuda_->reset();
+}
+
+namespace {
+constexpr int kMtpLayer = 40;  // the head's attention state follows the 40 main layers
+}
+
+void Inference::load_mtp(const std::string& path) {
+    if (!cuda_ || !device_chain_supported())
+        throw std::runtime_error("the MTP draft head requires the CUDA decode chain");
+    auto file = std::make_unique<strata::GgufFile>(path);
+    for (const char* name : {"mtp.fc.weight", "mtp.attn_q.weight", "mtp.ffn_gate_exps.weight", "mtp.output_norm.weight"})
+        if (!file->find(name)) throw std::runtime_error(std::string("MTP file lacks ") + name);
+    mtp_file_ = std::move(file);
+    mtp_position_ = 0;
+}
+
+int Inference::mtp_draft(int next_token, const std::vector<float>& hidden, int rope_position) {
+    if (!mtp_file_) throw std::logic_error("no MTP head loaded");
+    if (hidden.size() != HIDDEN || mtp_position_ >= context_) throw std::invalid_argument("invalid MTP draft input");
+    const auto& f = *mtp_file_;
+    const auto get = [&](const char* name) -> const strata::TensorInfo& {
+        const auto* t = f.find(name);
+        if (!t) throw std::runtime_error(std::string("missing MTP tensor: ") + name);
+        return *t;
+    };
+    const auto weights = [&](const char* name) {
+        const auto& t = get(name);
+        std::vector<float> out(t.elements());
+        strata::dequantize_f32(f.tensor_data(t), out.data(), int(out.size()));
+        return out;
+    };
+    // Input fusion: [rms(embed(x_{t+1})) ; rms(h_t after the main final norm)].
+    std::vector<float> fused(2 * HIDDEN);
+    row(tensor("token_embd.weight"), next_token, fused.data());
+    std::copy(hidden.begin(), hidden.end(), fused.begin() + HIDDEN);
+    rms(fused.data() + HIDDEN, vec(tensor("output_norm.weight")).data(), HIDDEN);
+    rms(fused.data(), weights("mtp.pre_fc_norm_embedding.weight").data(), HIDDEN);
+    rms(fused.data() + HIDDEN, weights("mtp.pre_fc_norm_hidden.weight").data(), HIDDEN);
+    const auto& fc = get("mtp.fc.weight");
+    cuda_->hidden_project(fc, f.tensor_data(fc), fused);
+    // The single decoder layer: gated full attention, then the MoE.
+    const auto data = [&](const strata::TensorInfo& t) { return f.tensor_data(t); };
+    AttnWeights attn;
+    const auto set = [&](const char* name, const strata::TensorInfo*& t, const uint8_t*& d) { t = &get(name); d = data(*t); };
+    set("mtp.attn_q.weight", attn.q, attn.q_data);
+    set("mtp.attn_k.weight", attn.k, attn.k_data);
+    set("mtp.attn_v.weight", attn.v, attn.v_data);
+    set("mtp.attn_q_norm.weight", attn.q_norm, attn.q_norm_data);
+    set("mtp.attn_k_norm.weight", attn.k_norm, attn.k_norm_data);
+    set("mtp.attn_output.weight", attn.out, attn.out_data);
+    MoeWeights routed, shared;
+    set("mtp.ffn_gate_exps.weight", routed.gate, routed.gate_data);
+    set("mtp.ffn_up_exps.weight", routed.up, routed.up_data);
+    set("mtp.ffn_down_exps.weight", routed.down, routed.down_data);
+    set("mtp.ffn_gate_shexp.weight", shared.gate, shared.gate_data);
+    set("mtp.ffn_up_shexp.weight", shared.up, shared.up_data);
+    set("mtp.ffn_down_shexp.weight", shared.down, shared.down_data);
+    const auto& attn_norm = get("mtp.attn_norm.weight");
+    const auto& post_norm = get("mtp.post_attention_norm.weight");
+    const auto& router = get("mtp.ffn_gate_inp.weight");
+    const auto& shared_gate = get("mtp.ffn_gate_inp_shexp.weight");
+    float rope_base = 10000000.0f;
+    if (const auto* meta = file_.get("qwen35moe.rope.freq_base")) rope_base = static_cast<float>(meta->num());
+    // The head's KV cache is compact (one row per draft); rotary positions are
+    // the main sequence's when the caller gives them.
+    const int p = mtp_position_++;
+    const int r = rope_position >= 0 ? rope_position : p;
+    cuda_->hidden_rms(attn_norm, data(attn_norm), EPS);
+    cuda_->attention_into_mix(kMtpLayer, attn, p, rope_base, {r, r, r});
+    cuda_->add_hidden_mix();
+    cuda_->hidden_rms(post_norm, data(post_norm), EPS);
+    cuda_->moe_into_mix(router, data(router), shared_gate, data(shared_gate), routed, shared);
+    cuda_->add_hidden_mix();
+    // Final norm and the main model's LM head.
+    std::vector<float> out = cuda_->hidden_download();
+    rms(out.data(), weights("mtp.output_norm.weight").data(), HIDDEN);
+    const auto& head = tensor("output.weight");
+    // LAMINA_MTP_VOCAB=N drafts only from the first N token ids (the LM head is
+    // most of a draft's cost); a token outside them is simply never drafted.
+    static const int draft_rows = [] { const char* v = std::getenv("LAMINA_MTP_VOCAB"); return v ? std::atoi(v) : 0; }();
+    int draft = cuda_->matvec_argmax(head, file_.tensor_data(head), out, draft_rows);
+    if (draft < 0) {
+        const auto logits = matvec(head, out);
+        draft = int(std::max_element(logits.begin(), logits.end()) - logits.begin());
+    }
+    return draft;
 }
 
 const strata::TensorInfo& Inference::tensor(const std::string& name) const {
@@ -655,7 +744,21 @@ std::vector<float> Inference::prefill_hidden(const std::vector<int>& tokens) {
     for (int c = 0; c < columns; ++c)
         row(tensor("token_embd.weight"), tokens[c], hidden.data() + size_t(c) * HIDDEN);
     for (int c = 0; c < columns; ++c) positions[c].fill(rope_position_ + c);
-    return prefill_embeddings(hidden, positions);
+    static const bool stats = [] { const char* v = std::getenv("LAMINA_PREFILL_STATS"); return v && v[0] == '1'; }();
+    if (!stats || !cuda_) return prefill_embeddings(hidden, positions);
+    const auto before = cuda_->stats();
+    const auto started = std::chrono::steady_clock::now();
+    auto result = prefill_embeddings(hidden, positions);
+    const auto after = cuda_->stats();
+    std::fprintf(stderr, "prefill tokens=%d ms=%.1f uploaded_mb=%.1f evicted_mb=%.1f resident_mb=%.1f misses=%llu mallocs=%llu trims=%llu allocated_mb=%.1f limit_mb=%.1f\n", columns,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(),
+                 double(after.uploaded_bytes - before.uploaded_bytes) / 1048576.0,
+                 double(after.evicted_bytes - before.evicted_bytes) / 1048576.0, double(after.resident_bytes) / 1048576.0,
+                 static_cast<unsigned long long>(after.misses - before.misses),
+                 static_cast<unsigned long long>(after.device_mallocs - before.device_mallocs),
+                 static_cast<unsigned long long>(after.free_trims - before.free_trims),
+                 double(after.allocated_bytes) / 1048576.0, double(after.memory_limit) / 1048576.0);
+    return result;
 }
 
 std::vector<float> Inference::prefill_long(const std::vector<int>& tokens,int chunk) {
@@ -851,6 +954,137 @@ int Inference::greedy(std::vector<float> x) {
     const auto output_norm = vec(tensor("output_norm.weight"));
     rms(x.data(), output_norm.data(), HIDDEN);
     return cuda_->matvec_argmax(head, file_.tensor_data(head), x);
+}
+
+int Inference::greedy_token(const std::vector<float>& hidden) {
+    if (const int token = greedy(hidden); token >= 0) return token;
+    const auto values = logits(hidden);
+    return int(std::max_element(values.begin(), values.end()) - values.begin());
+}
+
+bool Inference::pair_supported() {
+    return cuda_ && device_chain_supported() && cuda_->supports_pair();
+}
+
+std::vector<float> Inference::step_pair_hidden(int first, int second) {
+    for (const int id : {first, second})
+        if (id < 0 || id >= 248320) throw std::out_of_range("token id");
+    if (position_ + 2 > context_) throw std::out_of_range("context length exceeded");
+    cuda_->finish_prefill();
+    std::vector<float> embeddings(2 * HIDDEN);
+    row(tensor("token_embd.weight"), first, embeddings.data());
+    row(tensor("token_embd.weight"), second, embeddings.data() + HIDDEN);
+    float rope_base = 10000000.0f;
+    if (const auto* meta = file_.get("qwen35moe.rope.freq_base")) rope_base = static_cast<float>(meta->num());
+    const std::array<std::array<int, 3>, 2> rope{{{rope_position_, rope_position_, rope_position_},
+                                                  {rope_position_ + 1, rope_position_ + 1, rope_position_ + 1}}};
+    // LAMINA_PAIR_PROFILE=1: synchronize after each stage and report the
+    // accumulated attention / DeltaNet / MoE milliseconds every 64 passes.
+    static const bool profile = [] { const char* v = std::getenv("LAMINA_PAIR_PROFILE"); return v && v[0] == '1'; }();
+    static double stage_ms[3] = {};
+    static uint64_t passes = 0;
+    auto mark = std::chrono::steady_clock::now();
+    const auto stage = [&](int index) {
+        if (!profile) return;
+        cuda_->pair_download();
+        const auto now = std::chrono::steady_clock::now();
+        stage_ms[index] += std::chrono::duration<double, std::milli>(now - mark).count();
+        mark = now;
+    };
+    cuda_->pair_upload(embeddings);
+    for (int layer = 0; layer < layers_; ++layer) {
+        const auto& input_norm = tensor(layer_name(layer, "attn_norm.weight"));
+        const auto& post_norm = tensor(layer_name(layer, "post_attention_norm.weight"));
+        if (layer % 4 == 3) {
+            cuda_->pair_rms(input_norm, file_.tensor_data(input_norm), EPS);
+            cuda_->pair_attention(layer, attention_weights(layer), position_, rope_base, rope);
+            cuda_->pair_add_mix();
+            cuda_->pair_rms(post_norm, file_.tensor_data(post_norm), EPS);
+        } else {
+            cuda_->pair_delta_layer(layer, gdn_weights(layer), input_norm, file_.tensor_data(input_norm),
+                                    post_norm, file_.tensor_data(post_norm), EPS);
+        }
+        stage(layer % 4 == 3 ? 0 : 1);
+        MoeWeights routed, shared;
+        moe_weights(layer, routed, shared);
+        const auto& router = tensor(layer_name(layer, "ffn_gate_inp.weight"));
+        const auto& shared_gate = tensor(layer_name(layer, "ffn_gate_inp_shexp.weight"));
+        cuda_->pair_moe(router, file_.tensor_data(router), shared_gate, file_.tensor_data(shared_gate), routed, shared);
+        cuda_->pair_add_mix();
+        stage(2);
+    }
+    if (profile && ++passes % 64 == 0)
+        std::fprintf(stderr, "pair profile passes=%llu attention_ms=%.3f deltanet_ms=%.3f moe_ms=%.3f\n",
+                     static_cast<unsigned long long>(passes), stage_ms[0] / double(passes), stage_ms[1] / double(passes),
+                     stage_ms[2] / double(passes));
+    return cuda_->pair_download();
+}
+
+void Inference::commit_pair(bool keep_second) {
+    cuda_->pair_commit(keep_second);
+    const int advance = keep_second ? 2 : 1;
+    position_ += advance;
+    rope_position_ += advance;
+    rope_positions_.fill(rope_position_ - 1);
+}
+
+std::vector<int> Inference::generate_greedy(int token, std::vector<float>& hidden, int count) {
+    if (hidden.size() != HIDDEN || count < 0) throw std::invalid_argument("invalid generation request");
+    std::vector<int> out;
+    const bool speculate = has_mtp() && pair_supported();
+    const auto& head = tensor("output.weight");
+    const auto output_norm = vec(tensor("output_norm.weight"));
+    using Clock = std::chrono::steady_clock;
+    while (int(out.size()) < count) {
+        // A pair needs room for two emitted tokens and two positions. While the
+        // guard backs off, single steps run and count down to the next probe.
+        const bool backing_off = spec_backoff_ > 0;
+        if (!speculate || backing_off || count - int(out.size()) < 2 || position_ + 2 > context_ || position_ < 1) {
+            if (backing_off && speculate) --spec_backoff_;
+            hidden = step_hidden(token);
+            token = greedy_token(hidden);
+            out.push_back(token);
+            continue;
+        }
+        const auto started = Clock::now();
+        const int draft = mtp_draft(token, hidden, position_ - 1);
+        const auto drafted = Clock::now();
+        const auto both = step_pair_hidden(token, draft);
+        auto normalized = both;
+        for (int c = 0; c < 2; ++c) rms(normalized.data() + size_t(c) * HIDDEN, output_norm.data(), HIDDEN);
+        auto next = cuda_->matvec_argmax2(head, file_.tensor_data(head), normalized);
+        for (int c = 0; c < 2; ++c)
+            if (next[size_t(c)] < 0) {
+                const auto values = matvec(head, std::vector<float>(normalized.begin() + c * HIDDEN, normalized.begin() + (c + 1) * HIDDEN));
+                next[size_t(c)] = int(std::max_element(values.begin(), values.end()) - values.begin());
+            }
+        const bool accepted = next[0] == draft;
+        commit_pair(accepted);
+        const int column = accepted ? 1 : 0;
+        hidden.assign(both.begin() + column * HIDDEN, both.begin() + (column + 1) * HIDDEN);
+        out.push_back(next[0]);
+        if (accepted) out.push_back(next[1]);
+        token = out.back();
+        spec_stats_.steps++;
+        spec_stats_.drafted++;
+        spec_stats_.accepted += accepted;
+        // Acceptance guard. On the RTX 3050 a pass costs about 42 ms against 27 ms
+        // for a single step, so speculation only pays above about 55% acceptance.
+        // Below that (text the head drafts badly), run single steps for a while,
+        // then probe again from just above the threshold. The slow average
+        // (about 15 straight rejections from the start value) ignores the short
+        // rejection runs of prose, whose 74% acceptance still pays.
+        constexpr double kBreakEven = 0.55;
+        spec_rate_ = 0.97 * spec_rate_ + 0.03 * (accepted ? 1.0 : 0.0);
+        if (spec_rate_ < kBreakEven) {
+            spec_backoff_ = 32;
+            spec_stats_.backoffs++;
+            spec_rate_ = kBreakEven + 0.1;
+        }
+        spec_stats_.draft_ms += std::chrono::duration<double, std::milli>(drafted - started).count();
+        spec_stats_.verify_ms += std::chrono::duration<double, std::milli>(Clock::now() - drafted).count();
+    }
+    return out;
 }
 
 }  // namespace lamina::model
