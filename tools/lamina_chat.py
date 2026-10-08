@@ -13,6 +13,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler
 from serve.structured import prepare_format, validated_json, StructuredOutputError
 from tools.lamina_protocol import NativeProcess
+from tools.lamina_toolcalls import ToolStream, hold_suffix
 from tools.lamina_vision import Vision
 
 MODEL_NAME = "Qwen3.6-35B-A3B-UD-Q4_K_M"
@@ -45,9 +46,10 @@ def validate_options(options, context):
         raise ValueError("stream_options.include_usage must be boolean")
     thinking = o.get("enable_thinking", False)
     if "reasoning_effort" in o:
-        if o["reasoning_effort"] not in ("none", "low", "medium", "high"):
-            raise ValueError("reasoning_effort must be none, low, medium or high")
-        thinking = o["reasoning_effort"] != "none"
+        # The model only thinks or does not; the finer levels that clients such as pi send all mean "think".
+        if o["reasoning_effort"] not in ("none", "off", "minimal", "low", "medium", "high", "xhigh", "max"):
+            raise ValueError("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
+        thinking = o["reasoning_effort"] not in ("none", "off")
     if not isinstance(thinking, bool):
         raise ValueError("enable_thinking must be boolean")
     o["enable_thinking"] = thinking
@@ -67,13 +69,6 @@ def split_reasoning(text, thinking):
             return reason, content.lstrip("\n")
         return text, ""
     return "", text
-
-
-def hold_suffix(text, markers):
-    for length in range(min(max(map(len, markers), default=0), len(text)), 0, -1):
-        if any(marker.startswith(text[-length:]) for marker in markers):
-            return text[:-length]
-    return text
 
 
 def tool_message(content, tools, choice):
@@ -147,10 +142,21 @@ class Engine:
         self.native = self.vision = None
         self.vision_engine, self.max_image_tokens, self.cpu_threads = vision_engine, max_image_tokens, cpu_threads
 
+    log_requests = False  # the server prints one line per request and progress lines during long answers
+
+    def _log(self, text):
+        if self.log_requests:
+            print(f"{time.strftime('%H:%M:%S')}  {text}", flush=True)
+
     def close(self):
-        with self.lock:
+        # A running request holds the lock for its whole answer, which can take minutes. Do not wait for it:
+        # stopping the engine process below makes that request fail and release the lock.
+        locked = self.lock.acquire(timeout=1)
+        try:
             self._stop_native()
             if self.vision: self.vision.close(); self.vision = None
+        finally:
+            if locked: self.lock.release()
 
     def _stop_native(self):
         if self.native: self.native.close(); self.native = None
@@ -242,12 +248,19 @@ class Engine:
     def events(self, messages, max_tokens=128, cancelled=None, **options):
         options["max_tokens"] = max_tokens
         messages, o, validator = self.validate(messages, options)
-        buffered = bool(o.get("tools")) or validator is not None
+        # A streaming client gets reasoning, text and the arguments of tool calls as they are generated.
+        # Without streaming, or with a JSON validator, the answer is checked as a whole before it is delivered.
+        incremental = bool(o.get("tools")) and validator is None and bool(o.get("stream"))
+        buffered = (bool(o.get("tools")) and not incremental) or validator is not None
+        tool_stream = ToolStream(o["tools"], o.get("tool_choice", "auto")) if incremental else None
         with self.lock:
             tmp = self.data / "tmp"; tmp.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=tmp, prefix="chat-") as path:
                 ids, images, prompt_count = self._prepare(messages, o, Path(path))
                 start = time.perf_counter()
+                self._log(f"request: {prompt_count} prompt tokens, up to {o['max_tokens']} answer tokens"
+                          + (f", {len(o['tools'])} tools" if o.get("tools") else "")
+                          + (", thinking" if o["enable_thinking"] else "") + (", streaming" if o.get("stream") else ""))
                 self._start_native()
                 self.native.cancelled = cancelled
                 try:
@@ -268,6 +281,8 @@ class Engine:
                                     next_id = self.native.command(("PREFILL " if last else "BATCH ") + " ".join(map(str, pending)), not last)
                                     pending = []
                     first_token = time.perf_counter() - start
+                    self._log(f"  prompt read in {first_token:.1f} s ({prompt_count / max(first_token, 1e-9):.0f} tokens/s)")
+                    generation_start = last_progress = time.perf_counter()
                     generated, raw, prior_reason, prior_content = [], "", "", ""
                     finish = "length"
                     # Greedy requests with an MTP head take tokens in chunks from
@@ -285,12 +300,19 @@ class Engine:
                         visible = raw.rstrip("\ufffd") if not stopped else raw
                         if not stopped: visible = hold_suffix(visible, o["stop"] + ["</think>", "<think>"])
                         reason, content = split_reasoning(visible, o["enable_thinking"])
-                        if not buffered:
+                        if incremental:
+                            if len(reason) > len(prior_reason): yield {"delta": {"reasoning_content": reason[len(prior_reason):]}}
+                            for delta in tool_stream.feed(content): yield {"delta": delta}
+                        elif not buffered:
                             delta = {}
                             if len(reason) > len(prior_reason): delta["reasoning_content"] = reason[len(prior_reason):]
                             if len(content) > len(prior_content): delta["content"] = content[len(prior_content):]
                             if delta: yield {"delta": delta}
                         prior_reason, prior_content = reason, content
+                        if self.log_requests and time.perf_counter() - last_progress >= 10:
+                            last_progress = time.perf_counter()
+                            self._log(f"  writing: {len(generated)} tokens so far, "
+                                      f"{(len(generated) - 1) / (last_progress - generation_start):.1f} tokens/s")
                         if stopped or index + 1 == o["max_tokens"]: break
                         if speculative:
                             if not queued: queued = self.native.generate(min(8, o["max_tokens"] - index - 1), next_id)
@@ -298,11 +320,17 @@ class Engine:
                         else: next_id = self.native.command(str(next_id))
                     reason, content = split_reasoning(raw, o["enable_thinking"])
                     calls = []
-                    if o.get("tools"):
+                    if incremental:
+                        if len(reason) > len(prior_reason): yield {"delta": {"reasoning_content": reason[len(prior_reason):]}}
+                        for delta in tool_stream.finish(content, truncated=finish == "length"): yield {"delta": delta}
+                        if tool_stream.calls: finish = "tool_calls"
+                    elif o.get("tools"):
                         content, calls = tool_message(content, o["tools"], o.get("tool_choice", "auto"))
                         if calls: finish = "tool_calls"
                     if validator: content = validated_json(content, validator, finish)
-                    if buffered:
+                    if incremental:
+                        pass
+                    elif buffered:
                         delta = {"content": content}
                         if reason: delta["reasoning_content"] = reason
                         if calls: delta["tool_calls"] = [dict(call, index=i) for i, call in enumerate(calls)]
@@ -312,6 +340,10 @@ class Engine:
                         if len(reason) > len(prior_reason): tail["reasoning_content"] = reason[len(prior_reason):]
                         if len(content) > len(prior_content): tail["content"] = content[len(prior_content):]
                         if tail: yield {"delta": tail}
+                    seconds = time.perf_counter() - generation_start
+                    self._log(f"  done: {len(generated)} answer tokens in {seconds:.1f} s"
+                              + (f" = {(len(generated) - 1) / seconds:.1f} tokens/s" if len(generated) > 1 and seconds > 0 else "")
+                              + f", finish: {finish}")
                     yield {"finish_reason": finish, "usage": {"prompt_tokens": prompt_count,
                            "completion_tokens": len(generated), "total_tokens": prompt_count + len(generated)},
                            "timings": {"first_token_seconds": first_token, "total_seconds": time.perf_counter()-start}}
@@ -330,6 +362,7 @@ class Engine:
 
 
 def make_handler(engine):
+    log = getattr(engine, "_log", lambda text: None)  # test doubles have no request log
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, payload):
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -389,9 +422,11 @@ def make_handler(engine):
                                "finish_reason": final["finish_reason"]}], usage=final["usage"]))
             except (BrokenPipeError, ConnectionResetError): pass
             except (ValueError, KeyError, TypeError) as error:
+                log(f"  request rejected: {error}")
                 if not started: self.reply(400, {"error": {"message": str(error)}})
                 else: self.wfile.write(("data: " + json.dumps({"error": {"message": str(error)}}) + "\n\n").encode())
             except Exception as error:
+                log(f"  request failed: {error}")
                 if not started: self.reply(502, {"error": {"message": str(error)}})
                 else: self.wfile.write(("data: " + json.dumps({"error": {"message": str(error)}}) + "\n\n").encode())
             finally:

@@ -135,10 +135,11 @@ requests with temperature 0; other requests run at the normal speed.
 Start the server with `.\START-HERE.bat` and leave its window open. Then add
 Lamina to the app as an OpenAI-compatible provider. For the
 [pi coding agent](https://pi.dev) (needs Node.js 22.19 or newer and Git for
-Windows), put this in `~\.pi\agent\models.json`, creating the file if needed
-(set `contextWindow` to the context length you chose; `maxTokens` must stay
-well below it, because the server rejects an answer budget that does not fit
-beside the prompt):
+Windows), put this in `~\.pi\agent\models.json`, creating the file if needed.
+Set `contextWindow` to the context length you chose. `maxTokens` is the longest
+answer pi asks for; the server rejects a budget that does not fit beside the
+prompt, so keep it well below the context (8192 for 32K, 32768 for 128K). A
+whole file is written in one answer, so a small value cuts big files off:
 
 ```json
 {
@@ -150,7 +151,7 @@ beside the prompt):
       "models": [{
         "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
         "name": "Qwen3.6-35B-A3B (Lamina)",
-        "reasoning": false,
+        "reasoning": true,
         "input": ["text"],
         "contextWindow": 32768,
         "maxTokens": 8192,
@@ -158,7 +159,8 @@ beside the prompt):
           "supportsDeveloperRole": false,
           "supportsReasoningEffort": false,
           "supportsUsageInStreaming": true,
-          "maxTokensField": "max_tokens"
+          "maxTokensField": "max_tokens",
+          "thinkingFormat": "qwen"
         }
       }]
     }
@@ -169,9 +171,20 @@ beside the prompt):
 Then run `pi --model lamina/Qwen3.6-35B-A3B-UD-Q4_K_M` in your project folder
 and pick the model with `/model` if needed. The `compat` lines matter: the
 server accepts only the system, user, assistant and tool message roles, and
-answers `max_tokens`, not `max_completion_tokens`. If pi's bash tool reports
+answers `max_tokens`, not `max_completion_tokens`. With `"reasoning": true` and
+`"thinkingFormat": "qwen"` pi sends `enable_thinking`, so the model's reasoning
+appears in pi while it is generated; switch it off with `/thinking` for faster
+answers. If pi's bash tool reports
 that no shell is available, set `"shellPath"` in `~\.pi\agent\settings.json` to
 your Git Bash, for example `"C:\\Git\\bin\\bash.exe"`.
+
+While the model works, pi shows its reasoning, its text and the file it is
+writing as they are generated, and the server window logs every request with
+its speed, for example `done: 556 answer tokens in 12.6 s = 43.9 tokens/s`. If
+an answer reaches `maxTokens` in the middle of a tool call, pi shows the error
+"The answer reached the max_tokens limit while the model was writing a tool
+call": raise `maxTokens`, or ask for a smaller step (a big page in several
+files, or one part at a time).
 
 What to expect from an agent: pi's own instructions take about 1,700 tokens
 and Lamina starts every request from scratch, so each step costs about 7
@@ -191,6 +204,7 @@ and what it changes.
 | Out of GPU memory, or the engine exits | Close other programs that use the GPU (browsers and video players take GPU memory), or run `.\START-HERE.bat --reconfigure` and pick a shorter context. When memory runs low Lamina now releases cached experts and keeps going, slower, with one "GPU memory is low" note in its log. |
 | Generation is slower than expected | With less than 48 GB of RAM the model cannot be pinned, which costs speed. Other GPU work (games, video) also competes. |
 | "prompt and response exceed the context" | In the terminal chat type `/new` to start a fresh conversation. In an app, start a new conversation, or choose a longer context. |
+| Ctrl+C does not stop the server | Older versions waited for the answer in progress; update, or close the window instead. Windows may ask "Terminate batch job (Y/N)?": answer Y. |
 | "Something already answers on port 8000" | A Lamina server is still running in another window. Close it, or start this one with `--port 8001`. |
 
 ## How fast is it

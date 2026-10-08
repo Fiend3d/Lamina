@@ -84,6 +84,7 @@ def main():
     try:
         if args.command == "serve":
             print(f"Lamina {MODEL_NAME}: {'CUDA' if cuda else 'CPU'}, compute={args.compute_mode}, context={args.max_context}, KV={args.kv_type}/{args.kv_cache}, http://{args.host}:{args.port}", flush=True)
+            engine.log_requests = True
             server = ThreadingHTTPServer((args.host, args.port), make_handler(engine))
             try: server.serve_forever()
             finally: server.server_close()

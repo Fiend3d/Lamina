@@ -253,7 +253,7 @@ def server_ready(port):
         return False
 
 
-def run_server(config, context, host, port):
+def run_server(config, context, host, port, preload=True):
     """Starts lamina.py serve, loads the model, prints how to connect, and waits."""
     from tools.lamina_chat import MODEL_NAME
     if server_ready(port):
@@ -270,14 +270,15 @@ def run_server(config, context, host, port):
             time.sleep(0.5)
         if server.poll() is not None:
             sys.exit("The server stopped right after starting; see the messages above.")
-        print("Loading the model into memory. Your PC can be slow for a minute or two, and longest the first time.", flush=True)
-        # The engine starts with the first request; send a tiny one now so that the first real request is fast.
-        body = json.dumps({"model": MODEL_NAME, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}).encode()
-        request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body, {"Content-Type": "application/json"})
-        try:
-            urllib.request.urlopen(request, timeout=900).read()
-        except OSError as error:
-            sys.exit(f"The model did not load: {error}\nSee the messages above.")
+        if preload:
+            print("Loading the model into memory. Your PC can be slow for a minute or two, and longest the first time.", flush=True)
+            # The engine starts with the first request; send a tiny one now so that the first real request is fast.
+            body = json.dumps({"model": MODEL_NAME, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1}).encode()
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", body, {"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(request, timeout=900).read()
+            except OSError as error:
+                sys.exit(f"The model did not load: {error}\nSee the messages above.")
         shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         print(f"""
 ================================================================
@@ -288,7 +289,9 @@ def run_server(config, context, host, port):
    API key  : anything (it is not checked)
 
  In pi or another OpenAI-compatible app, add a provider with this
- base URL. Close this window or press Ctrl+C to stop the server.
+ base URL. Each request is logged below, with its speed.
+ To stop the server press Ctrl+C (then Y if Windows asks), or
+ close this window.
 ================================================================""", flush=True)
         if host not in ("127.0.0.1", "localhost", "::1"):
             print(f" WARNING: listening on {host} without any password; everyone who can reach this PC can use the model.", flush=True)
@@ -315,6 +318,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=2048, help="chat: longest answer in tokens (default 2048)")
     parser.add_argument("--host", default="127.0.0.1", help="serve: listening address")
     parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
+    parser.add_argument("--no-preload", action="store_true", help="serve: do not load the model at startup (the first request does)")
     args = parser.parse_args(argv)
 
     config = ask(load_config(), args.reconfigure)
@@ -328,7 +332,7 @@ def main():
     if not 1024 <= context <= 131072:
         parser.error("--max-context must be 1024..131072")
     if args.command == "serve":
-        return run_server(config, context, args.host, args.port)
+        return run_server(config, context, args.host, args.port, preload=not args.no_preload)
     chat(config, context, args.thinking, min(args.max_tokens, context // 2))
     return 0
 
@@ -340,5 +344,5 @@ if __name__ == "__main__":
     except subprocess.CalledProcessError as error:
         sys.exit(f"\nA setup step failed (exit code {error.returncode}). Fix the error above and run the same command again;"
                  " finished steps are skipped.")
-    except KeyboardInterrupt:
-        sys.exit(130)
+    except KeyboardInterrupt:  # Ctrl+C is the normal way to stop the server or leave the chat
+        sys.exit(0)

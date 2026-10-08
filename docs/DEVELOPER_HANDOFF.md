@@ -43,6 +43,19 @@ launcher it loads the model at startup with a one-token request, prints the base
 URL, refuses to start when the port already answers, and stops the server tree
 when its window closes. The manual commands are in `docs/ADVANCED.md`.
 
+Tool calls and streaming: `tools/lamina_toolcalls.py` (`ToolStream`) parses
+the model's XML-style calls while it generates, so a streaming client with tools
+gets reasoning, text and the arguments of a call as they are written (before
+this the whole answer was held back until it had been validated, and a cut-off
+call lost everything). An answer that reaches `max_tokens` inside a call now ends
+with an error naming the limit. Non-streaming requests and JSON validators still
+use the buffered `tool_message`. Cost: 0.02 ms per token on an 8,141-token write.
+`reasoning_effort` accepts none/off/minimal/low/medium/high/xhigh/max (only
+thinking or not matters). `Engine.close()` no longer waits for the request that
+holds the lock, so Ctrl+C stops a server in the middle of an answer; the server
+prints one log line per request and progress every 10 s (`log_requests`).
+`START-HERE.bat --no-preload` starts the server without loading the model.
+
 GPU memory pressure: `allocate` used to give up ("VRAM working set exceeds
 available headroom") once `evict_oldest()` found nothing, although the admission
 pool (`admit_lru`, up to 2 GB) and the kept prompt experts (`keep_lru`, about
