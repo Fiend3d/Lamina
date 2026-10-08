@@ -22,7 +22,7 @@ can download the pinned engine automatically.
 
 Source checkouts also support downloading the pinned engine-only release on
 first setup. Its ZIP checksum and the manifest's per-file checksums are verified
-before installation into `../Lamina-data/engine/v0.1.2`. The version is pinned in
+before installation into `../Lamina-data/engine/v0.1.3`. The version is pinned in
 `tools/lamina_release.py`, rather than following whatever release is newest.
 An existing local developer build remains usable. Use `START-HERE.bat setup
 --build-source` to compile from source instead.

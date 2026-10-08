@@ -62,3 +62,19 @@ the first ~32 decode tokens of a cold request without changing steady decode;
 selected trajectory can differ from the previous release, as it already does
 between the stream and cpu-miss policies. `LAMINA_PREFIX_CACHE=0` disables prefix
 reuse. See the conversation-prefix and warm-up benchmark records for conditions.
+# v0.1.3
+
+Run Ornith-1.5-35B-A3B, and choose the model at setup. Ornith shares Lamina's
+qwen35moe graph, so the engine now tolerates its in-file MTP layer
+(`block_count == 40 + nextn_predict_layers`) and splits the grouped qkv/gate and
+q/k/v projections (single-token and pair) when their encodings differ, instead of
+requiring one encoding per group. This also fixes a null MoE output buffer on the
+scalar fallback path.
+
+`START-HERE.bat --model ornith` (or the first-run question) selects Ornith; the
+default stays Qwen3.6. `python -m tools.lamina_ornith setup` fetches Ornith and its
+tokenizer, re-encodes the two SSM tensors to F32, and packs the in-file MTP head
+(`tools/lamina_inline_mtp.py`) into the side `mtp.*` file the engine already reads
+(draft acceptance ~0.87). Ornith is a bring-up: no quality or sustained-speed
+comparison is claimed, and it is not bit-identical to the pinned model. See the
+Ornith bring-up record for conditions.
