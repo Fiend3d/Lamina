@@ -1,0 +1,86 @@
+{
+  "reports": [
+    {
+      "repeat": 0,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 4.33335809991695,
+        "total_seconds": 8.042489500017837,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 4.447264400077984,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's made up of all the colors of the rainbow. As this light reaches Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). These molecules scatter shorter wavelengths of light (blue and violet) much more than longer wavelengths (red, yellow, orange).\n\nBut why blue and not violet? Our eyes are more sensitive to blue light,"
+    },
+    {
+      "repeat": 1,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 5.321948499884456,
+        "total_seconds": 8.81580839981325,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 5.334826699923724,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's made up of all the colors of the rainbow. As this light reaches Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). These molecules scatter shorter wavelengths of light (blue and violet) much more than longer wavelengths (red, yellow, orange).\n\nBut why blue and not violet? Our eyes are more sensitive to blue light,"
+    },
+    {
+      "repeat": 2,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 5.3072764000389725,
+        "total_seconds": 8.892989699961618,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 5.321229000110179,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's made up of all the colors of the rainbow. As this light reaches Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). These molecules scatter shorter wavelengths of light (blue and violet) much more than longer wavelengths (red, yellow, orange).\n\nBut why blue and not violet? Our eyes are more sensitive to blue light,"
+    },
+    {
+      "repeat": 3,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 5.3112162000034004,
+        "total_seconds": 8.856638399884105,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 5.323189900023863,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's made up of all the colors of the rainbow. As this light reaches Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). These molecules scatter shorter wavelengths of light (blue and violet) much more than longer wavelengths (red, yellow, orange).\n\nBut why blue and not violet? Our eyes are more sensitive to blue light,"
+    }
+  ],
+  "median_first_seconds": 5.3112162000034004,
+  "peak_total_gpu_mib": 6908.37109375,
+  "cpu": "AMD Ryzen 7 1700X Eight-Core Processor",
+  "platform": "Windows-10-10.0.26100-SP0",
+  "engine": "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+  "environment": {
+    "LAMINA_PREFIX_CACHE": "0",
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_STATS": "1"
+  },
+  "native_stderr": [
+    "registered model RAM: 21109.1 MiB, direct expert DMA enabled",
+    "prefill tokens=13 ms=8389.6 uploaded_mb=2398.3 evicted_mb=0.0 resident_mb=2398.3 misses=2050 mallocs=2163 trims=0 allocated_mb=2609.1 limit_mb=6595.0",
+    "prefill tokens=1613 ms=4307.6 uploaded_mb=13930.4 evicted_mb=13774.8 resident_mb=2951.7 misses=22935 mallocs=456 trims=0 allocated_mb=3823.2 limit_mb=6595.0",
+    "prefill tokens=1613 ms=5292.9 uploaded_mb=13925.5 evicted_mb=13811.3 resident_mb=2951.7 misses=22926 mallocs=366 trims=1 allocated_mb=3870.7 limit_mb=6595.0",
+    "prefill tokens=1613 ms=5277.9 uploaded_mb=13925.5 evicted_mb=13811.3 resident_mb=2951.7 misses=22926 mallocs=366 trims=1 allocated_mb=3870.7 limit_mb=6595.0",
+    "prefill tokens=1613 ms=5283.8 uploaded_mb=13925.5 evicted_mb=13811.3 resident_mb=2951.7 misses=22926 mallocs=366 trims=1 allocated_mb=3870.7 limit_mb=6595.0"
+  ]
+}

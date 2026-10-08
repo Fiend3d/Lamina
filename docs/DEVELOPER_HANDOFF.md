@@ -1,5 +1,13 @@
 # Lamina developer handoff
 
+v0.1.1 adds one immutable system/tools prefix checkpoint for CUDA device KV.
+The Python server probes native capabilities and verifies exact BPE prefix IDs;
+older engines, host KV, images, changed prefixes and restarts use RESET.
+Independent recurrent snapshots are budgeted separately from MTP rollback;
+attention prefix KV stays in place while suffixes append. `LAMINA_PREFIX_CACHE=0`
+disables reuse. See [the RTX 4060 record](../bench/results/2026-10-08-rtx4060-prefix/README.md)
+for commands, measurements, numerical checks and limitations.
+
 For the next optimization phase, follow the prioritized
 [Strata performance roadmap](STRATA_PERFORMANCE_ROADMAP.md), including measured
 gaps, profiling requirements, scheduling work and acceptance gates.

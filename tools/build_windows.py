@@ -47,7 +47,7 @@ def main():
     args.build_dir.mkdir(parents=True, exist_ok=True)
     configure = f"cmake -S {quoted(ROOT)} -B {quoted(args.build_dir.resolve())} -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM={quoted(ninja_path)}"
     configure += f" -DSTRATA_PORTABLE={'ON' if args.portable else 'OFF'}"
-    targets = "lamina-gguf lamina-infer lamina-sampling-check"
+    targets = "lamina-gguf lamina-infer lamina-sampling-check lamina-prefix-check"
     if not args.cpu:
         configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DLAMINA_CPU_QUANT=ON -DCMAKE_CUDA_ARCHITECTURES={quoted(args.cuda_arch)} -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
         targets += " lamina-cuda-projection-check lamina-cuda-ncols-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check lamina-quality-check"

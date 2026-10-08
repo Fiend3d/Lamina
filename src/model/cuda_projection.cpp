@@ -652,6 +652,10 @@ struct CudaProjection::Impl {
             cudaFree(state.conv);
             cudaFree(state.rec);
         }
+        for (auto& state : prefix_gdn) {
+            cudaFree(state.conv);
+            cudaFree(state.rec);
+        }
         for (auto* graphs : {&mixer_graphs, &pair_graphs})
             for (auto& graph : *graphs)
                 if (graph.exec) cudaGraphExecDestroy(graph.exec);
@@ -901,6 +905,11 @@ struct CudaProjection::Impl {
     // DeltaNet states after the pair's first column, per layer.
     struct GdnSnapshot { float* conv = nullptr; float* rec = nullptr; bool taken = false; };
     std::vector<GdnSnapshot> gdn_snapshots;
+    // Independent from the MTP rollback snapshots, which every speculative
+    // step overwrites. Accounted allocations remain stable across graph replay.
+    std::vector<GdnSnapshot> prefix_gdn;
+    decltype(prefill_counts) prefix_counts;
+    bool prefix_valid = false;
     // decode_group for two columns: inputs[i] holds two contiguous width-wide
     // columns, outputs[i] two contiguous rows[i]-long columns. Each column is
     // bitwise equal to decode_group on that column.
@@ -2552,6 +2561,7 @@ void CudaProjection::finish_prefill() {
 }
 
 void CudaProjection::reset() {
+    impl_->prefix_valid = false;
     check(cudaStreamSynchronize(impl_->stream), "wait before resetting conversation");
     impl_->clear_admissions();  // every request starts from the same base cache
     impl_->release_kept();     // the next prefill chooses its own kept experts
@@ -2565,6 +2575,46 @@ void CudaProjection::reset() {
         state.host_values.clear();
         state.half_keys.clear(); state.half_values.clear();
     }
+}
+
+void CudaProjection::cache_prefix() {
+    if (impl_->host_kv) throw std::logic_error("prefix cache currently requires device KV");
+    impl_->prefix_valid = false;
+    impl_->prefix_gdn.resize(impl_->gdn_states.size());
+    constexpr size_t conv_bytes = size_t(8192) * 3 * sizeof(float);
+    constexpr size_t rec_bytes = size_t(32) * 128 * 128 * sizeof(float);
+    for (size_t i = 0; i < impl_->gdn_states.size(); ++i) {
+        const auto& state = impl_->gdn_states[i];
+        auto& snapshot = impl_->prefix_gdn[i];
+        snapshot.taken = false;
+        if (!state.rec) continue;
+        if (!snapshot.conv) impl_->allocate(reinterpret_cast<void**>(&snapshot.conv), conv_bytes);
+        if (!snapshot.rec) impl_->allocate(reinterpret_cast<void**>(&snapshot.rec), rec_bytes);
+        check(cudaMemcpyAsync(snapshot.conv, state.conv, conv_bytes, cudaMemcpyDeviceToDevice, impl_->stream), "cache prefix convolution");
+        check(cudaMemcpyAsync(snapshot.rec, state.rec, rec_bytes, cudaMemcpyDeviceToDevice, impl_->stream), "cache prefix recurrence");
+        snapshot.taken = true;
+    }
+    check(cudaStreamSynchronize(impl_->stream), "finish prefix checkpoint");
+    impl_->prefix_counts = impl_->prefill_counts;
+    impl_->prefix_valid = true;
+}
+
+void CudaProjection::restore_prefix() {
+    if (!impl_->prefix_valid) throw std::logic_error("no valid CUDA prefix checkpoint");
+    // Wait for all readers and clear request-local admission/keep metadata. KV
+    // arrays stay allocated and their immutable prefix has never been rewritten.
+    reset();
+    for (size_t i = 0; i < impl_->prefix_gdn.size(); ++i) {
+        const auto& snapshot = impl_->prefix_gdn[i];
+        if (!snapshot.taken) continue;
+        auto& state = impl_->gdn_states[i];
+        check(cudaMemcpyAsync(state.conv, snapshot.conv, size_t(8192) * 3 * sizeof(float), cudaMemcpyDeviceToDevice, impl_->stream), "restore prefix convolution");
+        check(cudaMemcpyAsync(state.rec, snapshot.rec, size_t(32) * 128 * 128 * sizeof(float), cudaMemcpyDeviceToDevice, impl_->stream), "restore prefix recurrence");
+    }
+    // Counts from the reused prefix still determine which prompt experts are
+    // kept; ignoring them would change CPU/GPU placement during later decode.
+    impl_->prefill_counts = impl_->prefix_counts;
+    impl_->prefix_valid = true;
 }
 
 void CudaProjection::hidden_upload(const std::vector<float>& x) {
@@ -3552,6 +3602,8 @@ std::vector<float> CudaProjection::moe(const std::vector<float>&, const MoeWeigh
 }
 void CudaProjection::set_context(int) { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::reset() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::cache_prefix() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::restore_prefix() { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::finish_prefill() { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::hidden_upload(const std::vector<float>&) {
     throw std::runtime_error("Lamina was built without CUDA");

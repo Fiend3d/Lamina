@@ -2,9 +2,11 @@
 import copy
 import json
 import math
+import os
 import re
 import select
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -140,6 +142,9 @@ class Engine:
         self.template = env.from_string(template.read_text(encoding="utf-8"))
         self.lock = threading.Lock()
         self.native = self.vision = None
+        self._cache_supported = None
+        self._cache_prefix = []
+        self._prepared_prefix = []
         self.vision_engine, self.max_image_tokens, self.cpu_threads = vision_engine, max_image_tokens, cpu_threads
 
     log_requests = False  # the server prints one line per request and progress lines during long answers
@@ -159,10 +164,21 @@ class Engine:
             if locked: self.lock.release()
 
     def _stop_native(self):
+        self._cache_prefix = []
         if self.native: self.native.close(); self.native = None
 
     def _start_native(self):
         if self.native is None:
+            if getattr(self, "_cache_supported", None) is None:
+                self._cache_supported = False
+                if self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
+                    try:
+                        caps = subprocess.run([str(self.executable.resolve()), "--capabilities"], capture_output=True,
+                                              text=True, timeout=10,
+                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        self._cache_supported = caps.returncode == 0 and json.loads(caps.stdout).get("prefix_cache") is True
+                    except (OSError, ValueError, subprocess.TimeoutExpired):
+                        pass  # older release binaries retain their RESET path
             command = [str(self.executable.resolve()), str(self.model.resolve()), *(["--cuda"] if self.cuda else []),
                        "--max-context", str(self.max_context), "--kv-cache", self.kv_cache, "--kv-type", self.kv_type, "--compute-mode", getattr(self, "compute_mode", "f32"),
                        "--vram-limit-mb", str(self.vram_limit_mb)]
@@ -239,6 +255,16 @@ class Engine:
         prompt = self.template.render(messages=messages, tools=o.get("tools", []), add_generation_prompt=True,
                                       enable_thinking=o["enable_thinking"], add_vision_id=False)
         ids = self.tokenizer.encode(prompt, add_special_tokens=False).ids
+        self._prepared_prefix = []
+        if not images and self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
+            # Cache only the stable system/tools block, before the first user.
+            # Verify against full tokenization: splitting a string at an arbitrary
+            # byte boundary can change the BPE token at the join.
+            boundary = prompt.find("<|im_start|>user\n")
+            if boundary > 0:
+                prefix = self.tokenizer.encode(prompt[:boundary], add_special_tokens=False).ids
+                if 256 <= len(prefix) < len(ids) and ids[:len(prefix)] == prefix:
+                    self._prepared_prefix = prefix
         if ids.count(IMAGE_ID) != len(images): raise ValueError("image marker count differs from image input")
         count = len(ids) + sum(n - 1 for _, n in images)
         if not ids or count + o["max_tokens"] > self.max_context:
@@ -264,8 +290,24 @@ class Engine:
                 self._start_native()
                 self.native.cancelled = cancelled
                 try:
-                    self.native.command("RESET", True)
+                    prefix = self._prepared_prefix if getattr(self, "_cache_supported", False) else []
+                    cached = bool(prefix) and prefix == self._cache_prefix
+                    if cached:
+                        self.native.command("RESTORE_PREFIX", True)
+                        self._log(f"  reused {len(prefix)} system/tool prefix tokens")
+                    else:
+                        self._cache_prefix = []
+                        self.native.command("RESET", True)
                     self.native.command(f"SAMPLE {o['temperature']} {o['top_p']} {o['top_k']} {o['seed']}", True)
+                    if prefix:
+                        if not cached:
+                            if len(prefix) > self.prefill_chunk:
+                                self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str, prefix)))
+                            else:
+                                self.native.command("BATCH " + " ".join(map(str, prefix)), True)
+                            self.native.command("CACHE_PREFIX", True)
+                            self._cache_prefix = prefix
+                        ids = ids[len(prefix):]
                     if self.cuda and not images and len(ids)>self.prefill_chunk:
                         next_id=self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str,ids)))
                     else:
@@ -287,7 +329,8 @@ class Engine:
                     finish = "length"
                     # Greedy requests with an MTP head take tokens in chunks from
                     # GENERATE (speculative); a chunk may run past a stop token,
-                    # which costs only time because every request starts with RESET.
+                    # which costs only time: the next request resets or restores
+                    # its immutable prefix before processing a new suffix.
                     speculative = bool(getattr(self, "mtp", None)) and o["temperature"] == 0
                     queued = []
                     for index in range(o["max_tokens"]):
@@ -346,7 +389,8 @@ class Engine:
                               + f", finish: {finish}")
                     yield {"finish_reason": finish, "usage": {"prompt_tokens": prompt_count,
                            "completion_tokens": len(generated), "total_tokens": prompt_count + len(generated)},
-                           "timings": {"first_token_seconds": first_token, "total_seconds": time.perf_counter()-start}}
+                           "timings": {"first_token_seconds": first_token, "total_seconds": time.perf_counter()-start,
+                                       "cached_prompt_tokens": len(prefix) if cached else 0}}
                 except BaseException:
                     self._stop_native()
                     raise

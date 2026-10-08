@@ -36,6 +36,11 @@ public:
     std::vector<float> step_hidden_embedding(const std::vector<float>& embedding,
                                             const std::array<int, 3>& positions);
     void reset();
+    // One immutable prompt-prefix checkpoint. RESET invalidates it; generated
+    // suffixes only append KV and never overwrite its prefix. No weight pointers
+    // or captured graph addresses are stored in the checkpoint.
+    void cache_prefix();
+    void restore_prefix();
     // Multi-token prediction draft head (tools/lamina_mtp.py pack). After the
     // main model produced hidden state h_t and greedy token x_{t+1}, mtp_draft
     // runs the head's single layer and returns its greedy guess for x_{t+2}.
@@ -76,6 +81,11 @@ private:
     unsigned cpu_workers_ = 1;
     std::array<LinearState, 40> linear_;
     std::array<AttentionState, 40> attention_;
+    std::array<LinearState, 40> prefix_linear_;
+    std::array<AttentionState, 40> prefix_attention_;
+    int prefix_position_ = -1;
+    int prefix_rope_position_ = 0;
+    std::array<int, 3> prefix_rope_positions_{};
     std::unique_ptr<CudaProjection> cuda_;
     std::unique_ptr<strata::GgufFile> mtp_file_;
     int mtp_position_ = 0;

@@ -57,7 +57,7 @@ def write_zip(directory, output):
 def stage_engine(build, stage, revision):
     values = validate_build(build)
     stage.mkdir(parents=True, exist_ok=True)
-    for name in ("lamina-infer.exe", "lamina-gguf.exe", "lamina-sampling-check.exe",
+    for name in ("lamina-infer.exe", "lamina-gguf.exe", "lamina-sampling-check.exe", "lamina-prefix-check.exe",
                  "lamina-cuda-elementwise-check.exe", "lamina-cuda-attention-check.exe"):
         shutil.copy2(build / name, stage / name)
     dlls = sorted(build.glob("*.dll"))

@@ -153,6 +153,8 @@ public:
     // only the router logits and the final result touch the host.
     void set_context(int max_context);
     void reset();
+    void cache_prefix();
+    void restore_prefix();
     void hidden_upload(const std::vector<float>& x);
     std::vector<float> hidden_download();
     void mix_upload(const std::vector<float>& x);

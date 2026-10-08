@@ -1,0 +1,86 @@
+{
+  "reports": [
+    {
+      "repeat": 0,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1602,
+        "completion_tokens": 1,
+        "total_tokens": 1603
+      },
+      "timings": {
+        "first_token_seconds": 4.533956700004637,
+        "total_seconds": 4.987383699975908,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 4.646963900187984,
+      "content": "Ready"
+    },
+    {
+      "repeat": 1,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1602,
+        "completion_tokens": 1,
+        "total_tokens": 1603
+      },
+      "timings": {
+        "first_token_seconds": 0.3279067000839859,
+        "total_seconds": 0.6652245000004768,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.3446755998302251,
+      "content": "Ready"
+    },
+    {
+      "repeat": 2,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1602,
+        "completion_tokens": 1,
+        "total_tokens": 1603
+      },
+      "timings": {
+        "first_token_seconds": 0.32841219985857606,
+        "total_seconds": 0.6415607999078929,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.3442736000288278,
+      "content": "Ready"
+    },
+    {
+      "repeat": 3,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1602,
+        "completion_tokens": 1,
+        "total_tokens": 1603
+      },
+      "timings": {
+        "first_token_seconds": 0.313362899934873,
+        "total_seconds": 0.6305785998702049,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.32946610008366406,
+      "content": "Ready"
+    }
+  ],
+  "median_first_seconds": 0.3279067000839859,
+  "peak_total_gpu_mib": 5416.37109375,
+  "cpu": "AMD Ryzen 7 1700X Eight-Core Processor",
+  "platform": "Windows-10-10.0.26100-SP0",
+  "engine": "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_STATS": "1"
+  },
+  "native_stderr": [
+    "registered model RAM: 21109.1 MiB, direct expert DMA enabled",
+    "prefill tokens=13 ms=8153.4 uploaded_mb=2398.3 evicted_mb=0.0 resident_mb=2398.3 misses=2050 mallocs=2163 trims=0 allocated_mb=2609.1 limit_mb=6595.0",
+    "prefill tokens=1586 ms=4196.8 uploaded_mb=13734.1 evicted_mb=13578.5 resident_mb=2951.7 misses=22611 mallocs=456 trims=0 allocated_mb=3814.7 limit_mb=6595.0",
+    "prefill tokens=16 ms=296.3 uploaded_mb=31.1 evicted_mb=31.0 resident_mb=2951.8 misses=51 mallocs=0 trims=0 allocated_mb=3877.5 limit_mb=6595.0",
+    "prefill tokens=16 ms=313.4 uploaded_mb=25.4 evicted_mb=0.0 resident_mb=2862.8 misses=42 mallocs=39 trims=0 allocated_mb=3653.6 limit_mb=6595.0",
+    "prefill tokens=16 ms=314.9 uploaded_mb=25.4 evicted_mb=0.0 resident_mb=2862.8 misses=42 mallocs=39 trims=0 allocated_mb=3653.6 limit_mb=6595.0",
+    "prefill tokens=16 ms=299.7 uploaded_mb=25.4 evicted_mb=0.0 resident_mb=2862.8 misses=42 mallocs=39 trims=0 allocated_mb=3653.6 limit_mb=6595.0"
+  ]
+}

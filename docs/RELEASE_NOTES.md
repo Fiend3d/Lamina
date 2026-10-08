@@ -33,3 +33,13 @@ Draft validation on an RTX 4060 / Ryzen 7 1700X / 64 GB Windows machine:
   No new performance claim is made.
 
 Published as v0.1.0 (prerelease). RTX 30/50 runtime validation remains unverified.
+# v0.1.1
+
+Reuse unchanged system/tool prefixes for CUDA device-KV server requests.
+On RTX 4060 / Ryzen 7 1700X / 64 GiB, repeated 1,602-token Pi requests reached
+the first token in 0.33 s versus 5.03 s with reuse disabled. The first request
+still builds the prefix and took 4.53 s. Host-KV and image requests retain the
+existing path. Old engine binaries are detected and use RESET. Disable reuse
+with `LAMINA_PREFIX_CACHE=0`. See the benchmark record for exact conditions.
+
+Fix runtime dependency installation and a Windows cancellation-test race in CI.

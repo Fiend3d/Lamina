@@ -1,5 +1,10 @@
 # Qwen3.6 port status
 
+CUDA device-KV server requests can reuse an exact unchanged system/tools prefix
+in v0.1.1. This saves prompt work on later agent turns, with independent DeltaNet
+state snapshots and unchanged prefix attention KV. Host KV and image requests
+retain RESET. See [validation and timings](../bench/results/2026-10-08-rtx4060-prefix/README.md).
+
 Windows distribution: portable ZIP packaging includes Python, dependencies,
 SM86/89/120 native binaries and CUDA runtime DLLs; source setup can download a
 checksum-verified pinned engine instead of compiling. `--build-source` keeps

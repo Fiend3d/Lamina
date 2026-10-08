@@ -178,6 +178,7 @@ Inference::Inference(const std::string& path, int context, int layers, bool cuda
 Inference::~Inference() = default;
 
 void Inference::reset() {
+    prefix_position_ = -1;
     position_ = 0;
     rope_position_ = 0;
     rope_positions_.fill(0);
@@ -190,6 +191,29 @@ void Inference::reset() {
     spec_rate_ = 0.87;
     spec_backoff_ = 0;
     if (cuda_) cuda_->reset();
+}
+
+void Inference::cache_prefix() {
+    if (position_ <= 0) throw std::logic_error("cannot cache an empty prefix");
+    if (cuda_) cuda_->cache_prefix();
+    prefix_linear_ = linear_;
+    prefix_attention_ = attention_;
+    prefix_position_ = position_;
+    prefix_rope_position_ = rope_position_;
+    prefix_rope_positions_ = rope_positions_;
+}
+
+void Inference::restore_prefix() {
+    if (prefix_position_ < 0) throw std::logic_error("no cached prefix; RESET invalidates the checkpoint");
+    if (cuda_) cuda_->restore_prefix();
+    linear_ = prefix_linear_;
+    attention_ = prefix_attention_;
+    position_ = prefix_position_;
+    rope_position_ = prefix_rope_position_;
+    rope_positions_ = prefix_rope_positions_;
+    mtp_position_ = 0;
+    spec_rate_ = 0.87;
+    spec_backoff_ = 0;
 }
 
 namespace {

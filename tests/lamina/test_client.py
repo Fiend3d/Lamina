@@ -86,6 +86,35 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(engine.completion([{"role":"user","content":"Hi"}],1)[0],"Hello")
             self.assertEqual(native.commands,["RESET","SAMPLE 0 1 20 0","PROMPT 32 "+" ".join(map(str,range(64)))])
 
+    def test_prefix_restored_and_changed_prefix_invalidated(self):
+        class Native:
+            def __init__(self): self.commands = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            native = Native(); engine.native = native
+            engine._cache_supported = True; engine._cache_prefix = []
+            prefix = list(range(256))
+            def prepare(*args):
+                engine._prepared_prefix = prefix.copy()
+                return prefix + [300], [], 257
+            engine._prepare = prepare
+            for _ in range(2):
+                list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            self.assertEqual(native.commands.count("RESET"), 1)
+            self.assertEqual(native.commands.count("CACHE_PREFIX"), 1)
+            self.assertEqual(native.commands.count("RESTORE_PREFIX"), 1)
+            self.assertEqual(native.commands.count("PREFILL 300"), 2)
+            prefix[0] = 999
+            list(engine.events([{"role": "user", "content": "Changed"}], 1))
+            self.assertEqual(native.commands.count("RESET"), 2)
+            self.assertEqual(native.commands.count("CACHE_PREFIX"), 2)
+            engine._stop_native()
+            self.assertEqual(engine._cache_prefix, [])
+
     def test_fast_rejected_for_cpu_before_loading_tokenizer(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / name for name in ("model", "tokenizer", "engine")]

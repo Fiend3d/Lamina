@@ -1,0 +1,86 @@
+{
+  "reports": [
+    {
+      "repeat": 0,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 5.998767100041732,
+        "total_seconds": 10.828409899957478,
+        "cached_prompt_tokens": 0
+      },
+      "visible_first_seconds": 6.135111900046468,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's actually made up of all the colors of the rainbow. When this light reaches Earth's atmosphere, it collides with gas molecules (mostly nitrogen and oxygen). These molecules are much smaller than the wavelengths of visible light, so they scatter shorter wavelengths (blue and violet) much more efficiently than longer wavelengths (red, yellow).\n\nBlue light is scattered about 1"
+    },
+    {
+      "repeat": 1,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 0.5392477000132203,
+        "total_seconds": 3.4669268000870943,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.558125999988988,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's actually made up of all the colors of the rainbow. When this light reaches Earth's atmosphere, it collides with gas molecules (mostly nitrogen and oxygen). These molecules are much smaller than the wavelengths of visible light, so they scatter shorter wavelengths (blue and violet) much more efficiently than longer wavelengths (red, yellow).\n\nBlue light is scattered about 1"
+    },
+    {
+      "repeat": 2,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 0.4627125000115484,
+        "total_seconds": 3.341339699923992,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.47897910000756383,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's actually made up of all the colors of the rainbow. When this light reaches Earth's atmosphere, it collides with gas molecules (mostly nitrogen and oxygen). These molecules are much smaller than the wavelengths of visible light, so they scatter shorter wavelengths (blue and violet) much more efficiently than longer wavelengths (red, yellow).\n\nBlue light is scattered about 1"
+    },
+    {
+      "repeat": 3,
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 1613,
+        "completion_tokens": 96,
+        "total_tokens": 1709
+      },
+      "timings": {
+        "first_token_seconds": 0.46623679995536804,
+        "total_seconds": 3.404035700019449,
+        "cached_prompt_tokens": 1586
+      },
+      "visible_first_seconds": 0.48263819981366396,
+      "content": "The sky is blue due to a phenomenon called **Rayleigh scattering**. \n\nSunlight may appear white, but it's actually made up of all the colors of the rainbow. When this light reaches Earth's atmosphere, it collides with gas molecules (mostly nitrogen and oxygen). These molecules are much smaller than the wavelengths of visible light, so they scatter shorter wavelengths (blue and violet) much more efficiently than longer wavelengths (red, yellow).\n\nBlue light is scattered about 1"
+    }
+  ],
+  "median_first_seconds": 0.46623679995536804,
+  "peak_total_gpu_mib": 7006.37109375,
+  "cpu": "AMD Ryzen 7 1700X Eight-Core Processor",
+  "platform": "Windows-10-10.0.26100-SP0",
+  "engine": "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_STATS": "1"
+  },
+  "native_stderr": [
+    "registered model RAM: 21109.1 MiB, direct expert DMA enabled",
+    "prefill tokens=13 ms=10962.0 uploaded_mb=2398.3 evicted_mb=0.0 resident_mb=2398.3 misses=2050 mallocs=2163 trims=0 allocated_mb=2609.1 limit_mb=6595.0",
+    "prefill tokens=1586 ms=5272.0 uploaded_mb=13734.1 evicted_mb=13578.5 resident_mb=2951.7 misses=22611 mallocs=456 trims=0 allocated_mb=3814.7 limit_mb=6595.0",
+    "prefill tokens=27 ms=665.6 uploaded_mb=89.1 evicted_mb=89.2 resident_mb=2951.6 misses=147 mallocs=0 trims=0 allocated_mb=3877.5 limit_mb=6595.0",
+    "prefill tokens=27 ms=515.8 uploaded_mb=74.3 evicted_mb=0.0 resident_mb=2911.8 misses=123 mallocs=39 trims=0 allocated_mb=5285.3 limit_mb=6595.0",
+    "prefill tokens=27 ms=446.3 uploaded_mb=74.3 evicted_mb=0.0 resident_mb=2911.8 misses=123 mallocs=39 trims=0 allocated_mb=5285.3 limit_mb=6595.0",
+    "prefill tokens=27 ms=447.8 uploaded_mb=74.3 evicted_mb=0.0 resident_mb=2911.8 misses=123 mallocs=39 trims=0 allocated_mb=5285.3 limit_mb=6595.0"
+  ]
+}

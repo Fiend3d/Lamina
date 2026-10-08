@@ -49,6 +49,10 @@ void image(lamina::model::Inference& model, const std::string& path, int context
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--capabilities") {
+        std::puts("{\"protocol\":2,\"prefix_cache\":true}");
+        return 0;
+    }
     if (argc < 3) {
         std::fprintf(stderr, "usage: lamina-infer MODEL [--cuda] [--max-context N] [--kv-cache auto|device|host] [--kv-type f32|f16] [--compute-mode f32|fast] [--vram-limit-mb N] token...|--interactive|--prefix layers token...\n"); return 2;
     }
@@ -160,6 +164,8 @@ int main(int argc, char** argv) {
                 }
                 if (line == "QUIT") break;
                 if (line == "RESET") { model.reset(); last_hidden.clear(); std::puts("."); }
+                else if (line == "CACHE_PREFIX") { model.cache_prefix(); std::puts("."); }
+                else if (line == "RESTORE_PREFIX") { model.restore_prefix(); last_hidden.clear(); std::puts("."); }
                 else if (line.rfind("GENERATE ", 0) == 0) {
                     // GENERATE N TOKEN: feed TOKEN (the last returned token) and
                     // return the next N greedy tokens on one line. With --mtp,

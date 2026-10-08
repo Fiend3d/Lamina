@@ -11,6 +11,10 @@ On an RTX 3050 8 GB with a Ryzen 7 5700X and 64 GB of RAM it generates about
 answering a short question in about **0.6 seconds**. You can chat with it in
 the terminal or use it as an OpenAI-compatible server.
 
+The server reuses unchanged system prompts and tool definitions on CUDA with
+device KV. Repeated Pi requests start much faster after the first request;
+see the [measured prefix-cache results](bench/results/2026-10-08-rtx4060-prefix/README.md).
+
 ## What you need
 
 The portable release includes Python, the engine and its runtime libraries.
