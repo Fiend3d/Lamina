@@ -1,6 +1,7 @@
 #include "lamina/model/cpu_experts.hpp"
 #include "strata/artifact/dequant.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #ifdef LAMINA_CPU_QUANT
@@ -19,6 +20,10 @@ namespace {
 constexpr int kGateRows = 32;   // rows per gate/up work item
 constexpr int kDownRows = 128;  // rows per down work item
 constexpr int kSpins = 1 << 16; // roughly a millisecond of polling before sleeping
+
+int64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 void pause() {
 #if defined(_M_X64) || defined(__x86_64__)
@@ -197,6 +202,9 @@ void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids, c
         for (int b = 0; b < hidden; b += kDownRows) items_.push_back({e, 2, b, std::min(hidden, b + kDownRows)});
     failed_.store(false, std::memory_order_relaxed);
     error_ = nullptr;
+    started_ns_.store(now_ns(), std::memory_order_relaxed);
+    first_claim_ns_.store(0, std::memory_order_relaxed);
+    stats_.experts += ids.size();
     finished_.store(0, std::memory_order_relaxed);
     count_.store(items_.size(), std::memory_order_relaxed);
     next_.store(0, std::memory_order_release);
@@ -209,7 +217,12 @@ void CpuExperts::wait() {
     work();
     const size_t total = count_.load(std::memory_order_acquire);
     while (finished_.load(std::memory_order_acquire) < total) pause();
+    const int64_t done = now_ns();  // observed completion; the last worker's own store could still be pending
     next_.store(kIdle, std::memory_order_release);
+    const int64_t begin = started_ns_.load(std::memory_order_relaxed);
+    stats_.batch_ms += double(done - begin) * 1e-6;
+    stats_.first_claim_ms += double(first_claim_ns_.load(std::memory_order_relaxed) - begin) * 1e-6;
+    ++stats_.batches;
     if (failed_.load(std::memory_order_acquire)) {
         std::exception_ptr error;
         { std::lock_guard lock(mutex_); error = error_; }
@@ -222,6 +235,7 @@ void CpuExperts::work() {
         const size_t i = next_.fetch_add(1, std::memory_order_acq_rel);
         if (i >= count_.load(std::memory_order_acquire)) return;
         const Item item = items_[i];
+        if (i == 0) first_claim_ns_.store(now_ns(), std::memory_order_relaxed);
         if (!failed_.load(std::memory_order_acquire)) {
             try { run(item); }
             catch (...) {

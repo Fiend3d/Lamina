@@ -98,6 +98,9 @@ public:
     std::vector<float> prefill_long_download();
     std::vector<float> matvec(const strata::TensorInfo& tensor, const uint8_t* data,
                               const std::vector<float>& x, int64_t expert);
+    // Greedy selection on the GPU: the index of the first maximum of tensor . x,
+    // or -1 if any output is not finite (the caller then takes the full path).
+    int matvec_argmax(const strata::TensorInfo& tensor, const uint8_t* data, const std::vector<float>& x);
     std::vector<float> matvec_columns(const strata::TensorInfo& tensor, const uint8_t* data,
                                       const std::vector<float>& x, int columns, int64_t expert = -1);
     std::vector<float> normalize_columns(const strata::TensorInfo& gamma, const uint8_t* data,
@@ -183,7 +186,9 @@ public:
     enum TimelineStage {
         kTlDense, kTlRouter, kTlHostGap, kTlMoeSetup, kTlPrefetchWait, kTlResident,
         kTlMissWait, kTlMissExperts, kTlPrefetchIssue, kTlCombine, kTlTail, kTlAttention,
-        kTlGdnProject, kTlGdnSmall, kTlGdnStep, kTlGdnOut, kTlHeadKernel, kTlHeadCopy, kTlCount
+        kTlGdnProject, kTlGdnSmall, kTlGdnStep, kTlGdnOut, kTlHeadKernel, kTlHeadCopy,
+        kTlAttnProject, kTlAttnRope, kTlAttnCore, kTlAttnOut,
+        kTlExGateUp, kTlExSharedGateUp, kTlExSwiglu, kTlExDown, kTlExSharedDown, kTlCount
     };
     void timeline_mark(TimelineStage stage);
     void timeline_token();  // closes the previous token and accumulates it
@@ -209,6 +214,9 @@ public:
 private:
     void project_columns_device(const strata::TensorInfo& tensor, const uint8_t* data,
                                  const float* x, float* y, int columns, int64_t expert);
+    // Uploads x and projects it into the device output buffer; returns rows.
+    int project_output(const strata::TensorInfo& tensor, const uint8_t* data,
+                       const std::vector<float>& x, int64_t expert);
     void delta_net_core(int layer, const float* x_dev, float* out_dev, const GdnWeights& w);
     void moe_pipeline(const float* x_dev, float* out_dev, const MoeWeights& routed,
                       const std::vector<int>& experts, const std::vector<float>& weights,

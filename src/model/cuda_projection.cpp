@@ -17,6 +17,7 @@
 #endif
 
 #include <algorithm>
+#include <numeric>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -43,6 +44,21 @@ void check_blas(cublasStatus_t status, const char* action) {
         throw std::runtime_error(std::string("cuBLAS ") + action + ": " + cublasGetStatusString(status));
 }
 #endif
+// Hot-path settings are read once: on Windows each getenv takes a CRT lock and
+// scans the whole environment block.
+bool env_is(const char* name, char value) {
+    const char* v = std::getenv(name);
+    return v && v[0] == value;
+}
+bool atomic_expert_cache() {
+    static const bool on = env_is("LAMINA_ATOMIC_EXPERT_CACHE", '1');
+    return on;
+}
+bool pageable_uploads() {
+    static const bool on = env_is("LAMINA_PINNED_UPLOADS", '0');
+    return on;
+}
+
 bool device_profile() {
     static const bool enabled = std::getenv("LAMINA_DEV_PROFILE") != nullptr;
     return enabled;
@@ -60,6 +76,7 @@ struct CudaProjection::Impl {
         std::shared_ptr<ExpertBlock> block;
         uint64_t hits = 1;
         bool admitted = false;  // lives in admit_lru (request-local pool), not lru
+        bool kept = false;      // lives in keep_lru: a per-layer top prompt expert, not evicted by evict_oldest
     };
     std::unordered_map<std::string, Entry> weights;
     std::list<std::string> lru;
@@ -96,6 +113,7 @@ struct CudaProjection::Impl {
     float* cpu_input_host = nullptr; float* cpu_input_dev = nullptr; size_t cpu_input_cap = 0;
     bool cpu_input_published = false;
     cudaEvent_t cpu_down_copied = nullptr;  // CPU results consumed; staging may be rewritten
+    int* argmax_host = nullptr; int* argmax_dev = nullptr;  // mapped greedy-token result
     uint64_t clock = 0;
     struct Timing { cudaEvent_t start, stop; int kind; };
     std::vector<Timing> timings;
@@ -143,6 +161,10 @@ struct CudaProjection::Impl {
     std::vector<int> tl_stages;
     size_t tl_used = 0;
     std::array<double, CudaProjection::kTlCount> tl_ms{};
+    // Host-side milliseconds per section of moe_core (timeline diagnostics).
+    std::array<double, 9> tl_host{};
+    std::unordered_map<const strata::TensorInfo*, uint64_t> tl_cpu_by_layer;  // CPU experts per routed tensor
+    std::vector<const strata::TensorInfo*> tl_layer_order;  // cpu start, setup to launch, cpu wait, admission, setup parts 4..8
     uint64_t tl_tokens = 0, tl_seen = 0;
     void tl_mark(int stage) {
         if (!timeline) return;
@@ -163,11 +185,73 @@ struct CudaProjection::Impl {
     // empties the pool. Every request therefore starts from the same base
     // cache, so identical requests produce identical output even though fast
     // CPU and GPU expert arithmetic differ in their last bits.
-    struct Admission { std::string key; void* device; size_t bytes; cudaEvent_t done; };
+    struct Admission { std::string key; void* device; size_t bytes; };
     std::vector<Admission> admissions;
     std::unordered_set<std::string> admitting;
-    std::vector<cudaEvent_t> spare_events;
     std::list<std::string> admit_lru;
+    // Fast CPU-miss mode: during layer-major prefill each layer's most-routed
+    // prompt experts (already uploaded by the prefill itself) are kept out of
+    // the base LRU, so the base cache ends up balanced across layers instead of
+    // holding only the last layers prefill touched. Rebuilt for every request.
+    std::list<std::string> keep_lru;
+    std::unordered_map<const strata::TensorInfo*, std::array<uint32_t, 256>> prefill_counts;
+    std::unordered_map<const strata::TensorInfo*, std::vector<int>> kept_experts;
+    int base_keep = [] {
+        const char* v = std::getenv("LAMINA_BASE_KEEP");
+        return v && *v ? std::max(0, std::atoi(v)) : 12;
+    }();
+    std::string expert_key(const strata::TensorInfo& t, int expert) const {
+        return t.name + "#type=" + std::to_string(t.type) + "#expert=" + std::to_string(expert);
+    }
+    void set_kept(const MoeWeights& w, int expert, bool keep) {
+        const std::array<std::pair<const strata::TensorInfo*, const uint8_t*>, 3> tensors{
+            std::pair{w.gate, w.gate_data}, std::pair{w.up, w.up_data}, std::pair{w.down, w.down_data}};
+        for (const auto& [t, data] : tensors) {
+            // A chosen expert may already have been evicted under cache pressure,
+            // which differs between a cold first request and later ones; upload
+            // it so the kept set is exactly the prompt's top experts.
+            if (keep && !weights.contains(expert_key(*t, expert))) projection_weight(*t, data, expert);
+            const auto found = weights.find(expert_key(*t, expert));
+            if (found == weights.end() || found->second.pinned || found->second.admitted || found->second.kept == keep) continue;
+            if (keep) keep_lru.splice(keep_lru.end(), lru, found->second.lru);
+            else lru.splice(lru.begin(), keep_lru, found->second.lru);  // released entries are evicted first
+            found->second.kept = keep;
+        }
+    }
+    void keep_prompt_experts(const MoeWeights& w) {
+        const auto& counts = prefill_counts[w.gate];
+        std::vector<int> order(256);
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return counts[size_t(a)] > counts[size_t(b)]; });
+        std::vector<int> chosen;
+        for (int i = 0; i < base_keep && i < 256 && counts[size_t(order[size_t(i)])] > 0; ++i) chosen.push_back(order[size_t(i)]);
+        auto& previous = kept_experts[w.gate];
+        for (const int expert : previous)
+            if (std::find(chosen.begin(), chosen.end(), expert) == chosen.end()) set_kept(w, expert, false);
+        for (const int expert : chosen) set_kept(w, expert, true);
+        previous = std::move(chosen);
+    }
+    // After a prefill with kept experts, drop every other routed expert from the
+    // base LRU. Which leftovers survive prefill depends on earlier requests, and
+    // in fast mode GPU and CPU expert results differ in their last bits, so the
+    // base must depend on the current prompt alone for repeatable output.
+    void drop_unkept_routed() {
+        if (keep_lru.empty()) return;
+        for (auto it = lru.begin(); it != lru.end();) {
+            const auto entry = weights.find(*it);
+            if (entry == weights.end() || entry->first.find("#expert=-1") != std::string::npos) { ++it; continue; }
+            device_release(entry->second.device, entry->second.bytes);
+            cached_bytes -= entry->second.bytes; stat_evicted += entry->second.bytes;
+            weights.erase(entry);
+            it = lru.erase(it);
+        }
+    }
+    void release_kept() {
+        for (const auto& key : keep_lru) weights.at(key).kept = false;
+        lru.splice(lru.begin(), keep_lru);
+        prefill_counts.clear();
+        kept_experts.clear();
+    }
     size_t admitted_bytes = 0;  // promoted plus in-flight admissions
     uint64_t stat_admitted = 0;
     int admit_per_layer = [] {
@@ -179,8 +263,7 @@ struct CudaProjection::Impl {
         return size_t(v && *v ? std::max(0, std::atoi(v)) : 2048) << 20;
     }();
     bool admission_enabled() const {
-        const char* atomic = std::getenv("LAMINA_ATOMIC_EXPERT_CACHE");
-        return cpu_misses && admit_per_layer > 0 && registered_weights && !(atomic && atomic[0] == '1');
+        return cpu_misses && admit_per_layer > 0 && registered_weights && !atomic_expert_cache();
     }
     // The base cache keeps the admission pool's share free.
     size_t base_limit() const {
@@ -209,15 +292,34 @@ struct CudaProjection::Impl {
         admit_lru.pop_front();
         return true;
     }
+    // Blocks evicted from the admission pool by admit() are reused only by later
+    // admissions. One epoch event, recorded on the compute stream after such
+    // evictions, fences all of their readers, and the copy stream waits on it
+    // once; this replaces a retirement event and a wait per evicted tensor.
+    std::unordered_map<size_t, std::vector<void*>> admit_free;
+    cudaEvent_t admit_epoch = nullptr;
+    bool admit_epoch_pending = false;
+    bool evict_admitted_for_reuse() {
+        if (admit_lru.empty()) return false;
+        const auto entry = weights.find(admit_lru.front());
+        if (lease_active && leases.contains(entry->second.device)) return false;
+        admit_free[entry->second.bytes].push_back(entry->second.device);
+        cached_bytes -= entry->second.bytes; admitted_bytes -= entry->second.bytes; stat_evicted += entry->second.bytes;
+        weights.erase(entry);
+        admit_lru.pop_front();
+        admit_epoch_pending = true;
+        return true;
+    }
     // Called once per decode token. Waiting for the previous token's copies
     // keeps expert placement, and therefore fast-mode output, independent of
     // copy timing.
+    // The copy stream is FIFO, so one synchronization covers every admission
+    // queued during the previous token; no per-admission events are recorded.
     void promote_admissions() {
+        if (!admissions.empty()) check(cudaStreamSynchronize(weight_copy), "admit expert weights");
         for (size_t i = 0; i < admissions.size();) {
             auto& a = admissions[i];
-            check(cudaEventSynchronize(a.done), "admit expert weight");
             admitting.erase(a.key);
-            spare_events.push_back(a.done);
             if (weights.contains(a.key)) {  // another path uploaded it meanwhile
                 device_release(a.device, a.bytes);
                 cached_bytes -= a.bytes; admitted_bytes -= a.bytes;
@@ -236,13 +338,17 @@ struct CudaProjection::Impl {
     void clear_admissions() {
         if (weight_copy) check(cudaStreamSynchronize(weight_copy), "finish admissions");
         for (auto& a : admissions) {
-            spare_events.push_back(a.done);
             device_release(a.device, a.bytes);
             cached_bytes -= a.bytes; admitted_bytes -= a.bytes;
         }
         admissions.clear();
         admitting.clear();
         while (evict_oldest_admitted()) {}
+        // Both streams are idle here, so these blocks may rejoin the general pool.
+        for (auto& [bytes, blocks] : admit_free)
+            for (void* block : blocks) free_blocks[bytes].push_back(block);
+        admit_free.clear();
+        admit_epoch_pending = false;
     }
     bool admit(const strata::TensorInfo& t, const uint8_t* data, int expert) {
         const std::string key = t.name + "#type=" + std::to_string(t.type) + "#expert=" + std::to_string(expert);
@@ -252,25 +358,66 @@ struct CudaProjection::Impl {
         if (!admission_enabled() || source < registered_weights || size_t(source - registered_weights) > registered_bytes ||
             bytes > registered_bytes - size_t(source - registered_weights)) return false;
         const size_t limit = std::min(admit_limit, cache_limit / 2);
-        while ((admitted_bytes + bytes > limit || cached_bytes + bytes > cache_limit) && evict_oldest_admitted()) {}
+        while ((admitted_bytes + bytes > limit || cached_bytes + bytes > cache_limit) && evict_admitted_for_reuse()) {}
         if (admitted_bytes + bytes > limit || cached_bytes + bytes > cache_limit) return false;
-        void* device = device_alloc(bytes);
         if (!weight_copy) check(cudaStreamCreateWithFlags(&weight_copy, cudaStreamNonBlocking), "create expert copy stream");
-        if (retired_in_pipeline.erase(device) && expert_epoch)
-            check(cudaStreamWaitEvent(weight_copy, expert_epoch, 0), "wait pipeline retirement epoch");
-        else if (auto found = retired.find(device); found != retired.end())
-            check(cudaStreamWaitEvent(weight_copy, found->second, 0), "wait retired weight readers");
-        cudaEvent_t done = nullptr;
-        if (!spare_events.empty()) { done = spare_events.back(); spare_events.pop_back(); }
-        else check(cudaEventCreateWithFlags(&done, cudaEventDisableTiming), "create admission event");
+        void* device = nullptr;
+        if (auto reuse = admit_free.find(bytes); reuse != admit_free.end() && !reuse->second.empty()) {
+            if (admit_epoch_pending) {
+                if (!admit_epoch) check(cudaEventCreateWithFlags(&admit_epoch, cudaEventDisableTiming), "create admission epoch");
+                check(cudaEventRecord(admit_epoch, stream), "record admission epoch");
+                check(cudaStreamWaitEvent(weight_copy, admit_epoch, 0), "wait admission epoch");
+                admit_epoch_pending = false;
+            }
+            device = reuse->second.back();
+            reuse->second.pop_back();
+        } else {
+            device = device_alloc(bytes);
+            if (retired_in_pipeline.erase(device) && expert_epoch)
+                check(cudaStreamWaitEvent(weight_copy, expert_epoch, 0), "wait pipeline retirement epoch");
+            else if (auto found = retired.find(device); found != retired.end())
+                check(cudaStreamWaitEvent(weight_copy, found->second, 0), "wait retired weight readers");
+        }
         const auto timed = begin_time(weight_copy, 0);
         check(cudaMemcpyAsync(device, source, bytes, cudaMemcpyHostToDevice, weight_copy), "admit expert weight");
         end_time(timed, weight_copy);
-        check(cudaEventRecord(done, weight_copy), "record admission");
-        admissions.push_back({key, device, bytes, done});
+        admissions.push_back({key, device, bytes});
         admitting.insert(key);
         cached_bytes += bytes; admitted_bytes += bytes; stat_uploaded += bytes; ++stat_admitted;
         return true;
+    }
+    // Fast CPU-miss decode computes the shared expert before the host has read
+    // the routing, into its usual slot. These are the same kernels, inputs and
+    // outputs the expert graph used for that slot, so results are unchanged.
+    bool shared_early = false;
+    void shared_expert_early(const MoeWeights& shared, const float* x, int slot) {
+        const int n_in = int(shared.gate->shape[0]), ff = int(shared.gate->shape[1]), hidden = int(shared.down->shape[1]);
+        const size_t slots = size_t(slot) + 1;
+        ensure(gate_dev, gate_capacity, slots * ff);
+        ensure(up_dev, up_capacity, slots * ff);
+        ensure(swiglu_dev, swiglu_capacity, slots * ff);
+        ensure(down_dev, down_capacity, slots * hidden);
+        const size_t iq = strata::kernels::native_q8_1_bytes(n_in), dq = strata::kernels::native_q8_1_bytes(ff);
+        ensure(expert_q8, expert_q8_cap, iq + slots * dq);
+        strata::kernels::native_quantize_q8_1(x, expert_q8, n_in, 1, stream);
+        strata::kernels::NativeF32Grouped gate_up{};
+        gate_up.count = 2;
+        gate_up.weights[0] = projection_weight(*shared.gate, shared.gate_data, -1);
+        gate_up.weights[1] = projection_weight(*shared.up, shared.up_data, -1);
+        gate_up.inputs[0] = gate_up.inputs[1] = reinterpret_cast<const float*>(expert_q8);
+        gate_up.outputs[0] = gate_dev + size_t(slot) * ff;
+        gate_up.outputs[1] = up_dev + size_t(slot) * ff;
+        gate_up.n_outs[0] = gate_up.n_outs[1] = ff;
+        strata::kernels::native_mmvq_q8_grouped(int(shared.gate->type), gate_up, 2 * ff, n_in, stream);
+        cuda::swiglu(gate_dev + size_t(slot) * ff, up_dev + size_t(slot) * ff, swiglu_dev + size_t(slot) * ff, ff, stream);
+        strata::kernels::native_quantize_q8_1(swiglu_dev + size_t(slot) * ff, expert_q8 + iq + size_t(slot) * dq, ff, 1, stream);
+        strata::kernels::NativeF32Grouped down{};
+        down.count = 1;
+        down.weights[0] = projection_weight(*shared.down, shared.down_data, -1);
+        down.inputs[0] = reinterpret_cast<const float*>(expert_q8 + iq + size_t(slot) * dq);
+        down.outputs[0] = down_dev + size_t(slot) * hidden;
+        down.n_outs[0] = hidden;
+        strata::kernels::native_mmvq_q8_grouped(int(shared.down->type), down, hidden, ff, stream);
     }
     void mapped_floats(float*& host, float*& device, size_t& capacity, size_t elements) {
         if (elements <= capacity) return;
@@ -528,9 +675,11 @@ struct CudaProjection::Impl {
         if (kv_transfer) cudaStreamDestroy(kv_transfer);
         if (cpu_down_host) cudaFreeHost(cpu_down_host);
         if (cpu_input_host) cudaFreeHost(cpu_input_host);
+        if (argmax_host) cudaFreeHost(argmax_host);
         if (cpu_down_copied) cudaEventDestroy(cpu_down_copied);
-        for (auto& a : admissions) { cudaEventDestroy(a.done); cudaFree(a.device); }
-        for (auto event : spare_events) cudaEventDestroy(event);
+        for (auto& a : admissions) cudaFree(a.device);
+        for (auto& [bytes, blocks] : admit_free) for (void* block : blocks) cudaFree(block);
+        if (admit_epoch) cudaEventDestroy(admit_epoch);
         cudaFree(r_logits);
         cudaFree(r_ids);
         if (h_ids_map) cudaFreeHost(h_ids_map);
@@ -745,7 +894,7 @@ struct CudaProjection::Impl {
         const size_t bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, n_in, n_out);
         if (expert >= 0 && expert >= static_cast<int64_t>(tensor.shape.at(2)))
             throw std::out_of_range("CUDA projection expert index");
-        if (expert >= 0 && expert_layouts.contains(&tensor) && std::getenv("LAMINA_ATOMIC_EXPERT_CACHE") && std::getenv("LAMINA_ATOMIC_EXPERT_CACHE")[0] == '1') return expert_weight(tensor, int(expert));
+        if (expert >= 0 && atomic_expert_cache() && expert_layouts.contains(&tensor)) return expert_weight(tensor, int(expert));
         const auto* slice = data + (expert < 0 ? 0 : static_cast<size_t>(expert) * bytes);
         return weight(tensor, slice, expert, bytes);
     }
@@ -778,8 +927,7 @@ struct CudaProjection::Impl {
     }
 
     void prepare(const strata::TensorInfo& t, const uint8_t* data, int64_t expert) {
-        const char* staging = std::getenv("LAMINA_PINNED_UPLOADS");
-        if (registered_weights || (staging && staging[0] == '0')) return;
+        if (registered_weights || pageable_uploads()) return;
         if (expert < 0 || resident(t, int(expert))) return;
         const size_t bytes = strata::kernels::native_mmvq_weight_bytes(t.type, int(t.shape[0]), int(t.shape[1]));
         const uint8_t* source = data + size_t(expert) * bytes;
@@ -818,8 +966,7 @@ struct CudaProjection::Impl {
     }
 
     void upload(void* device, const uint8_t* source, size_t bytes) {
-        const char* staging = std::getenv("LAMINA_PINNED_UPLOADS");
-        if (staging && staging[0] == '0') {
+        if (pageable_uploads()) {
             check(cudaMemcpyAsync(device, source, bytes, cudaMemcpyHostToDevice, stream), "upload pageable weight");
             return;
         }
@@ -887,6 +1034,7 @@ struct CudaProjection::Impl {
                     lru.erase(found->second.lru);
                     found->second.pinned = true;
                 } else if (found->second.admitted) admit_lru.splice(admit_lru.end(), admit_lru, found->second.lru);
+                else if (found->second.kept) keep_lru.splice(keep_lru.end(), keep_lru, found->second.lru);
                 else lru.splice(lru.end(), lru, found->second.lru);
             }
             ++stat_hits;
@@ -1022,6 +1170,34 @@ bool CudaProjection::supports(uint32_t type) const {
 
 std::vector<float> CudaProjection::matvec(const strata::TensorInfo& tensor, const uint8_t* data,
                                           const std::vector<float>& x, int64_t expert) {
+    const int n_out = project_output(tensor, data, x, expert);
+    impl_->tl_mark(kTlHeadCopy);
+    const auto download_start = std::chrono::steady_clock::now();
+    std::vector<float> result(static_cast<size_t>(n_out));
+    check(cudaMemcpyAsync(result.data(), impl_->output, result.size() * sizeof(float),
+                          cudaMemcpyDeviceToHost, impl_->stream), "download projection");
+    check(cudaStreamSynchronize(impl_->stream), "finish projection");
+    if (impl_->timeline)
+        impl_->tl_host[8] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - download_start).count();
+    return result;
+}
+
+int CudaProjection::matvec_argmax(const strata::TensorInfo& tensor, const uint8_t* data,
+                                  const std::vector<float>& x) {
+    const int n_out = project_output(tensor, data, x, -1);
+    impl_->tl_mark(kTlHeadCopy);
+    if (!impl_->argmax_host) {
+        check(cudaHostAlloc(reinterpret_cast<void**>(&impl_->argmax_host), 2 * sizeof(int), cudaHostAllocMapped), "allocate argmax result");
+        check(cudaHostGetDevicePointer(reinterpret_cast<void**>(&impl_->argmax_dev), impl_->argmax_host, 0), "map argmax result");
+    }
+    cuda::argmax_f32(impl_->output, n_out, impl_->argmax_dev, impl_->stream);
+    check(cudaGetLastError(), "launch argmax");
+    check(cudaStreamSynchronize(impl_->stream), "finish argmax");
+    return impl_->argmax_host[1] ? -1 : impl_->argmax_host[0];
+}
+
+int CudaProjection::project_output(const strata::TensorInfo& tensor, const uint8_t* data,
+                                   const std::vector<float>& x, int64_t expert) {
     if (!supports(tensor.type) || tensor.shape.size() != (expert < 0 ? 2u : 3u) ||
         tensor.shape[0] != x.size())
         throw std::invalid_argument("unsupported CUDA projection: " + tensor.name);
@@ -1043,12 +1219,7 @@ std::vector<float> CudaProjection::matvec(const strata::TensorInfo& tensor, cons
     } else strata::kernels::native_mmvq_f32(tensor.type, device_weight, impl_->input, impl_->output,
                                      n_in, n_out, impl_->stream);
     check(cudaGetLastError(), "launch projection");
-    impl_->tl_mark(kTlHeadCopy);
-    std::vector<float> result(static_cast<size_t>(n_out));
-    check(cudaMemcpyAsync(result.data(), impl_->output, result.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost, impl_->stream), "download projection");
-    check(cudaStreamSynchronize(impl_->stream), "finish projection");
-    return result;
+    return n_out;
 }
 
 void CudaProjection::prefill_upload(const std::vector<float>& x, int columns, const std::vector<std::array<int, 3>>& positions) {
@@ -1501,8 +1672,8 @@ bool CudaProjection::supports_moe(const MoeWeights& routed, const MoeWeights& sh
 void CudaProjection::moe_pipeline(const float* x, float* output, const MoeWeights& routed,
     const std::vector<int>& ids, const std::vector<float>& scales, const MoeWeights& shared, float shared_scale) {
     impl_->expert_layout(routed);
-    const char* persistent=std::getenv("LAMINA_Q8_PERSISTENT");
-    const bool compact=impl_->fast && persistent && persistent[0]=='1';
+    static const bool persistent = env_is("LAMINA_Q8_PERSISTENT", '1');
+    const bool compact=impl_->fast && persistent;
     const int hidden = 2048, ff = int(routed.gate->shape[1]), slots = int(ids.size()) + 1;
     impl_->ensure(impl_->gate_dev, impl_->gate_capacity, size_t(slots) * ff);
     impl_->ensure(impl_->up_dev, impl_->up_capacity, size_t(slots) * ff);
@@ -1687,9 +1858,8 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         throw std::invalid_argument("CUDA MoE weight count differs from expert count");
     if (experts.empty() || experts.size() > 32)
         throw std::invalid_argument("CUDA MoE supports 1..32 routed experts");
-    const char* pipeline = std::getenv("LAMINA_EXPERT_PIPELINE");
-    const char* graph_setting = std::getenv("LAMINA_MOE_GRAPHS");
-    if (!impl_->cpu_misses && experts.size() <= 8 && (!pipeline || pipeline[0] != '0') && (!graph_setting || graph_setting[0] != '0')) {
+    static const bool no_pipeline = env_is("LAMINA_EXPERT_PIPELINE", '0'), no_graphs = env_is("LAMINA_MOE_GRAPHS", '0');
+    if (!impl_->cpu_misses && experts.size() <= 8 && !no_pipeline && !no_graphs) {
         moe_pipeline(x_dev, out_dev, routed, experts, weights, shared, shared_weight);
         return;
     }
@@ -1699,6 +1869,11 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     const int hidden = static_cast<int>(routed.down->shape[1]);
     const size_t slots = experts.size() + 1;  // routed experts plus the shared expert
 
+    using HostClock = std::chrono::steady_clock;
+    const auto host_ms = [](HostClock::time_point a, HostClock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    const auto h_begin = HostClock::now();
     // Non-resident routed experts run on the CPU pool. Start them before any GPU
     // setup so the CPU and the GPU's resident experts overlap as much as possible.
     std::vector<bool> on_cpu(slots, false);
@@ -1712,6 +1887,9 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     }
     const bool published = impl_->cpu_input_published && x_dev == impl_->norm_dev;
     impl_->cpu_input_published = false;
+    // moe_into_mix already computed the shared expert into its slot.
+    const bool shared_early = impl_->shared_early && x_dev == impl_->norm_dev;
+    impl_->shared_early = false;
     struct CpuBatchGuard {
         CpuExperts* pool = nullptr;
         ~CpuBatchGuard() { if (pool) try { pool->wait(); } catch (...) {} }
@@ -1731,6 +1909,12 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         cpu_batch.pool = impl_->cpu_experts.get();
         impl_->stat_cpu_experts += cpu_slots.size();
     }
+    if (impl_->timeline) {
+        auto [it, inserted] = impl_->tl_cpu_by_layer.try_emplace(routed.gate, 0);
+        if (inserted) impl_->tl_layer_order.push_back(routed.gate);
+        it->second += cpu_slots.size();
+    }
+    const auto h_started = HostClock::now();
 
     const size_t input_q8_bytes = strata::kernels::native_q8_1_bytes(n_in);
     const size_t down_q8_bytes = strata::kernels::native_q8_1_bytes(ff);
@@ -1751,10 +1935,15 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     if (!impl_->scales_host)
         check(cudaMallocHost(reinterpret_cast<void**>(&impl_->scales_host), 65 * sizeof(float)), "allocate expert scales staging");
     std::copy(scales.begin(), scales.end(), impl_->scales_host);
+    // With the graph path, the scales travel with the pointer tables as kernel
+    // arguments (one launch instead of two small copies, cheaper under WDDM).
+    const bool publish_args = !no_graphs && 2 * experts.size() <= size_t(cuda::kPublishItems) &&
+                              slots <= size_t(cuda::kPublishScales);
     // The device router doorbell (or the blocking public moe call) completed
     // the preceding expert block before this persistent staging is reused.
-    check(cudaMemcpyAsync(impl_->scales_dev, impl_->scales_host, slots * sizeof(float),
-                          cudaMemcpyHostToDevice, impl_->stream), "upload MoE scales");
+    if (!publish_args)
+        check(cudaMemcpyAsync(impl_->scales_dev, impl_->scales_host, slots * sizeof(float),
+                              cudaMemcpyHostToDevice, impl_->stream), "upload MoE scales");
     const auto t_after_scales = std::chrono::steady_clock::now();
 
     const auto moe_weights = [&](size_t slot) -> const MoeWeights& {
@@ -1802,6 +1991,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
                                                  total_rows, batch_n_in, impl_->stream);
     };
     std::vector<GroupItem> gate_up_routed, gate_up_shared, down_routed, down_shared;
+    const auto h_leases = HostClock::now();
     impl_->lease_active = true;
     for (size_t slot = 0; slot < slots; ++slot) {
         const auto& w = moe_weights(slot);
@@ -1819,6 +2009,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         // A CPU slot's gate/up/SwiGLU scratch is never read: no down projection is
         // launched for it and its down row is overwritten by the CPU result.
         if (on_cpu[s]) continue;
+        if (shared_early && !is_routed) continue;  // its gate/up/down outputs already exist
         GroupItem gate{impl_->projection_weight(*w.gate, w.gate_data, expert), x_dev,
                        impl_->gate_dev + s * ff, ff};
         GroupItem up{impl_->projection_weight(*w.up, w.up_data, expert), x_dev,
@@ -1835,8 +2026,8 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
             down_shared.push_back(down);
         }
     }
-    const char* graphs = std::getenv("LAMINA_MOE_GRAPHS");
-    const bool use_tables = !graphs || graphs[0] != '0';
+    const auto h_slots_done = HostClock::now();
+    const bool use_tables = !no_graphs;
     // With CPU slots the combine must follow their results, so it stays outside the graph.
     const bool combine_in_graph = cpu_slots.empty();
     if (use_tables) {
@@ -1845,39 +2036,67 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
             check(cudaMallocHost(reinterpret_cast<void**>(&impl_->expert_table_host), bytes), "allocate expert pointer staging");
             impl_->allocate(reinterpret_cast<void**>(&impl_->expert_table_gpu), bytes);
         }
-        int index = 0;
-        for (const auto* group : {&gate_up_routed, &gate_up_shared, &down_routed, &down_shared}) {
-            auto& table = impl_->expert_table_host[index++];
-            table = {};
-            table.count = int(group->size());
-            for (size_t i = 0; i < group->size(); ++i) {
-                table.weights[i] = (*group)[i].weight; table.inputs[i] = (*group)[i].input;
-                if (impl_->fast) {
-                    const bool down = index > 2;
-                    const size_t slot = down ? size_t((*group)[i].input - impl_->swiglu_dev) / ff : 0;
-                    table.inputs[i] = reinterpret_cast<const float*>(impl_->expert_q8 + (down ? input_q8_bytes + slot * down_q8_bytes : 0));
+        // The same entries either way: each group's weight, input (the Q8 view in
+        // fast mode), output and row count.
+        const auto entry_input = [&](int index, const GroupItem& item) -> const float* {
+            if (!impl_->fast) return item.input;
+            const bool down = index >= 2;
+            const size_t slot = down ? size_t(item.input - impl_->swiglu_dev) / ff : 0;
+            return reinterpret_cast<const float*>(impl_->expert_q8 + (down ? input_q8_bytes + slot * down_q8_bytes : 0));
+        };
+        const std::array<const std::vector<GroupItem>*, 4> groups{&gate_up_routed, &gate_up_shared, &down_routed, &down_shared};
+        if (publish_args) {
+            cuda::ExpertPublish args{};
+            for (int index = 0; index < 4; ++index) {
+                const auto& group = *groups[size_t(index)];
+                args.counts[index] = int(group.size());
+                for (size_t i = 0; i < group.size(); ++i) {
+                    args.weights[index][i] = group[i].weight;
+                    args.inputs[index][i] = entry_input(index, group[i]);
+                    args.outputs[index][i] = group[i].output;
+                    args.n_outs[index][i] = group[i].rows;
                 }
-                table.outputs[i] = (*group)[i].output; table.n_outs[i] = (*group)[i].rows;
             }
+            for (size_t i = 0; i < slots; ++i) args.scales[i] = scales[i];
+            args.scale_count = int(slots);
+            cuda::publish_expert_tables(args, impl_->expert_table_gpu, impl_->scales_dev, impl_->stream);
+        } else {
+            for (int index = 0; index < 4; ++index) {
+                const auto& group = *groups[size_t(index)];
+                auto& table = impl_->expert_table_host[index];
+                table = {};
+                table.count = int(group.size());
+                for (size_t i = 0; i < group.size(); ++i) {
+                    table.weights[i] = group[i].weight; table.inputs[i] = entry_input(index, group[i]);
+                    table.outputs[i] = group[i].output; table.n_outs[i] = group[i].rows;
+                }
+            }
+            check(cudaMemcpyAsync(impl_->expert_table_gpu, impl_->expert_table_host, bytes,
+                                  cudaMemcpyHostToDevice, impl_->stream), "publish expert pointer tables");
         }
-        check(cudaMemcpyAsync(impl_->expert_table_gpu, impl_->expert_table_host, bytes,
-                              cudaMemcpyHostToDevice, impl_->stream), "publish expert pointer tables");
     }
-    const auto launch_table = [&](int index, int type, int width, const std::vector<GroupItem>& items) {
+    const auto h_tables = HostClock::now();
+    const auto launch_table = [&](int index, int type, int width, const std::vector<GroupItem>& items, cudaStream_t on) {
         if (items.empty()) return;  // every routed expert of this layer runs on the CPU
         int rows = 0;
         for (const auto& item : items) rows += item.rows;
         if (impl_->fast) strata::kernels::native_mmvq_q8_grouped_table(type, impl_->expert_table_gpu + index,
-                                                      int(items.size()), rows, width, impl_->stream);
+                                                      int(items.size()), rows, width, on);
         else strata::kernels::native_mmvq_f32_grouped_table(type, impl_->expert_table_gpu + index,
-                                                      int(items.size()), rows, width, impl_->stream);
+                                                      int(items.size()), rows, width, on);
+    };
+    // Running the shared expert concurrently on a second stream measured about
+    // 1% slower: the routed launches already fill every SM.
+    const auto launch_pair = [&](int routed_index, int routed_type, int shared_index, int shared_type, int width,
+                                 const std::vector<GroupItem>& routed_items, const std::vector<GroupItem>& shared_items) {
+        launch_table(routed_index, routed_type, width, routed_items, impl_->stream);
+        launch_table(shared_index, shared_type, width, shared_items, impl_->stream);
     };
     const int down_n_in = static_cast<int>(routed.down->shape[0]);
     const auto gpu_experts = [&] {
         if (impl_->fast) strata::kernels::native_quantize_q8_1(x_dev, impl_->expert_q8, n_in, 1, impl_->stream);
         if (use_tables) {
-            launch_table(0, routed.gate->type, n_in, gate_up_routed);
-            launch_table(1, shared.gate->type, n_in, gate_up_shared);
+            launch_pair(0, routed.gate->type, 1, shared.gate->type, n_in, gate_up_routed, gate_up_shared);
         } else {
             launch_group(static_cast<int>(routed.gate->type), n_in, gate_up_routed);
             launch_group(static_cast<int>(shared.gate->type), n_in, gate_up_shared);
@@ -1887,8 +2106,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         if (impl_->fast) for (size_t base = 0; base < slots; base += 8)
             strata::kernels::native_quantize_q8_1(impl_->swiglu_dev + base * ff, impl_->expert_q8 + input_q8_bytes + base * down_q8_bytes, ff, int(std::min(size_t(8), slots - base)), impl_->stream);
         if (use_tables) {
-            launch_table(2, routed.down->type, down_n_in, down_routed);
-            launch_table(3, shared.down->type, down_n_in, down_shared);
+            launch_pair(2, routed.down->type, 3, shared.down->type, down_n_in, down_routed, down_shared);
         } else {
             launch_group(static_cast<int>(routed.down->type), down_n_in, down_routed);
             launch_group(static_cast<int>(shared.down->type), down_n_in, down_shared);
@@ -1897,6 +2115,13 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
             cuda::moe_combine(impl_->down_dev, impl_->scales_dev, static_cast<int>(slots), hidden, out_dev, impl_->stream);
     };
     impl_->tl_mark(kTlResident);
+    if (impl_->timeline) {
+        impl_->tl_host[0] += host_ms(h_begin, h_started);
+        impl_->tl_host[1] += host_ms(h_started, HostClock::now());
+        impl_->tl_host[4] += host_ms(h_started, h_leases);       // ensures, scales upload
+        impl_->tl_host[5] += host_ms(h_leases, h_slots_done);    // lease and slot loops
+        impl_->tl_host[6] += host_ms(h_slots_done, h_tables);    // table fill and upload
+    }
     const auto expert_timing = impl_->begin_time(impl_->stream, 1);
     if (use_tables) {
         // Graphs reference stable device pointer tables, refreshed on the stream
@@ -1907,7 +2132,8 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
             reinterpret_cast<uintptr_t>(out_dev), reinterpret_cast<uintptr_t>(impl_->gate_dev),
             reinterpret_cast<uintptr_t>(impl_->up_dev), reinterpret_cast<uintptr_t>(impl_->swiglu_dev),
             reinterpret_cast<uintptr_t>(impl_->down_dev), reinterpret_cast<uintptr_t>(impl_->scales_dev),
-            reinterpret_cast<uintptr_t>(impl_->expert_table_gpu), slots, gate_up_routed.size(), uintptr_t(combine_in_graph)};
+            reinterpret_cast<uintptr_t>(impl_->expert_table_gpu), slots, gate_up_routed.size(), uintptr_t(combine_in_graph),
+            uintptr_t(shared_early)};
         const std::string key(reinterpret_cast<const char*>(addresses.data()), addresses.size() * sizeof(uintptr_t));
         auto found = impl_->moe_graphs.find(key);
         if (found == impl_->moe_graphs.end()) {
@@ -1945,15 +2171,22 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
             return;
         }
     } else {
+        // Ungraphed path (LAMINA_MOE_GRAPHS=0); the timeline marks between its
+        // launches give per-kernel expert times for diagnosis.
         if (impl_->fast) strata::kernels::native_quantize_q8_1(x_dev, impl_->expert_q8, n_in, 1, impl_->stream);
+        impl_->tl_mark(kTlExGateUp);
         launch_group(static_cast<int>(routed.gate->type), n_in, gate_up_routed);
+        impl_->tl_mark(kTlExSharedGateUp);
         launch_group(static_cast<int>(shared.gate->type), n_in, gate_up_shared);
+        impl_->tl_mark(kTlExSwiglu);
         cuda::swiglu(impl_->gate_dev, impl_->up_dev, impl_->swiglu_dev,
                      static_cast<int>(slots) * ff, impl_->stream);
         if (impl_->fast) for (size_t base = 0; base < slots; base += 8)
             strata::kernels::native_quantize_q8_1(impl_->swiglu_dev + base * ff, impl_->expert_q8 + input_q8_bytes + base * down_q8_bytes,
                 ff, int(std::min(size_t(8), slots - base)), impl_->stream);
+        impl_->tl_mark(kTlExDown);
         launch_group(static_cast<int>(routed.down->type), down_n_in, down_routed);
+        impl_->tl_mark(kTlExSharedDown);
         launch_group(static_cast<int>(shared.down->type), down_n_in, down_shared);
         impl_->end_time(expert_timing, impl_->stream);
     }
@@ -1963,7 +2196,9 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     impl_->tl_mark(kTlMissWait);  // the stream idles here if the CPU experts finish after the GPU ones
     if (!cpu_slots.empty()) {
         cpu_batch.pool = nullptr;
+        const auto h_wait = HostClock::now();
         impl_->cpu_experts->wait();  // the host thread helps with the remaining CPU rows
+        if (impl_->timeline) impl_->tl_host[2] += host_ms(h_wait, HostClock::now());
         for (const size_t slot : cpu_slots)
             cuda::copy_f32(impl_->cpu_down_dev + slot * hidden, impl_->down_dev + slot * hidden, hidden, impl_->stream);
         if (!impl_->cpu_down_copied)
@@ -1979,11 +2214,15 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     // router weight first, so following tokens run them on the GPU. Evicted
     // blocks are fenced by their retirement events. (Deferring this host work
     // into the next layer's doorbell wait measured slower: 31.0 -> 29.0 tok/s.)
+    const auto h_admit = HostClock::now();
+    // (Admitting only experts already used two or three times on the CPU, or
+    // more than one per layer, measured no better.)
     for (size_t i = 0; i < cpu_slots.size() && int(i) < impl_->admit_per_layer; ++i) {
         const int expert = experts[cpu_slots[i]];
         if (!(impl_->admit(*routed.gate, routed.gate_data, expert) && impl_->admit(*routed.up, routed.up_data, expert) &&
               impl_->admit(*routed.down, routed.down_data, expert))) break;
     }
+    if (impl_->timeline) impl_->tl_host[3] += host_ms(h_admit, HostClock::now());
     if (device_profile()) {
         const auto t_end = std::chrono::steady_clock::now();
         std::fprintf(stderr, "  core scales=%.3f gu=%.3f down=%.3f combine=%.3f\n",
@@ -2031,6 +2270,11 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
         if (expert < 0 || expert >= 256) throw std::runtime_error("invalid prefill route");
         groups[expert].push_back(c*9+s);
     }
+    const bool keep_prompt = impl_->fast && impl_->cpu_misses && impl_->base_keep > 0 && !atomic_expert_cache();
+    if (keep_prompt) {
+        auto& counts = impl_->prefill_counts.try_emplace(routed.gate).first->second;
+        for (int e = 0; e < 256; ++e) counts[size_t(e)] += uint32_t(groups[size_t(e)].size());
+    }
     std::vector<int> map; map.reserve(size_t(columns) * 9);
     for (const auto& group : groups) map.insert(map.end(), group.begin(), group.end());
     for (int c = 0; c < columns; ++c) map.push_back(c*9+8);
@@ -2061,6 +2305,7 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
         offset += size_t(count);
     }
     apply(shared, -1, columns, impl_->bm_x, impl_->bm_map + offset);
+    if (keep_prompt) impl_->keep_prompt_experts(routed);
     cuda::moe_combine_columns(impl_->bm_slots, impl_->bm_scales, columns, hidden, impl_->bm_x, impl_->stream);
     check(cudaGetLastError(), "launch grouped prefill experts");
     if (device) {
@@ -2100,6 +2345,7 @@ void CudaProjection::set_context(int max_context) { impl_->max_context = max_con
 void CudaProjection::finish_prefill() {
     if (!impl_->batch_gdn && !impl_->bm_x && !impl_->batch_q) return;
     check(cudaStreamSynchronize(impl_->stream), "finish prefill workspace");
+    impl_->drop_unkept_routed();
     const auto drop = [&](auto*& pointer, size_t& capacity) {
         impl_->release(pointer); pointer = nullptr; capacity = 0;
     };
@@ -2133,6 +2379,7 @@ void CudaProjection::finish_prefill() {
 void CudaProjection::reset() {
     check(cudaStreamSynchronize(impl_->stream), "wait before resetting conversation");
     impl_->clear_admissions();  // every request starts from the same base cache
+    impl_->release_kept();     // the next prefill chooses its own kept experts
     impl_->prefill_columns = 0;
     for (auto& state : impl_->gdn_states) {
         if (state.conv) check(cudaMemsetAsync(state.conv, 0, 8192 * 3 * sizeof(float), impl_->stream), "reset convolution");
@@ -2146,7 +2393,10 @@ void CudaProjection::reset() {
 }
 
 void CudaProjection::hidden_upload(const std::vector<float>& x) {
+    const auto promote_start = std::chrono::steady_clock::now();
     if (impl_->cpu_misses) impl_->promote_admissions();
+    if (impl_->timeline)
+        impl_->tl_host[7] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - promote_start).count();
     if (!(++impl_->decode_tokens % 256)) for (auto& [name, entry] : impl_->weights) {
         entry.hits = std::max(uint64_t(1), entry.hits / 2);
         if (entry.block && entry.device == entry.block->base) entry.block->hits = std::max(uint64_t(1), entry.block->hits / 2);
@@ -2246,10 +2496,6 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
     // Router -> top-k -> doorbell, all writing straight into mapped pinned memory.
     cuda::gemv_f32(static_cast<const float*>(router_weight), impl_->norm_dev, impl_->r_logits,
                    n_in, experts_count, impl_->stream);
-    cuda::dot_sigmoid(static_cast<const float*>(shared_gate_weight), impl_->norm_dev, n_in,
-                      impl_->d_scales_map + top_k, impl_->stream);
-    cuda::router_topk(impl_->r_logits, experts_count, top_k, impl_->d_ids_map, impl_->d_scales_map,
-                      impl_->stream);
     // Predict the next layer's experts by applying its router to this layer's
     // normalized input. The hidden state changes by one layer's residual, so
     // the prediction is approximate; its ids ride in the second half of the
@@ -2257,10 +2503,27 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
     // Default on only with registered model RAM, where an upload is one async
     // DMA call. Through the staging pool each upload blocks the host on a worker
     // copy, which measured 20% slower; LAMINA_PREFETCH=1/0 overrides.
-    const char* mode = std::getenv("LAMINA_PREFETCH");
-    const bool allowed = mode && mode[0] ? mode[0] == '1' : impl_->registered_weights != nullptr;
+    static const char prefetch_mode = [] { const char* v = std::getenv("LAMINA_PREFETCH"); return v ? v[0] : char(0); }();
+    const bool allowed = prefetch_mode ? prefetch_mode == '1' : impl_->registered_weights != nullptr;
     const bool predict = allowed && next && next->router && !impl_->cpu_misses;
-    if (predict) {
+    const bool publish = impl_->cpu_misses && impl_->stat_evicted;
+    if (publish) {
+        impl_->mapped_floats(impl_->cpu_input_host, impl_->cpu_input_dev, impl_->cpu_input_cap, static_cast<size_t>(n_in));
+        impl_->cpu_input_published = true;
+    }
+    const unsigned seq = ++impl_->route_seq;
+    if (!predict) {
+        // Shared gate, top-k, CPU-input publication and doorbell in one launch;
+        // on WDDM each separate launch cost the waiting GPU several microseconds.
+        cuda::router_finish(impl_->r_logits, experts_count, top_k, impl_->d_ids_map, impl_->d_scales_map,
+                            static_cast<const float*>(shared_gate_weight), impl_->norm_dev, n_in,
+                            impl_->d_scales_map + top_k, publish ? impl_->cpu_input_dev : nullptr,
+                            impl_->d_flag_map, static_cast<int>(seq), impl_->stream);
+    } else {
+        cuda::dot_sigmoid(static_cast<const float*>(shared_gate_weight), impl_->norm_dev, n_in,
+                          impl_->d_scales_map + top_k, impl_->stream);
+        cuda::router_topk(impl_->r_logits, experts_count, top_k, impl_->d_ids_map, impl_->d_scales_map,
+                          impl_->stream);
         void* next_router = impl_->weight(*next->router, next->router_data, -1,
                                           static_cast<size_t>(n_in) * experts_count * sizeof(float));
         impl_->ensure(impl_->pred_scales, impl_->pred_scales_cap, static_cast<size_t>(top_k));
@@ -2268,14 +2531,15 @@ void CudaProjection::moe_into_mix(const strata::TensorInfo& router, const uint8_
                        n_in, experts_count, impl_->stream);
         cuda::router_topk(impl_->r_logits, experts_count, top_k, impl_->d_ids_map + top_k,
                           impl_->pred_scales, impl_->stream);
+        if (publish) cuda::copy_f32(impl_->norm_dev, impl_->cpu_input_dev, n_in, impl_->stream);
+        cuda::doorbell_signal(impl_->d_flag_map, static_cast<int>(seq), impl_->stream);
     }
-    if (impl_->cpu_misses && impl_->stat_evicted) {
-        impl_->mapped_floats(impl_->cpu_input_host, impl_->cpu_input_dev, impl_->cpu_input_cap, static_cast<size_t>(n_in));
-        cuda::copy_f32(impl_->norm_dev, impl_->cpu_input_dev, n_in, impl_->stream);
-        impl_->cpu_input_published = true;
-    }
-    const unsigned seq = ++impl_->route_seq;
-    cuda::doorbell_signal(impl_->d_flag_map, static_cast<int>(seq), impl_->stream);
+    // The shared expert does not depend on routing. Queued behind the doorbell,
+    // it keeps the GPU busy while the host reads the routing and prepares the
+    // routed experts, instead of running afterwards on the critical path.
+    static const bool no_early = env_is("LAMINA_SHARED_EARLY", '0');
+    impl_->shared_early = impl_->fast && impl_->cpu_misses && !no_early;
+    if (impl_->shared_early) impl_->shared_expert_early(shared, impl_->norm_dev, top_k);
     impl_->tl_mark(kTlHostGap);  // the stream idles from here until the host submits the experts
     volatile const int* flag = impl_->h_flag_map;
     unsigned polls = 0;
@@ -2361,6 +2625,7 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
     const float* proj_inputs[3] = {impl_->norm_dev, impl_->norm_dev, impl_->norm_dev};
     float* proj_outputs[3] = {impl_->a_q, impl_->a_k, impl_->a_v};
     const int proj_rows[3] = {kQ, kKv, kKv};
+    impl_->tl_mark(kTlAttnProject);
     impl_->decode_group(static_cast<int>(w.q->type), proj_weights, proj_inputs,
                                              proj_outputs, proj_rows, 3, kQ + 2 * kKv, kHidden,
                                              impl_->stream);
@@ -2368,6 +2633,7 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
                                  static_cast<size_t>(kHeadDim) * sizeof(float));
     void* k_norm = impl_->weight(*w.k_norm, w.k_norm_data, -1,
                                  static_cast<size_t>(kHeadDim) * sizeof(float));
+    impl_->tl_mark(kTlAttnRope);
     cuda::attn_norm_mrope(impl_->a_q, kHeads, 2 * kHeadDim, kHeadDim, kRot,
                           static_cast<const float*>(q_norm), kEps, rope_base,
                           rope_positions[0], rope_positions[1], rope_positions[2], impl_->stream);
@@ -2379,6 +2645,7 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
     auto& state = impl_->attn_states[static_cast<size_t>(layer)];
     const int needed = position + 1;
     if (needed > impl_->max_context) throw std::out_of_range("CUDA attention context exceeded");
+    impl_->tl_mark(kTlAttnCore);
     const int tiles = (needed + 127) / 128;
     impl_->ensure(impl_->a_partial, impl_->a_partial_cap, static_cast<size_t>(kHeads) * tiles * (kHeadDim + 2));
     if (impl_->host_kv) {
@@ -2422,6 +2689,7 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
                             kHeads, kKvHeads, kHeadDim, 1.0f / 16.0f, impl_->a_partial, impl_->stream);
     }
     cuda::attn_merge(impl_->a_q, impl_->a_partial, tiles, kHeads, kHeadDim, impl_->a_ctx, impl_->stream);
+    impl_->tl_mark(kTlAttnOut);
     const void* out_weight = impl_->projection_weight(*w.out, w.out_data, -1);
     const float* out_input = impl_->a_ctx;
     float* out_output = impl_->mix_dev;
@@ -2581,13 +2849,33 @@ void CudaProjection::timeline_token() {
             if (++p.tl_tokens % 32 == 0) {
                 static const char* names[kTlCount] = {"dense", "router", "host_gap", "moe_setup", "prefetch_wait",
                     "resident", "miss_wait", "miss_experts", "prefetch_issue", "combine", "tail", "attention",
-                    "gdn_project", "gdn_small", "gdn_step", "gdn_out", "head_kernel", "head_copy_and_host"};
+                    "gdn_project", "gdn_small", "gdn_step", "gdn_out", "head_kernel", "head_copy_and_host",
+                    "attn_project", "attn_rope_kv", "attn_core", "attn_out",
+                    "ex_gate_up", "ex_shared_gate_up", "ex_swiglu_quant", "ex_down", "ex_shared_down"};
                 double total = 0;
                 for (double v : p.tl_ms) total += v;
                 std::fprintf(stderr, "timeline tokens=%llu ms_per_token=%.3f", static_cast<unsigned long long>(p.tl_tokens),
                              total / double(p.tl_tokens));
                 for (int i = 0; i < kTlCount; ++i) std::fprintf(stderr, " %s=%.3f", names[i], p.tl_ms[size_t(i)] / double(p.tl_tokens));
-                std::fprintf(stderr, "\n");
+                std::fprintf(stderr, " host_cpu_start=%.3f host_setup=%.3f host_cpu_wait=%.3f host_admit=%.3f"
+                             " host_scales=%.3f host_slots=%.3f host_tables=%.3f host_promote=%.3f host_head_download=%.3f\n",
+                             p.tl_host[0] / double(p.tl_seen), p.tl_host[1] / double(p.tl_seen),
+                             p.tl_host[2] / double(p.tl_seen), p.tl_host[3] / double(p.tl_seen),
+                             p.tl_host[4] / double(p.tl_seen), p.tl_host[5] / double(p.tl_seen),
+                             p.tl_host[6] / double(p.tl_seen), p.tl_host[7] / double(p.tl_seen),
+                             p.tl_host[8] / double(p.tl_seen));
+                if (!p.tl_layer_order.empty()) {
+                    std::fprintf(stderr, "cpu_experts_by_layer");
+                    for (const auto* t : p.tl_layer_order) std::fprintf(stderr, " %.2f", double(p.tl_cpu_by_layer[t]) / double(p.tl_seen));
+                    std::fprintf(stderr, "\n");
+                }
+                if (p.cpu_experts) {
+                    const auto c = p.cpu_experts->stats();
+                    if (c.batches)
+                        std::fprintf(stderr, "cpu_batches per_token=%.2f batch_us=%.1f first_claim_us=%.1f experts_per_batch=%.2f\n",
+                                     double(c.batches) / double(p.tl_seen), 1000.0 * c.batch_ms / double(c.batches),
+                                     1000.0 * c.first_claim_ms / double(c.batches), double(c.experts) / double(c.batches));
+                }
             }
         }
     }
@@ -2651,6 +2939,12 @@ std::vector<float> CudaProjection::attention_columns(int, const std::vector<floa
 }
 std::vector<float> CudaProjection::matvec(const strata::TensorInfo&, const uint8_t*,
                                           const std::vector<float>&, int64_t) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+int CudaProjection::matvec_argmax(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+int CudaProjection::project_output(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&, int64_t) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
 std::vector<std::vector<float>> CudaProjection::matvec_many(

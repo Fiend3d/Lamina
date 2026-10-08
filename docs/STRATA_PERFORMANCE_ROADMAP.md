@@ -10,7 +10,9 @@ Strata kernels alone has not reproduced its execution performance.
 a tool: `LAMINA_TIMELINE=1` partitions each token's stream time into stages.
 Acceptance milestone 2 is reached on that machine: with CPU experts as the
 fast-mode default and a coalesced DeltaNet step, the matched nine-run median is
-31.24 tokens/s against 28.56 for llama.cpp b11474, ahead in every prompt class
+35.84 tokens/s against 28.56 for llama.cpp b11474 (see also
+[the host-path update](../bench/results/2026-10-07-rtx3050-host-path/README.md) and
+[the greedy and cache update](../bench/results/2026-10-07-rtx3050-greedy-keep/README.md)), ahead in every prompt class
 and with identical output across repeats. Milestone 3 (40 tokens/s) is not
 reached. The largest remaining cost is the RAM-bandwidth-bound CPU expert batch
 (it saturates near 16 GB/s of expert reads), then the DeltaNet projections,

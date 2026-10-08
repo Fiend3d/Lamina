@@ -31,6 +31,11 @@ public:
     // complete, rethrowing the first worker error.
     void wait();
 
+    // Diagnostics: cumulative batch time from start() to the last finished
+    // item, time until the first item was claimed, and batch/expert counts.
+    struct Stats { double batch_ms = 0, first_claim_ms = 0; uint64_t batches = 0, experts = 0; };
+    Stats stats() const { return stats_; }
+
 private:
     struct Item { int expert; int matrix; int begin; int end; };  // matrix: 0 gate, 1 up, 2 down
     struct ExpertState {
@@ -57,6 +62,8 @@ private:
     std::atomic<size_t> next_{kIdle}, count_{0}, finished_{0};
     std::atomic<uint64_t> generation_{0};
     std::atomic<bool> failed_{false}, stopping_{false};
+    std::atomic<int64_t> started_ns_{0}, first_claim_ns_{0};
+    Stats stats_;
     std::exception_ptr error_;
     std::mutex mutex_;
     std::condition_variable wake_;

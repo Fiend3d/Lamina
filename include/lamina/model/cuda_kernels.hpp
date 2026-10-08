@@ -81,6 +81,12 @@ void kv_store(const float* source, void* destination, int elements, bool half, v
 
 // Stable top-k over `n` logits with renormalised softmax weights; single block.
 void router_topk(const float* logits, int n, int k, int* ids, float* weights, void* stream);
+// Decode router tail fused into one launch: sigmoid(gate_weight . x) into
+// shared_out, top-k ids/weights, optional copy of x into publish (mapped host
+// memory for CPU experts; may be null), then *flag = value as the doorbell.
+void router_finish(const float* logits, int n, int k, int* ids, float* weights,
+                   const float* gate_weight, const float* x, int n_in, float* shared_out,
+                   float* publish, int* flag, int value, void* stream);
 void router_topk_columns(const float* logits, int columns, int* ids, float* scales, void* stream);
 void dot_sigmoid_columns(const float* weights, const float* x, int columns, float* scales, void* stream);
 void gather_expert_inputs(const float* x, const int* slot_map, int count, int hidden,
@@ -96,6 +102,26 @@ void dot_sigmoid(const float* a, const float* b, int n, float* out, void* stream
 // Publishes `value` to a mapped pinned flag after a system-scope fence, so a
 // host spin loop sees the router's writes to mapped memory. One thread.
 void doorbell_signal(int* flag, int value, void* stream);
+
+// Per-layer expert pointer tables and combine scales, passed by value as kernel
+// arguments. One small launch replaces two cudaMemcpyAsync calls, which cost
+// considerably more host time under WDDM. Fits the 4 KiB parameter limit.
+constexpr int kPublishItems = 24, kPublishScales = 33;
+struct ExpertPublish {
+    int counts[4];
+    const void* weights[4][kPublishItems];
+    const float* inputs[4][kPublishItems];
+    float* outputs[4][kPublishItems];
+    int n_outs[4][kPublishItems];
+    float scales[kPublishScales];
+    int scale_count;
+};
+// tables: four consecutive strata::kernels::NativeF32Grouped in device memory.
+void publish_expert_tables(const ExpertPublish& args, void* tables, float* scales, void* stream);
+
+// Greedy token selection: result[0] = index of the first maximum (as
+// std::max_element), result[1] = 1 if any value is not finite.
+void argmax_f32(const float* x, int n, int* result, void* stream);
 
 // Element copy by the SMs. With a mapped host pointer on either side it moves
 // small data over PCIe without queueing behind copy-engine DMA.

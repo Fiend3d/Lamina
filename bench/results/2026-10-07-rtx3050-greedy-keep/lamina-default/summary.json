@@ -1,0 +1,23 @@
+{
+  "command": [
+    "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--cuda",
+    "--compute-mode",
+    "fast",
+    "--kv-type",
+    "f16",
+    "--kv-cache",
+    "device",
+    "--max-context",
+    "32768",
+    "--interactive"
+  ],
+  "startup_seconds": 0.19134040002245456,
+  "prompt_medians": {
+    "prose": 38.830625016430844,
+    "code": 35.83574630857725,
+    "math": 35.182116293027555
+  },
+  "median_later_tokens_per_second": 35.83574630857725
+}

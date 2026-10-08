@@ -2,6 +2,8 @@
 #include "lamina/model/sampling.hpp"
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -76,9 +78,28 @@ int main(int argc, char** argv) {
             for (float value : hidden) std::printf("%.9g\n", value); return 0;
         }
         lamina::model::Inference model(argv[1], context, 40, cuda, kv_cache, vram_mb, kv_type, compute_mode); lamina::model::Sampler sampler;
+        // Greedy sampling selects the token on the GPU and skips downloading the
+        // logits; any other setting, or a non-finite logit, takes the full path.
+        const auto next_token = [&](std::vector<float> hidden) {
+            if (sampler.greedy())
+                if (const int token = model.greedy(hidden); token >= 0) return token;
+            return sampler.sample(model.logits(std::move(hidden)));
+        };
         if (argc == first + 1 && std::string(argv[first]) == "--interactive") {
             std::string line;
-            while (std::getline(std::cin, line)) {
+            // LAMINA_TIMELINE=1: time spent waiting for the client's next command.
+            const char* timeline = std::getenv("LAMINA_TIMELINE");
+            const bool time_input = timeline && timeline[0] == '1';
+            double input_ms = 0; uint64_t commands = 0;
+            for (;;) {
+                const auto waited = std::chrono::steady_clock::now();
+                if (!std::getline(std::cin, line)) break;
+                if (time_input) {
+                    input_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waited).count();
+                    if (++commands % 64 == 0)
+                        std::fprintf(stderr, "client_wait commands=%llu ms_per_command=%.3f\n",
+                                     static_cast<unsigned long long>(commands), input_ms / double(commands));
+                }
                 if (line == "QUIT") break;
                 if (line == "RESET") { model.reset(); std::puts("."); }
                 else if (line.rfind("SAMPLE ", 0) == 0) {
@@ -92,18 +113,18 @@ int main(int argc, char** argv) {
                     const int chunk=integer(word);std::vector<int> tokens;
                     while(args>>word)tokens.push_back(integer(word));
                     auto hidden=model.prefill_long(tokens,chunk);
-                    std::printf("%d\n",sampler.sample(model.logits(std::move(hidden))));
+                    std::printf("%d\n",next_token(std::move(hidden)));
                 }
                 else if (line.rfind("PREFILL ", 0) == 0 || line.rfind("BATCH ", 0) == 0) {
                     const bool logits = line.rfind("PREFILL ", 0) == 0; std::istringstream args(line.substr(logits ? 8 : 6));
                     std::vector<int> tokens; std::string word; while (args >> word) tokens.push_back(integer(word));
                     if (tokens.empty() || tokens.size() > size_t(context - model.position())) throw std::invalid_argument("empty or oversized prefill");
                     auto hidden = model.prefill_hidden(tokens);
-                    if (logits) std::printf("%d\n", sampler.sample(model.logits(std::move(hidden))));
+                    if (logits) std::printf("%d\n", next_token(std::move(hidden)));
                     else std::puts(".");
                 } else {
                     const bool hidden_only = !line.empty() && line[0] == '+'; const int token = integer(line.substr(hidden_only ? 1 : 0));
-                    if (hidden_only) { model.step_hidden(token); std::puts("."); } else std::printf("%d\n", sampler.sample(model.step(token)));
+                    if (hidden_only) { model.step_hidden(token); std::puts("."); } else std::printf("%d\n", next_token(model.step_hidden(token)));
                 }
                 std::fflush(stdout);
             }

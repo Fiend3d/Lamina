@@ -29,6 +29,10 @@ public:
     std::vector<float> prefill_embeddings(const std::vector<float>& embeddings,
                                           const std::vector<std::array<int, 3>>& positions);
     std::vector<float> logits(std::vector<float> hidden);
+    // Greedy next token without downloading the logits: the first maximum, as
+    // std::max_element over logits(hidden). Returns -1 when the GPU path is
+    // unavailable or a logit is not finite; callers then use logits().
+    int greedy(std::vector<float> hidden);
     std::vector<float> step_hidden_embedding(const std::vector<float>& embedding,
                                             const std::array<int, 3>& positions);
     void reset();

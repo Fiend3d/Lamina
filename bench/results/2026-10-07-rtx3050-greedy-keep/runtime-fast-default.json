@@ -1,0 +1,583 @@
+{
+  "passed": true,
+  "engine": "D:\\projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+  "engine_sha256": "e05e8b354d48afc857719934fa6af602fdadb4935f5a808d20fda0d2d064f882",
+  "kv_type": "f32",
+  "compute_mode": "fast",
+  "vision_engine": "D:\\projects\\lamina\\Lamina\\build-vision\\bin\\Release\\strata-vision.exe",
+  "requests": [
+    {
+      "label": "greedy",
+      "seconds": 2.6843725999933667,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Say hello in one short sentence."
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-f2f7869ccb2045cba9c0bad4e813e08e",
+        "created": 1791403895,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Hello!"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 19,
+          "completion_tokens": 2,
+          "total_tokens": 21
+        }
+      }
+    },
+    {
+      "label": "sample-seed",
+      "seconds": 1.4955232000211254,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Give one short creative greeting."
+          }
+        ],
+        "max_tokens": 32,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "seed": 42
+      },
+      "response": {
+        "id": "chatcmpl-468da266b53747d883b81d6769a6b55f",
+        "created": 1791403898,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Greetings, fellow traveler of the digital ether!"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 18,
+          "completion_tokens": 9,
+          "total_tokens": 27
+        }
+      }
+    },
+    {
+      "label": "sample-seed-repeat",
+      "seconds": 1.158935500017833,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Give one short creative greeting."
+          }
+        ],
+        "max_tokens": 32,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "seed": 42
+      },
+      "response": {
+        "id": "chatcmpl-16701e78eea74d9ebc6eb3a806e64e85",
+        "created": 1791403899,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Greetings, fellow traveler of the digital ether!"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 18,
+          "completion_tokens": 9,
+          "total_tokens": 27
+        }
+      }
+    },
+    {
+      "label": "reset",
+      "seconds": 0.9449096000171266,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Say hello in one short sentence."
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-269d73a1c8524f7484f5b38b0ae96a81",
+        "created": 1791403900,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Hello!"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 19,
+          "completion_tokens": 2,
+          "total_tokens": 21
+        }
+      }
+    },
+    {
+      "label": "long-text",
+      "seconds": 11.102546199981589,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "The vault code for station Amber is LAMINA847263.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\nThe researchers recorded rainfall, temperature, plant growth and the time of each observation before checking the instruments.\n\nWhat is the vault code for station Amber? Reply with the code alone."
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-095dfcf81d164db9bf7d852d0e4630a6",
+        "created": 1791403901,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "LAMINA847263"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 3195,
+          "completion_tokens": 8,
+          "total_tokens": 3203
+        }
+      }
+    },
+    {
+      "label": "sse-unicode",
+      "seconds": 1.2488371000508778,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply exactly: Hello 🌍"
+          }
+        ],
+        "max_tokens": 32,
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        }
+      },
+      "response": {
+        "text": "Hello 🌍",
+        "chunks": [
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "role": "assistant"
+                },
+                "finish_reason": null
+              }
+            ]
+          },
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "content": "Hello"
+                },
+                "finish_reason": null
+              }
+            ]
+          },
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "content": " "
+                },
+                "finish_reason": null
+              }
+            ]
+          },
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {
+                  "content": "🌍"
+                },
+                "finish_reason": null
+              }
+            ]
+          },
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [
+              {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+              }
+            ]
+          },
+          {
+            "id": "chatcmpl-ebd2d5673bf74986b5b88f2dafda591f",
+            "created": 1791403912,
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "object": "chat.completion.chunk",
+            "choices": [],
+            "usage": {
+              "prompt_tokens": 19,
+              "completion_tokens": 4,
+              "total_tokens": 23
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "thinking",
+      "seconds": 5.241354500001762,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is 2 + 3? Answer briefly."
+          }
+        ],
+        "max_tokens": 128,
+        "enable_thinking": true
+      },
+      "response": {
+        "id": "chatcmpl-3f13bb9a15804c94a16dd4a3f743f8c9",
+        "created": 1791403913,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "",
+              "reasoning_content": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - Question: \"What is 2 + 3?\"\n   - Constraint: \"Answer briefly.\"\n\n2.  **Identify Core Task:**\n   - Perform simple addition: 2 + 3 = 5\n   - Keep the response concise as requested.\n\n3.  **Formulate Response:**\n   - Direct answer: \"5\"\n   - Check constraint: Brief? Yes.\n   - Final output: \"5\"\n\n4.  **Self-Correction/Verification:**\n   - Math is"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 21,
+          "completion_tokens": 128,
+          "total_tokens": 149
+        }
+      }
+    },
+    {
+      "label": "json-schema",
+      "seconds": 2.5803613000316545,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Return {\"ok\": true}."
+          }
+        ],
+        "max_tokens": 32,
+        "response_format": {
+          "type": "json_schema",
+          "json_schema": {
+            "name": "answer",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "response": {
+        "id": "chatcmpl-f11eb1a826624de09a51a2f0ea61a318",
+        "created": 1791403919,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "{\"ok\":true}"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 107,
+          "completion_tokens": 5,
+          "total_tokens": 112
+        }
+      }
+    },
+    {
+      "label": "forced-tool",
+      "seconds": 4.880326900049113,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is the weather in Paris?"
+          }
+        ],
+        "max_tokens": 64,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "Get weather in a city.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ],
+        "tool_choice": {
+          "type": "function",
+          "function": {
+            "name": "weather"
+          }
+        }
+      },
+      "response": {
+        "id": "chatcmpl-e958c48c60654222982fa3ad2a0260e9",
+        "created": 1791403921,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_421c33f1058f4598822a5a93abbc0a62",
+                  "type": "function",
+                  "function": {
+                    "name": "weather",
+                    "arguments": "{\"city\": \"Paris\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 295,
+          "completion_tokens": 25,
+          "total_tokens": 320
+        }
+      }
+    },
+    {
+      "label": "ocr",
+      "seconds": 5.913053900003433,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read the text in this image. Reply only with that text."
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "data:image/png;base64,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"
+                }
+              }
+            ]
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-c9abe13da97d4d72b6100acf6498d202",
+        "created": 1791403926,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": " LAMINA 42"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 99,
+          "completion_tokens": 6,
+          "total_tokens": 105
+        }
+      }
+    },
+    {
+      "label": "multiple-images",
+      "seconds": 8.182910799980164,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read both images. Reply with the two words."
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "data:image/png;base64,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3dK8/zt00TOAnTkEvDT927N2hYWFX79+lWzJ7XZv2rSprKystLRU83pJSKNnADtzGrTdQCBQUFCgKLrd7nnz5v3RdubPn+92uxUzW3/58qWwsDA9PV2yrvDwcJfLFR0d3bdv3/79+8fGxo4aNSopKWnMmDFhYWGSFdEzgM0ZFUg+n6+urk5RbGxsjIiI0GX7Ho8nFAPJ6/Vu3Lgx2KMQFD0D2JzDtJkx9XXv3r3KykpDdwGT0TOAzRkSSPX19T6fTzIYtzZYCT0DwJBAKigo8Pv9Rv9yjx8//vHjR6P3AnPQMwAcpt0rpbumpqbDhw+bsCOYgJ4BoP9NDZWVlQ8fPlQUY2Jixo4d25nNPn36tLa2VlH0eDxbt27tzGYhAnoGgCF32Wl+1d2yZUtWVlZnNnvkyBH1M0xVVVWlpaUzZszozJYRdPQMAP1vamhpaSkqKlLXOz5/3c8sX768Z8+e6rrH4+nklhFc9AwAQwKpuLhYfaNBUlJSbGxsJ7ccGRmp+YakkydPNjQ0dHLjCCJ6BoAhgaR57qXzE2622bx5s7r47ds3c66HwyD0DAD9A6mmpqakpERRdLlcq1at0mX78fHxkyZNUtdzcnJkWdZlFzAZPQPAkEDKz89vbW1VFBctWtSjRw+9dqF5kPT8+fMrV67otQuYiZ4BoH8gybKcn59v3Pm6NqtXr+7evbu6zqwNoYieAWBIIF2/fr26ulpR7N+/v+YbxP9aVFTUmjVr1PWzZ8+qn1KC4OgZAIYEkubMmGlpaV26dJF0pXnWLhAIHDhwQN8dwWj0DAD9A+nz58/FxcVGn69rM2HCBM1JH3Jzc9VXsH5mwIABYTrp5AO/thVyPQMgNAKpqKioqalJURw3blx8fLxkAM2DpJqaGhOmGIde6BkAhgSSoY+SqKWlpXXr1k1d59aGEELPANA/kB4/fnz79m1F0el0pqamSsaIiYlZsWKFun7x4sWamhqDdgod0TMADAkkzUvTKSkpffr0kQyjedautbU1JyfHuJ1CL/QMAP0D6cePHwUFBUbMpvprU6dOjYuLU9cPHjwYCAQM3TU6iZ4BoCmMSXcAAJZ9YywAAH+KQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgAIgUACAAiBQAIACIFAAgBIIvgX8pCGlQng0GUAAAAASUVORK5CYII="
+                }
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "data:image/png;base64,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fn7+mTNnptbP9u3b5TAw3BS7jo6OEydOKIoFBQUOh2OSR0hMTFy9erW6zkUSAANfIcXExMTHxzscjrS0tLy8vC1btpSXl3d2djY1NTmdTvX+g4ODhYWFPBJJl+kMdx21q62t/euvv4JoDUDUESiQNFkslpUrV546derll19Wb+3s7Hzvvff06MsM/H5/dXW1opiYmJifn39PxykoKJj4wKSAmzdv1tbWBt0jgCgieiAFWK1Wj8fz3HPPqTft2bPn2rVrejRleF6vt6+vT1EcGBiYPn265V7ExsYODAyoj89aqwBMGEiBSyW32/3AAw8o6sPDw1VVVTo1ZbbVVEPr9OnT7e3tYT0FADMxTCAFHoC0detWdb2pqUmPdoytv7/f6/WG+yxMbQBgzkAKrD+tLra1tSkeToG7qq6uvnXrVrjfqM8++2xwcJCPA4AJA2nBggXqu15u3rzJ10ghmV8XckNDQ/v374/AiQCYgCiPn5gkm802a9as/v5+Rf3atWvqJ23jdtrb28+ePaso2u32jIyMYN60ixcv9vb2Korl5eWvvfYanwUAswVS4HYldZEhu+Avj0pLSz/44IOpfzCSVFNTo76HqaOj49ixY7m5ucEcGUA0MNiQnd/v1xyd4+mxkzcyMlJXV6euT379uttxuVyzZs1S15n/DcCEgdTR0TE6OqooJiQkzJ49W6eOjKehoUE90SArKystLS3II8fFxWk+IengwYN//vlnkAcHYHoGC6RDhw6pi06n02Kx6NGOecbrNm/eHJKDv/LKK+riP//8E5k5FAAMzUiB5PP5PvnkE3V9xYoVerRjSD09Pc3NzYpibGxsUVFRSI7vdDqfeuopdb2iokKW5ZCcAoBZGSmQSktL1UvdSJL04osv6tGOIVVVVakngBQWFs6cOTNUp9C8SPrtt9+++eabUJ0CgCkZI5BkWX777bdramrUm3JzczXXAofm26i5zFKoxusC1q9ff//996vrrNoAwPCBdPr06fz8/J07d2pu3bFjR8Q7MqqWlpZLly4pirNnz165cmUIzzJjxowNGzao619++aX6LiUAEDSQZFn2+/03btzo7u5uaWnZsWPH0qVLMzMzGxsbNfcvKirKy8uLeJumWk21pKRk2rRpoT2R5qid3+/fu3dvaE8EwEwidGPsnDlzQn7MuXPnfvzxx1N77c5/SWFz7ty59PR0SSQ3btxoaGgI93hdwMKFCzMyMn7++WdF3e12v/XWW5q3NgOAUf80JCcnNzY2Tv5J26irq1M/XffJJ58M0zdwmhdJPT09EVhiHIBBGTKQFixYcPz48Xnz5undiJGE9fYjtZKSkoSEBHWdqQ0ATBJIDodj9+7dJ0+eTE1N1bsXIzl//nxbW5uiaLVai4uLw3RGu92uOR2/sbGxp6cnTCcFYGjGCKRp06bl5OSUlZV1d3e/+eab6idQYArTGVavXp2UlBS+t05z1G58fLyioiJ8JwVgXGKt9h0TE2Oz2RISEhwOR3JyckpKSlpa2sKFC59++mm+LpqysbGx6urqcKymemfZ2dnz5s07d+6cou7xeN59912rVazfPQC6s7CgCwBABMYYsgMAmB6BBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEABACgQQAEAKBBAAQAoEEAJBE8D9XXfF+8lb/WgAAAABJRU5ErkJggg=="
+                }
+              }
+            ]
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-06cb4c39476245b1b8608d9b00df8a7c",
+        "created": 1791403932,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "ALPHA BETA"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 170,
+          "completion_tokens": 4,
+          "total_tokens": 174
+        }
+      }
+    },
+    {
+      "label": "recover-after-cancel",
+      "seconds": 2.630366099998355,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Say hello in one short sentence."
+          }
+        ],
+        "max_tokens": 32
+      },
+      "response": {
+        "id": "chatcmpl-393b2c8ef2e34f3fbfe3e5da5d78f0f5",
+        "created": 1791403941,
+        "model": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Hello!"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 19,
+          "completion_tokens": 2,
+          "total_tokens": 21
+        }
+      }
+    }
+  ]
+}

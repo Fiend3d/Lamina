@@ -7,13 +7,19 @@ gaps, profiling requirements, scheduling work and acceptance gates.
 
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched
-comparison measured **31.24 tokens/s for Lamina versus 28.56 for CUDA
+comparison measured **35.84 tokens/s for Lamina versus 28.56 for CUDA
 llama.cpp b11474**, ahead in prose, code and math. The **40 tokens/s target is
 not met**; prefill is still slower than llama.cpp; no Strata parity is claimed.
 Exact commands, the stage timeline that drove the work, fixed bugs and limits
 are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
 and [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md),
-which also lists the remaining per-token costs and a measured dead end.
+which also lists the remaining per-token costs and a measured dead end, and
+[the host-path update](../bench/results/2026-10-07-rtx3050-host-path/README.md) and
+[the greedy and cache update](../bench/results/2026-10-07-rtx3050-greedy-keep/README.md).
+Greedy requests select the token on the GPU (`Inference::greedy`). In fast
+CPU-miss mode, prefill keeps each layer's top prompt experts (`LAMINA_BASE_KEEP`)
+and drops other routed base entries when it finishes, so fast-mode output is
+repeatable across requests.
 The RTX 4060 machine of the earlier records (llama.cpp 25.47 versus Lamina
 16.40 before this work, see [that comparison](../bench/results/2026-10-07-llama-cuda/README.md)
 and [validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md)) has not

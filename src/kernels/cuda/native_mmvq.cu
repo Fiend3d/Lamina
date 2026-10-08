@@ -1469,12 +1469,14 @@ __global__ void native_q8_table_kernel(Group table, int n_in) {
     }
 }
 
-// One warp per row, four rows per block, for rows whose whole dot product the
-// four-warp kernel above computes in its first warp (n_in / DIV * T <= 32; for
-// example the 512-wide Q4_K/Q5_K expert down projections). Each lane performs
-// the same loads and the same accumulation as that warp's lane, and the three
-// idle warps only contributed zeros, so non-zero results are bitwise equal.
-// It avoids scheduling 96 idle threads and two block barriers per row.
+// One warp per row, four rows per block, for rows the four-warp kernel above
+// covers in a single pass (n_in / DIV * T <= 128: the Q4_K expert gate/up rows
+// and the 512-wide down rows). Each lane emulates the four warps in turn: for
+// virtual warp v it accumulates exactly what thread v * 32 + lane accumulated,
+// then the partials are added in the same order the four-warp kernel adds them
+// (warp 0, then warps 1, 2 and 3) before the same warp reduction. Results are
+// therefore bitwise equal, without two block barriers and a shared-memory
+// reduction for every row of only a few hundred bytes.
 template<typename F, typename Group>
 __global__ void native_q8_table_warp_kernel(Group table, int n_in) {
     const int count=group_count(table),lane=int(threadIdx.x);
@@ -1489,12 +1491,21 @@ __global__ void native_q8_table_warp_kernel(Group table, int n_in) {
         }
         const auto* w=static_cast<const typename F::Block*>(table.weights[matrix]);
         const auto* x=reinterpret_cast<const Q81Block*>(table.inputs[matrix]);
-        float sum=0.f;
-        for(int bx=lane/F::T;bx<blocks;bx+=F::BPI) {
-            const int qs=F::kqs(lane);
-            const auto value=F::load(w+size_t(row)*blocks+bx,qs);
-            sum+=F::apply(value,x+bx*F::KBY,qs);
+        float partial[WARPS];
+#pragma unroll
+        for(int v=0;v<WARPS;++v) {
+            const int tid=v*WARP+lane;
+            float sum=0.f;
+            for(int bx=tid/F::T;bx<blocks;bx+=F::BPI) {
+                const int qs=F::kqs(tid);
+                const auto value=F::load(w+size_t(row)*blocks+bx,qs);
+                sum+=F::apply(value,x+bx*F::KBY,qs);
+            }
+            partial[v]=sum;
         }
+        float sum=partial[0];
+#pragma unroll
+        for(int v=1;v<WARPS;++v)sum+=partial[v];
         sum=warp_sum(sum);
         if(!lane)table.outputs[matrix][row]=sum;
     }
@@ -1503,9 +1514,10 @@ __global__ void native_q8_table_warp_kernel(Group table, int n_in) {
 template<typename F, typename Group>
 void launch_q8_table(const Group& args, int rows, int n_in, cudaStream_t s) {
     const dim3 threads(32, 4);
-    const char* persistent=std::getenv("LAMINA_Q8_PERSISTENT");
-    const bool bounded=persistent && persistent[0]=='1';
-    if ((n_in / F::DIV) * F::T <= 32) {
+    // Read once: these launches run per layer and getenv is slow on Windows.
+    static const bool bounded=[]{ const char* v=std::getenv("LAMINA_Q8_PERSISTENT"); return v && v[0]=='1'; }();
+    static const int warp_limit=[]{ const char* v=std::getenv("LAMINA_WARP_ROWS"); return v && *v ? std::atoi(v) : WARPS*WARP; }();
+    if ((n_in / F::DIV) * F::T <= warp_limit) {
         const int blocks=(rows+3)/4;
         native_q8_table_warp_kernel<F><<<bounded ? std::min(blocks,128) : blocks, threads, 0, s>>>(args, n_in);
     } else native_q8_table_kernel<F><<<bounded ? std::min(rows,128) : rows, threads, 0, s>>>(args, n_in);

@@ -18,6 +18,7 @@ public:
             throw std::invalid_argument("invalid temperature, top_p or top_k");
         temperature_ = temperature; top_p_ = top_p; top_k_ = top_k; random_.seed(seed);
     }
+    bool greedy() const { return temperature_ == 0; }
     int sample(const std::vector<float>& logits) {
         if (logits.empty() || !std::all_of(logits.begin(), logits.end(), [](float v) { return std::isfinite(v); }))
             throw std::runtime_error("non-finite or empty logits");

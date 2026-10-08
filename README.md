@@ -2,13 +2,15 @@
 
 
 Fast mode now runs cache-missed experts on the CPU by default. On an RTX 3050
-8 GB with a Ryzen 7 5700X, the matched comparison measured **31.24 tokens/s for
+8 GB with a Ryzen 7 5700X, the matched comparison measured **35.84 tokens/s for
 Lamina versus 28.56 tokens/s for CUDA llama.cpp b11474** (nine resident-process
 runs, 32K context, FP16 KV), ahead in prose, code and math. The **40 tokens/s
 target is not met**, prefill is still slower than llama.cpp, and this is not a
 matched Strata comparison. See
 [commands, results and limits](bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
-and [the DeltaNet step update](bench/results/2026-10-07-rtx3050-gdn-step/README.md).
+[the DeltaNet step update](bench/results/2026-10-07-rtx3050-gdn-step/README.md)
+[the host-path update](bench/results/2026-10-07-rtx3050-host-path/README.md)
+and [the greedy and cache update](bench/results/2026-10-07-rtx3050-greedy-keep/README.md).
 
 Earlier records from an RTX 4060 machine (where llama.cpp measured 25.47 and
 Lamina 16.40 tokens/s before these changes) are in

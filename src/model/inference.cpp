@@ -842,4 +842,15 @@ std::vector<float> Inference::logits(std::vector<float> x) {
     return matvec(tensor("output.weight"), x);
 }
 
+int Inference::greedy(std::vector<float> x) {
+    const auto& head = tensor("output.weight");
+    // Same condition as matvec's quantized CUDA branch, so the same kernel runs.
+    if (!cuda_ || head.type == 0 || !cuda_->supports(head.type)) return -1;
+    cuda_->finish_prefill();
+    if (x.size() != HIDDEN) throw std::invalid_argument("invalid hidden state for logits");
+    const auto output_norm = vec(tensor("output_norm.weight"));
+    rms(x.data(), output_norm.data(), HIDDEN);
+    return cuda_->matvec_argmax(head, file_.tensor_data(head), x);
+}
+
 }  // namespace lamina::model

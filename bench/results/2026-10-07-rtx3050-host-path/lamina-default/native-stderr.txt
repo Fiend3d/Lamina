@@ -1,0 +1,1 @@
+registered model RAM: 21109.1 MiB, direct expert DMA enabled

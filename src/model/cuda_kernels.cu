@@ -3,6 +3,7 @@
 // libdevice function and the 40-layer parity gate keeps its tolerance.
 
 #include "lamina/model/cuda_kernels.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -444,20 +445,17 @@ __device__ __forceinline__ bool topk_better(float value, int index, float best, 
     return value > best || (value == best && index >= 0 && (best_index < 0 || index < best_index));
 }
 
-// One block (kThreads threads) per column. Each of the k selections is a
-// block-wide argmax over the not-yet-chosen logits. The softmax over the
+// Block-wide top-k for one column (kThreads threads). Each of the k selections
+// is a block-wide argmax over the not-yet-chosen logits. The softmax over the
 // chosen logits runs serially in thread 0, in the original order and on the
 // original values, so ids and weights are bit-identical to the former
-// single-thread kernel.
-__global__ void router_topk_kernel(const float* __restrict__ logits, int n, int k,
-                                   int* __restrict__ ids, float* __restrict__ weights) {
+// single-thread kernel. Shared by router_topk_kernel and router_finish_kernel.
+__device__ void block_router_topk(const float* __restrict__ logits, int n, int k,
+                                  int* __restrict__ ids, float* __restrict__ weights) {
     __shared__ float values[kTopkMaxExperts];
     __shared__ float warp_value[kThreads / 32];
     __shared__ int warp_index[kThreads / 32];
     __shared__ int chosen[kTopkMaxK];
-    logits += size_t(blockIdx.x) * n;
-    ids += size_t(blockIdx.x) * k;
-    weights += size_t(blockIdx.x) * (k + 1);
     for (int i = threadIdx.x; i < n; i += blockDim.x) values[i] = logits[i];
     __syncthreads();
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
@@ -492,10 +490,15 @@ __global__ void router_topk_kernel(const float* __restrict__ logits, int n, int 
     }
 }
 
-__global__ void dot_sigmoid_kernel(const float* __restrict__ a, const float* __restrict__ b,
-                                   int n, float* __restrict__ out, int stride = 1) {
-    b += size_t(blockIdx.x) * n;
-    out += size_t(blockIdx.x) * stride;
+// One block (kThreads threads) per column.
+__global__ void router_topk_kernel(const float* __restrict__ logits, int n, int k,
+                                   int* __restrict__ ids, float* __restrict__ weights) {
+    block_router_topk(logits + size_t(blockIdx.x) * n, n, k, ids + size_t(blockIdx.x) * k,
+                      weights + size_t(blockIdx.x) * (k + 1));
+}
+
+// sigmoid(a . b) over one block; the result is valid in thread 0.
+__device__ float block_dot_sigmoid(const float* __restrict__ a, const float* __restrict__ b, int n) {
     __shared__ float sums[kThreads];
     float partial = 0.0f;
     for (int i = threadIdx.x; i < n; i += blockDim.x) partial += a[i] * b[i];
@@ -505,7 +508,31 @@ __global__ void dot_sigmoid_kernel(const float* __restrict__ a, const float* __r
         if (threadIdx.x < s) sums[threadIdx.x] += sums[threadIdx.x + s];
         __syncthreads();
     }
-    if (threadIdx.x == 0) out[0] = 1.0f / (1.0f + expf(-sums[0]));
+    return 1.0f / (1.0f + expf(-sums[0]));
+}
+
+__global__ void dot_sigmoid_kernel(const float* __restrict__ a, const float* __restrict__ b,
+                                   int n, float* __restrict__ out, int stride = 1) {
+    const float value = block_dot_sigmoid(a, b + size_t(blockIdx.x) * n, n);
+    if (threadIdx.x == 0) out[size_t(blockIdx.x) * stride] = value;
+}
+
+// The decode router tail in one launch: shared-expert gate, top-k, optional
+// publication of the expert input for CPU experts, then the doorbell. Each
+// part runs the same arithmetic as its separate kernel. Every thread fences its
+// mapped-memory writes before the block barrier that precedes the flag.
+__global__ void router_finish_kernel(const float* __restrict__ logits, int n, int k,
+                                     int* __restrict__ ids, float* __restrict__ weights,
+                                     const float* __restrict__ gate_weight, const float* __restrict__ x,
+                                     int n_in, float* __restrict__ shared_out,
+                                     float* __restrict__ publish, int* flag, int value) {
+    const float shared = block_dot_sigmoid(gate_weight, x, n_in);
+    if (threadIdx.x == 0) *shared_out = shared;
+    block_router_topk(logits, n, k, ids, weights);
+    if (publish) for (int i = threadIdx.x; i < n_in; i += blockDim.x) publish[i] = x[i];
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) atomicExch(flag, value);
 }
 
 __global__ void doorbell_signal_kernel(int* flag, int value) {
@@ -663,6 +690,15 @@ void router_topk(const float* logits, int n, int k, int* ids, float* weights, vo
     router_topk_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(logits, n, k, ids, weights);
 }
 
+void router_finish(const float* logits, int n, int k, int* ids, float* weights,
+                   const float* gate_weight, const float* x, int n_in, float* shared_out,
+                   float* publish, int* flag, int value, void* stream) {
+    if (n < 1 || n > kTopkMaxExperts || k < 1 || k > kTopkMaxK || k > n || n_in < 1)
+        throw std::invalid_argument("router finish shape");
+    router_finish_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+        logits, n, k, ids, weights, gate_weight, x, n_in, shared_out, publish, flag, value);
+}
+
 void router_topk_columns(const float* logits, int columns, int* ids, float* scales, void* stream) {
     router_topk_kernel<<<columns, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(logits, 256, 8, ids, scales);
 }
@@ -760,6 +796,67 @@ void kv_store(const float* source, void* destination, int elements, bool half, v
 
 void dot_sigmoid(const float* a, const float* b, int n, float* out, void* stream) {
     dot_sigmoid_kernel<<<1, kThreads, 0, static_cast<cudaStream_t>(stream)>>>(a, b, n, out);
+}
+
+__global__ void publish_expert_tables_kernel(const ExpertPublish args,
+                                             strata::kernels::NativeF32Grouped* __restrict__ tables,
+                                             float* __restrict__ scales) {
+    const int t = threadIdx.x;
+    for (int g = 0; g < 4; ++g) {
+        if (t == 0) { tables[g].count = args.counts[g]; tables[g].clear_missing = 0; }
+        if (t < args.counts[g]) {
+            tables[g].weights[t] = args.weights[g][t];
+            tables[g].inputs[t] = args.inputs[g][t];
+            tables[g].outputs[t] = args.outputs[g][t];
+            tables[g].n_outs[t] = args.n_outs[g][t];
+        }
+    }
+    if (t < args.scale_count) scales[t] = args.scales[t];
+}
+
+void publish_expert_tables(const ExpertPublish& args, void* tables, float* scales, void* stream) {
+    static_assert(sizeof(ExpertPublish) <= 4000, "expert publication exceeds the kernel parameter limit");
+    static_assert(kPublishItems <= 64 && kPublishScales <= 64, "publication exceeds a block or a table");
+    publish_expert_tables_kernel<<<1, 64, 0, static_cast<cudaStream_t>(stream)>>>(
+        args, static_cast<strata::kernels::NativeF32Grouped*>(tables), scales);
+}
+
+__global__ void argmax_f32_kernel(const float* __restrict__ x, int n, int* __restrict__ result) {
+    __shared__ float warp_value[1024 / 32];
+    __shared__ int warp_index[1024 / 32];
+    __shared__ int nonfinite;
+    if (threadIdx.x == 0) nonfinite = 0;
+    __syncthreads();
+    float best = -INFINITY;
+    int index = -1;
+    bool bad = false;
+    // Each thread scans increasing indices, keeping the first maximum.
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = x[i];
+        if (!isfinite(v)) bad = true;
+        else if (index < 0 || v > best) { best = v; index = i; }
+    }
+    if (bad) atomicExch(&nonfinite, 1);
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        const float other = __shfl_down_sync(0xffffffffu, best, offset);
+        const int other_index = __shfl_down_sync(0xffffffffu, index, offset);
+        if (topk_better(other, other_index, best, index)) { best = other; index = other_index; }
+    }
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if (lane == 0) { warp_value[warp] = best; warp_index[warp] = index; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        best = -INFINITY; index = -1;
+        for (int w = 0; w < int(blockDim.x) / 32; ++w)
+            if (topk_better(warp_value[w], warp_index[w], best, index)) { best = warp_value[w]; index = warp_index[w]; }
+        result[0] = index;
+        result[1] = nonfinite;
+    }
+}
+
+void argmax_f32(const float* x, int n, int* result, void* stream) {
+    if (n < 1) throw std::invalid_argument("argmax of an empty vector");
+    argmax_f32_kernel<<<1, 1024, 0, static_cast<cudaStream_t>(stream)>>>(x, n, result);
 }
 
 __global__ void copy_f32_kernel(const float* __restrict__ source, float* __restrict__ destination, int n) {
