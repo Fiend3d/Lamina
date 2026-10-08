@@ -41,6 +41,18 @@ measured fast configuration (fast compute, FP16 device KV, MTP, host
 registration with at least 48 GB of RAM). The manual commands are in
 `docs/ADVANCED.md`.
 
+GPU memory pressure: `allocate` used to give up ("VRAM working set exceeds
+available headroom") once `evict_oldest()` found nothing, although the admission
+pool (`admit_lru`, up to 2 GB) and the kept prompt experts (`keep_lru`, about
+0.9 GB) were still evictable. Reported by a user on the 128K setting of an 8 GB
+card; reproduced with growing prompts at `--max-context 131072` (the engine died
+during the 32K-token prompt). `reclaim_cached()` now evicts those as well and
+prints one note; with it the same session completes, and so does a 64K-token
+prompt (177 s to the first token, 18 tokens/s afterwards). Ordinary runs are
+bit-identical because the path only runs under pressure. The per-request
+speculation line is now opt-in (`LAMINA_SPEC_STATS=1`; `compare_lamina` sets it),
+because it piled up in the client's error text.
+
 Start here. Lamina targets the pinned Qwen3.6-35B-A3B UD-Q4_K_M GGUF,
 architecture `qwen35moe`. Strata baseline is
 `6f32ec070f23ced9f50e704d854d775da52591ab`. Model, tokenizer, mmproj,

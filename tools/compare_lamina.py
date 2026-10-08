@@ -32,6 +32,7 @@ def main():
     a = p.parse_args()
     a.report_dir.mkdir(parents=True, exist_ok=True)
     os.environ["LAMINA_HOST_REGISTER"] = a.host_register
+    os.environ.setdefault("LAMINA_SPEC_STATS", "1")  # the engine's per-request speculation line, kept in native-stderr.txt
     command = [str(a.engine.resolve()), str(data / "models" / FILENAME), "--cuda", "--compute-mode", "fast",
                "--kv-type", "f16", "--kv-cache", "device", "--max-context", str(a.context)]
     if a.mtp:

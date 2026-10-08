@@ -70,7 +70,7 @@ three quarters of an English word.
 | 8K | 6,000 words | Short questions; leaves the most VRAM for speed. |
 | **32K (recommended)** | 24,000 words | Normal chats and medium documents. |
 | 64K | 48,000 words | Long documents. |
-| 128K | 96,000 words | Very long documents; generation is slower because the context memory takes about 2.5 GB of VRAM. |
+| 128K | 96,000 words | Very long documents. The context memory grows with the conversation to about 2.7 GB of VRAM and generation slows down: on an RTX 3050 a 64K-token prompt took about 3 minutes to read, then 18 tokens per second. Prompts beyond 64K are untested on 8 GB GPUs. |
 
 **MTP speculative decoding** uses a small extra part of the model (its
 multi-token-prediction head) to guess the next token in advance. The model
@@ -127,7 +127,7 @@ requests with temperature 0; other requests run at the normal speed.
 | "No NVIDIA GPU found" | Install or update the NVIDIA driver; `nvidia-smi` must work in a terminal. |
 | The build fails | Check that Visual Studio 2022 with "Desktop development with C++" and Git are installed, then run `.\START-HERE.bat setup` again. |
 | A download stopped | Run the same command again; downloads resume. |
-| Out of GPU memory, or the engine exits | Close other programs that use the GPU, or run `.\START-HERE.bat --reconfigure` and pick a shorter context. |
+| Out of GPU memory, or the engine exits | Close other programs that use the GPU (browsers and video players take GPU memory), or run `.\START-HERE.bat --reconfigure` and pick a shorter context. When memory runs low Lamina now releases cached experts and keeps going, slower, with one "GPU memory is low" note in its log. |
 | Generation is slower than expected | With less than 48 GB of RAM the model cannot be pinned, which costs speed. Other GPU work (games, video) also competes. |
 | "prompt and response exceed the context" | Type `/new` to start a fresh conversation, or choose a longer context. |
 

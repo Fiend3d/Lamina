@@ -744,11 +744,44 @@ struct CudaProjection::Impl {
         }
     }
 
+    // Evicts the oldest unleased entry of the admission pool or of the kept
+    // prompt experts. evict_oldest() never touches these lists, but they are
+    // caches too: a missing expert simply runs on the CPU.
+    bool evict_pool_entry(std::list<std::string>& list, bool admitted) {
+        for (auto it = list.begin(); it != list.end(); ++it) {
+            const auto entry = weights.find(*it);
+            if (entry == weights.end() || leases.contains(entry->second.device)) continue;
+            device_release(entry->second.device, entry->second.bytes);
+            cached_bytes -= entry->second.bytes; stat_evicted += entry->second.bytes;
+            if (admitted) admitted_bytes -= entry->second.bytes;
+            weights.erase(entry);
+            list.erase(it);
+            return true;
+        }
+        return false;
+    }
+    // Frees one cached expert under memory pressure: plain cache first, then the
+    // admission pool, then the kept experts. Before this, a long-context session
+    // (a growing KV cache and workspaces after the pools had filled) died with
+    // "VRAM working set exceeds available headroom" while about 3 GB of pooled
+    // experts could have been released.
+    bool reclaim_cached() {
+        if (evict_oldest()) return true;
+        const bool freed = evict_pool_entry(admit_lru, true) || evict_pool_entry(keep_lru, false);
+        static bool noted = false;
+        if (freed && !noted) {
+            noted = true;
+            std::fprintf(stderr, "lamina: GPU memory is low; releasing cached experts to keep running "
+                                 "(a shorter --max-context or closing other GPU programs avoids this)\n");
+        }
+        return freed;
+    }
+
     void allocate(void** pointer, size_t bytes) {
         if (bytes > memory_limit) throw std::runtime_error("allocation exceeds Lamina VRAM budget");
         if (allocated_bytes + bytes > memory_limit) trim_free();
         while (allocated_bytes + bytes > memory_limit) {
-            if (!evict_oldest()) throw std::runtime_error("Lamina VRAM budget cannot hold pinned weights and state; use --kv-cache host or a larger budget");
+            if (!reclaim_cached()) throw std::runtime_error("Lamina VRAM budget cannot hold pinned weights and state; use --kv-cache host, a shorter --max-context or a larger budget");
             trim_free();
         }
         size_t available = 0, total = 0;
@@ -757,7 +790,7 @@ struct CudaProjection::Impl {
             trim_free();
             check(cudaMemGetInfo(&available, &total), "inspect allocation headroom");
             if (bytes + 512 * MIB <= available) break;
-            if (!evict_oldest()) throw std::runtime_error("VRAM working set exceeds available headroom (request=" + std::to_string(bytes / MIB) + " MiB, free=" + std::to_string(available / MIB) + " MiB); use --kv-cache host or --kv-type f16");
+            if (!reclaim_cached()) throw std::runtime_error("VRAM working set exceeds available headroom (request=" + std::to_string(bytes / MIB) + " MiB, free=" + std::to_string(available / MIB) + " MiB); use --kv-cache host, a shorter --max-context or --kv-type f16");
         }
         check(cudaMalloc(pointer, bytes), "allocate bounded device memory");
         ++stat_mallocs;

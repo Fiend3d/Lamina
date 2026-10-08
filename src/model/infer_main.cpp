@@ -170,7 +170,9 @@ int main(int argc, char** argv) {
                     const auto tokens = model.generate_greedy(token, last_hidden, count);
                     for (size_t i = 0; i < tokens.size(); ++i) std::printf(i ? " %d" : "%d", tokens[i]);
                     std::puts("");
-                    if (model.has_mtp()) {
+                    // Opt-in: one line per request piles up in the client's error text.
+                    static const bool spec_stats = [] { const char* v = std::getenv("LAMINA_SPEC_STATS"); return v && v[0] == '1'; }();
+                    if (spec_stats && model.has_mtp()) {
                         const auto& s = model.spec_stats();
                         std::fprintf(stderr, "speculation steps=%llu accepted=%llu rate=%.3f backoffs=%llu draft_ms=%.3f verify_ms=%.3f\n",
                                      static_cast<unsigned long long>(s.steps), static_cast<unsigned long long>(s.accepted),

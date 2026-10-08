@@ -33,8 +33,19 @@ CONTEXTS = [
     (8192, "8K    short chats, most VRAM left for experts"),
     (32768, "32K   recommended"),
     (65536, "64K   long documents"),
-    (131072, "128K  very long documents; KV cache takes about 2.5 GiB of VRAM, decode is slower"),
+    (131072, "128K  very long documents; the context memory alone grows to about 2.7 GiB, decode is slower"),
 ]
+SMALL_GPU_MIB = 9000  # up to 8 GB cards: GPU memory gets tight at 128K
+
+
+def context_menu(vram_mib):
+    lines = []
+    for i, (context, text) in enumerate(CONTEXTS, 1):
+        if vram_mib <= SMALL_GPU_MIB and context == 131072:
+            text += ("\n       works on %.0f GB GPUs but slowly: reading a 64K-token prompt takes about 3 minutes;"
+                     "\n       prompts beyond 64K are untested" % (vram_mib / 1024))
+        lines.append(f"  {i}) {text}")
+    return lines
 
 
 def step(title):
@@ -106,8 +117,7 @@ def ask(config, reconfigure):
         choice = 2
         if interactive:
             print("\nHow much context (prompt plus answer) should Lamina support?")
-            for i, (_, text) in enumerate(CONTEXTS, 1):
-                print(f"  {i}) {text}")
+            print("\n".join(context_menu(gpu()[2])))
             answer = prompt("Choose 1-4 [2]: ")
             choice = int(answer) if answer in ("1", "2", "3", "4") else 2
         config["max_context"] = CONTEXTS[choice - 1][0]
