@@ -298,7 +298,6 @@ class Engine:
                     else:
                         self._cache_prefix = []
                         self.native.command("RESET", True)
-                    self.native.command(f"SAMPLE {o['temperature']} {o['top_p']} {o['top_k']} {o['seed']}", True)
                     if prefix:
                         if not cached:
                             if len(prefix) > self.prefill_chunk:
@@ -308,6 +307,10 @@ class Engine:
                             self.native.command("CACHE_PREFIX", True)
                             self._cache_prefix = prefix
                         ids = ids[len(prefix):]
+                    # Long prefix PROMPT returns an ignored token. Configure
+                    # sampling afterwards so cache misses cannot consume this
+                    # request's seeded RNG before its first answer token.
+                    self.native.command(f"SAMPLE {o['temperature']} {o['top_p']} {o['top_k']} {o['seed']}", True)
                     if self.cuda and not images and len(ids)>self.prefill_chunk:
                         next_id=self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str,ids)))
                     else:
