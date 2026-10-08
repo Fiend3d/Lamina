@@ -137,8 +137,9 @@ Inference::Inference(const std::string& path, int context, int layers, bool cuda
     if (kv_cache != "auto" && kv_cache != "device" && kv_cache != "host")
         throw std::invalid_argument("kv-cache must be auto, device or host");
     if (layers < 1 || layers > 40) throw std::invalid_argument("layers must be 1..40");
-    if (layers == 40 && file_.file_size() != 22134528992ULL)
-        throw std::runtime_error("GGUF size differs from the pinned Qwen3.6 UD-Q4_K_M artifact");
+    // The exact tensor inventory, shapes and the architecture guard below are the
+    // contract; a byte-size pin is redundant once a permitted in-file MTP layer or
+    // an F32-requantized SSM tensor can change the file size.
     const auto arch_error = strata::check_architecture(file_);
     if (!arch_error.empty()) throw std::runtime_error(arch_error);
     const auto tensor_error = check_qwen36_tensors(file_);

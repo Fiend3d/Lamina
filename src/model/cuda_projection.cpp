@@ -1615,7 +1615,7 @@ bool CudaProjection::supports_gdn(const GdnWeights& w) const {
         !present(w.beta, w.beta_data) || !present(w.a, w.a_data) || !present(w.dt, w.dt_data) ||
         !present(w.conv, w.conv_data) || !present(w.norm, w.norm_data))
         return false;
-    return supports(w.qkv->type) && supports(w.gate->type) && w.qkv->type == w.gate->type &&
+    return supports(w.qkv->type) && supports(w.gate->type) &&
            supports(w.out->type) &&
            w.alpha->type == 0 && w.beta->type == 0 && w.a->type == 0 && w.dt->type == 0 &&
            w.conv->type == 0 && w.norm->type == 0 &&
@@ -1663,15 +1663,30 @@ void CudaProjection::delta_net_core(int layer, const float* x_dev, float* out_de
     impl_->ensure(impl_->g_ssm_out, impl_->g_ssm_out_cap, kHidden);
 
     impl_->tl_mark(kTlGdnProject);
-    // qkv and attn_gate share the activation; one grouped MMVQ dispatch.
-    const void* qkv_gate_weights[2] = {impl_->projection_weight(*w.qkv, w.qkv_data, -1),
-                                       impl_->projection_weight(*w.gate, w.gate_data, -1)};
-    const float* qkv_gate_inputs[2] = {x_dev, x_dev};
-    float* qkv_gate_outputs[2] = {impl_->g_qkv, impl_->g_z};
-    const int qkv_gate_rows[2] = {kChannels, 4096};
-    impl_->decode_group(static_cast<int>(w.qkv->type), qkv_gate_weights,
-                                             qkv_gate_inputs, qkv_gate_outputs, qkv_gate_rows, 2,
-                                             kChannels + 4096, kHidden, impl_->stream);
+    // qkv and attn_gate share the activation: one grouped MMVQ dispatch when the
+    // two weights share an encoding, otherwise dispatch each with its own type
+    // (a differently quantized artifact, e.g. Ornith, mixes Q4_K and Q6_K here).
+    const void* qkv_weight = impl_->projection_weight(*w.qkv, w.qkv_data, -1);
+    const void* gate_weight = impl_->projection_weight(*w.gate, w.gate_data, -1);
+    if (w.qkv->type == w.gate->type) {
+        const void* weights[2] = {qkv_weight, gate_weight};
+        const float* inputs[2] = {x_dev, x_dev};
+        float* outputs[2] = {impl_->g_qkv, impl_->g_z};
+        const int rows[2] = {kChannels, 4096};
+        impl_->decode_group(static_cast<int>(w.qkv->type), weights, inputs, outputs, rows, 2,
+                            kChannels + 4096, kHidden, impl_->stream);
+    } else {
+        const void* wq[1] = {qkv_weight};
+        const float* iq[1] = {x_dev};
+        float* oq[1] = {impl_->g_qkv};
+        const int rq[1] = {kChannels};
+        impl_->decode_group(static_cast<int>(w.qkv->type), wq, iq, oq, rq, 1, kChannels, kHidden, impl_->stream);
+        const void* wg[1] = {gate_weight};
+        const float* ig[1] = {x_dev};
+        float* og[1] = {impl_->g_z};
+        const int rg[1] = {4096};
+        impl_->decode_group(static_cast<int>(w.gate->type), wg, ig, og, rg, 1, 4096, kHidden, impl_->stream);
+    }
     impl_->tl_mark(kTlGdnSmall);
     // alpha and beta are dense F32 projections.
     void* alpha_weight = impl_->weight(*w.alpha, w.alpha_data, -1,
@@ -2527,6 +2542,9 @@ std::vector<float> CudaProjection::moe(const std::vector<float>& x, const MoeWei
     if (x.size() != static_cast<size_t>(n_in))
         throw std::invalid_argument("CUDA MoE activation width");
     impl_->reserve(static_cast<size_t>(n_in), static_cast<size_t>(hidden));
+    // moe_core may delegate to moe_pipeline, which writes its result here before
+    // the serial path's own ensure runs; allocate the output up front.
+    impl_->ensure(impl_->accum_dev, impl_->accum_capacity, static_cast<size_t>(hidden));
     check(cudaMemcpyAsync(impl_->input, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice,
                           impl_->stream), "upload MoE activation");
     moe_core(impl_->input, impl_->accum_dev, routed, experts, weights, shared, shared_weight);
@@ -2743,11 +2761,19 @@ void CudaProjection::pair_delta(int layer, const GdnWeights& w) {
     float* y = impl_->pair(Impl::kPY, 2 * 4096);
     float* mix = impl_->pair(Impl::kPMix, 2 * kHidden);
 
-    const void* weights[2] = {impl_->projection_weight(*w.qkv, w.qkv_data, -1),
-                              impl_->projection_weight(*w.gate, w.gate_data, -1)};
-    float* outputs[2] = {qkv, z};
-    const int rows[2] = {kChannels, 4096};
-    impl_->decode_pair(int(w.qkv->type), weights, x, outputs, rows, 2, kChannels + 4096, kHidden);
+    const void* qkv_weight = impl_->projection_weight(*w.qkv, w.qkv_data, -1);
+    const void* gate_weight = impl_->projection_weight(*w.gate, w.gate_data, -1);
+    if (w.qkv->type == w.gate->type) {
+        const void* weights[2] = {qkv_weight, gate_weight};
+        float* outputs[2] = {qkv, z};
+        const int rows[2] = {kChannels, 4096};
+        impl_->decode_pair(int(w.qkv->type), weights, x, outputs, rows, 2, kChannels + 4096, kHidden);
+    } else {
+        const void* wq[1] = {qkv_weight}; float* oq[1] = {qkv}; const int rq[1] = {kChannels};
+        impl_->decode_pair(int(w.qkv->type), wq, x, oq, rq, 1, kChannels, kHidden);
+        const void* wg[1] = {gate_weight}; float* og[1] = {z}; const int rg[1] = {4096};
+        impl_->decode_pair(int(w.gate->type), wg, x, og, rg, 1, 4096, kHidden);
+    }
     const auto dense = [&](const strata::TensorInfo* t, const uint8_t* data, size_t count) {
         return static_cast<const float*>(impl_->weight(*t, data, -1, count * sizeof(float)));
     };
@@ -2830,11 +2856,22 @@ void CudaProjection::pair_attention(int layer, const AttnWeights& w, int positio
     float* v = impl_->pair(Impl::kPV, 2 * kKv);
     float* ctx = impl_->pair(Impl::kPCtx, 2 * kHeads * kHeadDim);
     float* mix = impl_->pair(Impl::kPMix, 2 * kHidden);
-    const void* weights[3] = {impl_->projection_weight(*w.q, w.q_data, -1), impl_->projection_weight(*w.k, w.k_data, -1),
-                              impl_->projection_weight(*w.v, w.v_data, -1)};
-    float* outputs[3] = {q, k, v};
-    const int rows[3] = {kQ, kKv, kKv};
-    impl_->decode_pair(int(w.q->type), weights, x, outputs, rows, 3, kQ + 2 * kKv, kHidden);
+    const void* q_weight = impl_->projection_weight(*w.q, w.q_data, -1);
+    const void* k_weight = impl_->projection_weight(*w.k, w.k_data, -1);
+    const void* v_weight = impl_->projection_weight(*w.v, w.v_data, -1);
+    if (w.q->type == w.k->type && w.q->type == w.v->type) {
+        const void* weights[3] = {q_weight, k_weight, v_weight};
+        float* outputs[3] = {q, k, v};
+        const int rows[3] = {kQ, kKv, kKv};
+        impl_->decode_pair(int(w.q->type), weights, x, outputs, rows, 3, kQ + 2 * kKv, kHidden);
+    } else {
+        const void* wq[1] = {q_weight}; float* oq[1] = {q}; const int rq[1] = {kQ};
+        impl_->decode_pair(int(w.q->type), wq, x, oq, rq, 1, kQ, kHidden);
+        const void* wk[1] = {k_weight}; float* ok[1] = {k}; const int rk[1] = {kKv};
+        impl_->decode_pair(int(w.k->type), wk, x, ok, rk, 1, kKv, kHidden);
+        const void* wv[1] = {v_weight}; float* ov[1] = {v}; const int rv[1] = {kKv};
+        impl_->decode_pair(int(w.v->type), wv, x, ov, rv, 1, kKv, kHidden);
+    }
     const auto* q_norm = static_cast<const float*>(impl_->weight(*w.q_norm, w.q_norm_data, -1, kHeadDim * sizeof(float)));
     const auto* k_norm = static_cast<const float*>(impl_->weight(*w.k_norm, w.k_norm_data, -1, kHeadDim * sizeof(float)));
     if (size_t(layer) >= impl_->attn_states.size()) impl_->attn_states.resize(size_t(layer) + 1);
@@ -3250,7 +3287,7 @@ bool CudaProjection::supports_attention(const AttnWeights& w) const {
         !present(w.k_norm, w.k_norm_data))
         return false;
     return supports(w.q->type) && supports(w.k->type) && supports(w.v->type) &&
-           w.q->type == w.k->type && w.q->type == w.v->type && supports(w.out->type) &&
+           supports(w.out->type) &&
            w.q_norm->type == 0 && w.k_norm->type == 0 &&
            w.q->shape.size() == 2 && w.q->shape[0] == 2048 && w.q->shape[1] == 8192 &&
            w.k->shape.size() == 2 && w.k->shape[0] == 2048 && w.k->shape[1] == 512 &&
@@ -3281,14 +3318,22 @@ void CudaProjection::attention_into_mix(int layer, const AttnWeights& w, int pos
     void* q_weight = impl_->projection_weight(*w.q, w.q_data, -1);
     void* k_weight = impl_->projection_weight(*w.k, w.k_data, -1);
     void* v_weight = impl_->projection_weight(*w.v, w.v_data, -1);
-    const void* proj_weights[3] = {q_weight, k_weight, v_weight};
-    const float* proj_inputs[3] = {impl_->norm_dev, impl_->norm_dev, impl_->norm_dev};
-    float* proj_outputs[3] = {impl_->a_q, impl_->a_k, impl_->a_v};
-    const int proj_rows[3] = {kQ, kKv, kKv};
     impl_->tl_mark(kTlAttnProject);
-    impl_->decode_group(static_cast<int>(w.q->type), proj_weights, proj_inputs,
-                                             proj_outputs, proj_rows, 3, kQ + 2 * kKv, kHidden,
-                                             impl_->stream);
+    if (w.q->type == w.k->type && w.q->type == w.v->type) {
+        const void* proj_weights[3] = {q_weight, k_weight, v_weight};
+        const float* proj_inputs[3] = {impl_->norm_dev, impl_->norm_dev, impl_->norm_dev};
+        float* proj_outputs[3] = {impl_->a_q, impl_->a_k, impl_->a_v};
+        const int proj_rows[3] = {kQ, kKv, kKv};
+        impl_->decode_group(static_cast<int>(w.q->type), proj_weights, proj_inputs,
+                            proj_outputs, proj_rows, 3, kQ + 2 * kKv, kHidden, impl_->stream);
+    } else {
+        const void* wq[1] = {q_weight}; const float* iq[1] = {impl_->norm_dev}; float* oq[1] = {impl_->a_q}; const int rq[1] = {kQ};
+        impl_->decode_group(static_cast<int>(w.q->type), wq, iq, oq, rq, 1, kQ, kHidden, impl_->stream);
+        const void* wk[1] = {k_weight}; const float* ik[1] = {impl_->norm_dev}; float* ok[1] = {impl_->a_k}; const int rk[1] = {kKv};
+        impl_->decode_group(static_cast<int>(w.k->type), wk, ik, ok, rk, 1, kKv, kHidden, impl_->stream);
+        const void* wv[1] = {v_weight}; const float* iv[1] = {impl_->norm_dev}; float* ov[1] = {impl_->a_v}; const int rv[1] = {kKv};
+        impl_->decode_group(static_cast<int>(w.v->type), wv, iv, ov, rv, 1, kKv, kHidden, impl_->stream);
+    }
     void* q_norm = impl_->weight(*w.q_norm, w.q_norm_data, -1,
                                  static_cast<size_t>(kHeadDim) * sizeof(float));
     void* k_norm = impl_->weight(*w.k_norm, w.k_norm_data, -1,

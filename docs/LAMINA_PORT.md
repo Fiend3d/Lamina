@@ -10,6 +10,14 @@ exact BPE prefix falls back to RESET, as do host KV and image requests. See the
 [conversation-prefix validation](../bench/results/2026-10-09-conversation-prefix/README.md)
 and the earlier [system/tools record](../bench/results/2026-10-08-rtx4060-prefix/README.md).
 
+The same `qwen35moe` graph also runs `Ornith-1.5-35B-A3B` (Q4_K_M) after the
+contract tolerates its in-file MTP layer and the grouped qkv/gate and q/k/v
+dispatches (single and pair) split per encoding; its `ssm_alpha/beta` are
+re-encoded to F32 and its in-file MTP head is packed to an `mtp.*` side file.
+`START-HERE.bat --model ornith` selects it. This is a bring-up with no quality or
+sustained speed claim. See
+[the Ornith bring-up](../bench/results/2026-10-09-ornith-bringup/README.md).
+
 Windows distribution: portable ZIP packaging includes Python, dependencies,
 SM86/89/120 native binaries and CUDA runtime DLLs; source setup can download a
 checksum-verified pinned engine instead of compiling. `--build-source` keeps

@@ -27,6 +27,18 @@ tokens/s), first-token time fell ~2.4 s, and steady decode was unchanged; the
 no-eviction output is byte-identical. See
 [the warm-up hybrid record](../bench/results/2026-10-09-rtx4060ti/README.md).
 
+`Ornith-1.5-35B-A3B` (Q4_K_M, MIT) shares the `qwen35moe` architecture and can
+run on the same graph. The contract tolerates its optional in-file MTP layer
+(`block_count == 40 + nextn_predict_layers`, `blk.40.*` skipped), and the grouped
+qkv/gate and q/k/v dispatches (single and pair) are split per tensor when their
+encodings differ (Ornith mixes Q4_K/Q6_K where the pinned model is uniform).
+`tools/lamina_ornith.py setup` downloads the model, re-encodes its `ssm_alpha/beta`
+to F32 (the DeltaNet path requires it), and packs the in-file MTP head into an
+`mtp.*` side file with `tools/lamina_inline_mtp.py` (`--norms raw`, acceptance
+~0.87). `START-HERE.bat --model ornith` (or `python -m tools.quickstart --model
+ornith`) selects it; the default stays Qwen3.6. Ornith needs the engine built from
+source. See [the Ornith bring-up record](../bench/results/2026-10-09-ornith-bringup/README.md).
+
 v0.1.1 is published as a prerelease from `23f5a84`, authored by Vlad Tatintsev.
 The final extracted portable ZIP passed preload/startup, greedy MTP, streamed
 usage/text/tools/reasoning and prefix reuse after changing the user message,

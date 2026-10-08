@@ -3,6 +3,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -59,12 +60,16 @@ inline std::map<std::string, std::vector<uint64_t>> qwen36_shapes() {
 
 inline std::string check_qwen36_tensors(const strata::GgufFile& file) {
     const auto shapes = qwen36_shapes();
-    if (file.tensors().size() != shapes.size())
-        return "GGUF has " + std::to_string(file.tensors().size()) + " tensors, expected " +
-               std::to_string(shapes.size());
+    // The optional in-file MTP head lives at the text layer count (blk.40.*) with
+    // nextn names Lamina does not run, so skip those tensors. Every expected text
+    // tensor must still be present with the exact shape and a supported encoding.
+    std::set<std::string> seen;
     for (const auto& tensor : file.tensors()) {
         const auto found = shapes.find(tensor.name);
-        if (found == shapes.end()) return "unexpected tensor " + tensor.name;
+        if (found == shapes.end()) {
+            if (tensor.name.rfind("blk.40.", 0) == 0) continue;
+            return "unexpected tensor " + tensor.name;
+        }
         if (tensor.shape != found->second) return "wrong shape for " + tensor.name;
         int block_elements = 0, block_bytes = 0;
         if (!strata::block_geometry(tensor.type, block_elements, block_bytes) ||
@@ -73,7 +78,10 @@ inline std::string check_qwen36_tensors(const strata::GgufFile& file) {
         if (tensor.type != 0 && tensor.type != 8 && tensor.type != 12 &&
             tensor.type != 13 && tensor.type != 14)
             return "tensor encoding is not implemented by Lamina for " + tensor.name;
+        seen.insert(tensor.name);
     }
+    for (const auto& [name, shape] : shapes)
+        if (!seen.count(name)) return "missing tensor " + name;
     return {};
 }
 

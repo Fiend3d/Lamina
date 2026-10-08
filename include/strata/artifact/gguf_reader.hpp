@@ -586,8 +586,13 @@ inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& w
         const char* key;
         uint64_t want;
     };
+    // block_count counts the text layers plus any in-file nextn/MTP layer. The
+    // pinned Qwen3.6 artifact keeps MTP in a separate file (nextn absent, 40);
+    // Ornith-1.5 carries one in-file MTP layer (nextn_predict_layers=1, 41).
+    const MetaValue* nextn = g.get("qwen35moe.nextn_predict_layers");
+    const uint64_t mtp_layers = nextn ? nextn->u : 0;
+    if (mtp_layers > 1) return "qwen35moe.nextn_predict_layers > 1 is not supported";
     const Req reqs[] = {
-        {"qwen35moe.block_count", want.block_count},
         {"qwen35moe.embedding_length", want.hidden},
         {"qwen35moe.expert_count", want.experts},
         {"qwen35moe.expert_used_count", want.experts_used},
@@ -598,6 +603,11 @@ inline std::string check_architecture(const GgufFile& g, const Qwen35MoeGuard& w
         {"qwen35moe.expert_shared_feed_forward_length", want.shared_expert_width},
         {"qwen35moe.full_attention_interval", want.full_attention_interval},
     };
+    const MetaValue* block_count = g.get("qwen35moe.block_count");
+    if (!block_count) return "missing qwen35moe.block_count";
+    if (block_count->u != want.block_count + mtp_layers)
+        return "qwen35moe.block_count = " + std::to_string(block_count->u) + ", expected " +
+               std::to_string(want.block_count) + " text + " + std::to_string(mtp_layers) + " MTP";
     for (const auto& r : reqs) {
         const MetaValue* v = g.get(r.key);
         if (!v) return std::string("missing ") + r.key;
