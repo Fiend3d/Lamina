@@ -108,6 +108,9 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(native.commands.count("CACHE_PREFIX"), 1)
             self.assertEqual(native.commands.count("RESTORE_PREFIX"), 1)
             self.assertEqual(native.commands.count("PREFILL 300"), 2)
+            self.assertLess(native.commands.index("CACHE_PREFIX"),
+                            native.commands.index("SAMPLE 0 1 20 0"),
+                            "ignored long-prefix token must precede request RNG configuration")
             prefix[0] = 999
             list(engine.events([{"role": "user", "content": "Changed"}], 1))
             self.assertEqual(native.commands.count("RESET"), 2)
