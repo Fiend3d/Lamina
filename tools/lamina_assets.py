@@ -1,4 +1,5 @@
 """Fetch pinned chat/vision assets. All data stays outside the source tree."""
+import argparse
 import hashlib
 import urllib.request
 from pathlib import Path
@@ -24,8 +25,10 @@ def verified(path, size, kind, digest):
     return h.hexdigest() == digest
 
 
-def download_assets(data=DATA):
+def download_assets(data=DATA, text_only=False):
     for name, (repo, revision, remote, size, kind, digest) in ASSETS.items():
+        if text_only and name.startswith("vision/"):
+            continue
         target = data / name
         if verified(target, size, kind, digest):
             continue
@@ -52,4 +55,6 @@ def download_assets(data=DATA):
 
 
 if __name__ == "__main__":
-    download_assets()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--text-only", action="store_true", help="skip optional vision assets")
+    download_assets(text_only=parser.parse_args().text_only)

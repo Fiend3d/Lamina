@@ -1,0 +1,54 @@
+name: Lamina Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install developer dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt -r requirements-reference.txt
+      - name: Check pinned release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python -c "import os; from tools.lamina_release import VERSION; assert os.environ['GITHUB_REF_NAME'] == VERSION, 'Update the pinned release version before tagging'"
+      - name: Hardware-free checks
+        run: |
+          python -m unittest discover -s tests/lamina -v
+          cmake -S . -B build-check
+          cmake --build build-check --config Release --target lamina-gguf
+      - name: Install pinned CUDA compiler
+        run: python -m tools.bootstrap_cuda
+      - name: Build portable RTX 30, 40 and 50 binaries
+        run: python -m tools.build_windows --portable --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
+      - name: Sampling check
+        run: ../Lamina-data/release-build/lamina-sampling-check.exe
+      - name: Package embedded Python and runtime DLLs
+        run: python -m tools.package_windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lamina-windows-x64
+          path: |
+            ../Lamina-data/releases/lamina-windows-x64-*.zip
+            ../Lamina-data/releases/lamina-windows-x64-*.zip.sha256
+      - name: Create draft release for GPU validation
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:GITHUB_REF_NAME --json isDraft > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME ../Lamina-data/releases/lamina-windows-x64-*.zip ../Lamina-data/releases/lamina-windows-x64-*.zip.sha256 --draft --title "Lamina $env:GITHUB_REF_NAME" --notes-file docs/RELEASE_NOTES.md
+          } else {
+            Write-Output 'Release already exists; CI assets remain available as workflow artifacts.'
+          }

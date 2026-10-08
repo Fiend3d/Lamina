@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,9 +23,12 @@ def main():
     parser.add_argument("--cuda-root", type=Path, default=DATA / "toolchains/cuda")
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--vision", action="store_true", help="also build the pinned CPU image encoder")
+    parser.add_argument("--portable", action="store_true", help="AVX2 baseline and static MSVC runtime for release packages")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cuda-arch", default="89", help="CMAKE_CUDA_ARCHITECTURES (89 = RTX 4060, 86 = RTX 3050/3060/3090)")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9]+(?:-(?:real|virtual))?(?:;[0-9]+(?:-(?:real|virtual))?)*", args.cuda_arch):
+        parser.error("--cuda-arch must be a semicolon-separated list of CUDA architectures")
     if os.name != "nt": parser.error("this helper is for Windows")
     vswhere = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
     visual_studio = subprocess.check_output([str(vswhere), "-latest", "-products", "*", "-requires",
@@ -42,16 +46,17 @@ def main():
     ninja_path = Path(ninja.BIN_DIR) / "ninja.exe"
     args.build_dir.mkdir(parents=True, exist_ok=True)
     configure = f"cmake -S {quoted(ROOT)} -B {quoted(args.build_dir.resolve())} -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM={quoted(ninja_path)}"
+    configure += f" -DSTRATA_PORTABLE={'ON' if args.portable else 'OFF'}"
     targets = "lamina-gguf lamina-infer lamina-sampling-check"
     if not args.cpu:
-        configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DLAMINA_CPU_QUANT=ON -DCMAKE_CUDA_ARCHITECTURES={args.cuda_arch} -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
+        configure += f" -DLAMINA_ENABLE_CUDA=ON -DLAMINA_PREFILL_BLAS=ON -DLAMINA_CPU_QUANT=ON -DCMAKE_CUDA_ARCHITECTURES={quoted(args.cuda_arch)} -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())}"
         targets += " lamina-cuda-projection-check lamina-cuda-ncols-check lamina-cuda-elementwise-check lamina-cuda-attention-check lamina-prefill-check lamina-kv-precision-check lamina-quality-check"
     else: configure += " -DLAMINA_ENABLE_CUDA=OFF -DLAMINA_PREFILL_BLAS=OFF -DLAMINA_CPU_QUANT=OFF"
     commands = ["@echo off", "call " + quoted(Path(visual_studio) / "VC/Auxiliary/Build/vcvars64.bat"),
                 "if errorlevel 1 exit /b 1", configure, "if errorlevel 1 exit /b 1",
                 f"cmake --build {quoted(args.build_dir.resolve())} --target {targets} -j {args.jobs}", "if errorlevel 1 exit /b 1"]
     if args.vision:
-        commands += [f"cmake -S {quoted(ROOT / 'tools/vision')} -B {quoted(ROOT / 'build-vision')} -DLLAMA_DIR={quoted(source)} -DSTRATA_VISION_CUDA=OFF -DCMAKE_BUILD_TYPE=Release",
+        commands += [f"cmake -S {quoted(ROOT / 'tools/vision')} -B {quoted(ROOT / 'build-vision')} -DLLAMA_DIR={quoted(source)} -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE={'ON' if args.portable else 'OFF'} -DCMAKE_BUILD_TYPE=Release",
                      "if errorlevel 1 exit /b 1", f"cmake --build {quoted(ROOT / 'build-vision')} --config Release --target strata-vision -j {args.jobs}"]
     commands += ["exit /b %errorlevel%"]
     script = args.build_dir.resolve() / "build-lamina.cmd"

@@ -1,5 +1,12 @@
 # Qwen3.6 port status
 
+Windows distribution: portable ZIP packaging includes Python, dependencies,
+SM86/89/120 native binaries and CUDA runtime DLLs; source setup can download a
+checksum-verified pinned engine instead of compiling. `--build-source` keeps
+the developer path. See [Windows releases](WINDOWS_RELEASE.md). The first ZIP
+supports text/tools/reasoning; the optional image encoder is excluded. Compiled
+GPU coverage does not establish runtime correctness on all those GPUs.
+
 
 Fast mode now runs cache-missed experts on the CPU by default. On an RTX 3050
 8 GB machine the matched comparison measured **35.84 tokens/s for Lamina versus

@@ -13,43 +13,24 @@ the terminal or use it as an OpenAI-compatible server.
 
 ## What you need
 
-The setup script installs everything else (Python packages, the CUDA compiler,
-the model). These must already be on the machine:
-
-| Requirement | Details |
-| --- | --- |
-| Windows 10 or 11, 64-bit | Other systems need the manual build in [docs/ADVANCED.md](docs/ADVANCED.md). |
-| NVIDIA GPU, RTX 30 series or newer | 8 GB of VRAM or more, with a current driver. |
-| 64 GB of RAM recommended | With 48 GB or more Lamina pins the model in RAM for faster GPU transfers. Less RAM is untested and will be slower. |
-| About 40 GB of free disk space | Model 22 GB, MTP head 2.5 GB during packing, CUDA compiler and build files. |
-| [Python 3.11 or newer](https://www.python.org/downloads/) | Tick "Add python.exe to PATH" in the installer. |
-| [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/) | Select the "Desktop development with C++" workload; it includes CMake and Ninja. |
-| [Git](https://git-scm.com/download/win) | Used to fetch one pinned dependency during the build. |
+The portable release includes Python, the engine and its runtime libraries.
+You need Windows 10/11 x64, an AVX2-capable CPU (with FMA/F16C/BMI2), an NVIDIA
+RTX 30/40/50 GPU with at least 8 GB VRAM and a CUDA 13.3-compatible driver,
+64 GB RAM recommended, and about 40 GB of free disk space. Internet is needed
+for the initial model download. No Visual Studio, Git, Python installation or
+CUDA toolkit is needed to use the portable ZIP.
 
 ## Quick start
 
-Download or clone this repository, then double-click `START-HERE.bat` or run
-it from a terminal in the repository folder:
+Download **`lamina-windows-x64-portable.zip`** from
+[GitHub Releases](https://github.com/Fiend3d/Lamina/releases), extract it into a
+writable folder, then double-click **`START-HERE.bat`**. Extract the whole ZIP;
+do not run the launcher inside it.
 
-```powershell
-.\START-HERE.bat
-```
-
-The first run asks two questions (see below), then sets everything up and starts
-the model server. All downloaded and generated files go to the sibling folder
-`..\Lamina-data`, never into the repository. The first run takes a while:
-
-1. It creates a Python environment and installs packages (a few minutes).
-2. It downloads the 22 GB model; an interrupted download resumes.
-3. It installs the CUDA compiler into `..\Lamina-data` and builds the engine for
-   your GPU, which it detects automatically (the first build can take 10-30 minutes).
-4. If you enabled MTP, it downloads and packs the MTP head (about 1.6 GB).
-
-If a step fails, fix the cause shown in the message and run the same command
-again; finished steps are skipped. Later starts skip setup.
-
-When everything is loaded, the window shows the address to use. Loading the
-model takes up to a minute or two, during which the PC can be slow:
+The first run asks for context length and MTP, then downloads the 22 GB model,
+tokenizer and optional MTP head. Downloads and settings go into the sibling
+`..\Lamina-data` folder. It starts the server when ready; later launches reuse
+the downloaded files. No engine compilation happens on the user's PC.
 
 ```text
  Lamina is ready.
@@ -59,13 +40,17 @@ model takes up to a minute or two, during which the PC can be slow:
    API key  : anything (it is not checked)
 ```
 
-Leave the window open while you use the model, and close it (or press Ctrl+C)
-to stop the server. Add the base URL as an "OpenAI-compatible" provider in a
-coding agent such as [pi](#connecting-pi-and-other-apps) or in any other app.
+Leave the window open while using the model; close it or press Ctrl+C to stop.
+Connect a coding agent such as [pi](#connecting-pi-and-other-apps) or another
+OpenAI-compatible app. Run `START-HERE.bat chat` for terminal chat.
+The first portable release includes text, tools and reasoning. The optional
+image encoder requires the developer setup.
 
-To talk to the model right in the terminal instead, run
-`.\START-HERE.bat chat`. Type a message and press Enter; `/new` starts a new
-conversation and `/exit` quits. Each answer ends with its length and speed.
+If using a **source checkout**, install Python 3.11 or newer and run
+`START-HERE.bat`. Setup installs runtime Python packages and downloads the pinned
+prebuilt engine. To compile locally, use `START-HERE.bat setup --build-source`;
+that requires the C++ build tools described in [the manual setup](docs/ADVANCED.md).
+See [Windows releases](docs/WINDOWS_RELEASE.md) for packaging and validation.
 
 ## The two setup questions
 
@@ -96,7 +81,8 @@ about 1.6 GB and about 100 MB of VRAM. Saying yes is recommended.
 | --- | --- |
 | `.\START-HERE.bat` | Starts the server on `http://127.0.0.1:8000/v1` and loads the model (sets up first if needed). |
 | `.\START-HERE.bat chat` | Talks to the model in the terminal instead of starting the server. |
-| `.\START-HERE.bat setup` | Installs, downloads and builds without starting anything; run it after updating the repository. |
+| `.\START-HERE.bat setup` | Downloads and sets up without starting the server. |
+| `.\START-HERE.bat setup --build-source` | Developer source build; requires Visual Studio C++ tools. |
 | `.\START-HERE.bat --reconfigure` | Asks the two setup questions again. |
 | `.\START-HERE.bat --max-context 65536` | Uses another context length for this run only. |
 | `.\START-HERE.bat chat --thinking` | Lets the model reason before answering (slower, often better on hard problems); the reasoning is printed separately. |

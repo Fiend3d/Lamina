@@ -4,6 +4,17 @@ For the next optimization phase, follow the prioritized
 [Strata performance roadmap](STRATA_PERFORMANCE_ROADMAP.md), including measured
 gaps, profiling requirements, scheduling work and acceptance gates.
 
+Windows distribution now has a portable release path: `tools/package_windows.py`
+packages an isolated Python runtime and wheels, portable AVX2/static-MSVC
+binaries for SM86/89/120, CUDA/cuBLAS DLLs, notices and checksum manifests.
+`START-HERE.bat` prefers bundled Python; portable setup downloads model assets
+without installing packages or invoking a compiler. Source setup downloads the
+pinned engine release unless `--build-source` is selected. Local developer
+builds remain usable. See [Windows releases](WINDOWS_RELEASE.md) for packaging,
+runtime validation and the draft-release workflow. The initial ZIP is text-only;
+the optional CPU image encoder is not packaged. Generated release assets stay
+in `../Lamina-data/releases`. Hosted-runner builds have no GPU runtime evidence.
+
 
 Current state, measured on an RTX 3050 8 GB / Ryzen 7 5700X / 64 GiB machine:
 fast mode runs cache-missed experts on the CPU by default, and the matched

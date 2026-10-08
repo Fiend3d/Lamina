@@ -31,6 +31,24 @@ CONFIG = DATA / "quickstart.json"
 ENGINE = ROOT / "build-cuda" / ("lamina-infer.exe" if sys.platform == "win32" else "lamina-infer")
 MTP_FILE = DATA / "mtp" / "qwen36-mtp-q8_0.gguf"
 REQUIREMENTS = ["requirements.txt", "requirements-build.txt", "requirements-reference.txt", "requirements-benchmark.txt"]
+RUNTIME_REQUIREMENTS = ["requirements.txt", "requirements-reference.txt"]
+
+
+def portable():
+    return (ROOT / "portable.json").is_file()
+
+
+def local_engine_supports(arch):
+    if not ENGINE.is_file() or ENGINE.parent != ROOT / "build-cuda":
+        return False
+    try:
+        lines = (ENGINE.parent / "CMakeCache.txt").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if line.startswith("CMAKE_CUDA_ARCHITECTURES:"):
+            return arch in {part.split("-", 1)[0] for part in line.split("=", 1)[1].split(";")}
+    return False
 
 # Context lengths offered on first run. The KV cache is FP16 on the GPU in all
 # of them: that is the measured fast configuration, and MTP speculation needs
@@ -65,6 +83,8 @@ def run(command, **kwargs):
 
 def ensure_venv(argv):
     """Creates the virtual environment and re-runs this script inside it."""
+    if portable() and Path(sys.executable).resolve() == (ROOT / "python/python.exe").resolve():
+        return
     if Path(sys.prefix).resolve() == VENV_PYTHON.parents[1].resolve():
         return
     if sys.version_info < (3, 11):
@@ -140,25 +160,42 @@ def ask(config, reconfigure):
     return config
 
 
-def requirements_digest():
+def requirements_digest(requirements=REQUIREMENTS):
     digest = hashlib.sha256()
-    for name in REQUIREMENTS:
+    for name in requirements:
         digest.update((ROOT / name).read_bytes())
     return digest.hexdigest()
 
 
-def setup(config, cuda_arch=None):
+def setup(config, cuda_arch=None, build_source=False):
+    global ENGINE
     from tools.lamina_model import FILENAME
     name, capability, memory = gpu()
     arch = cuda_arch or capability
     print(f"GPU: {name}, compute capability {capability[0]}.{capability[1:]}, {memory} MiB; RAM: {total_ram_gib():.0f} GiB")
 
+    requirements = REQUIREMENTS if build_source else RUNTIME_REQUIREMENTS
     marker = DATA / ".quickstart-requirements"
-    if not marker.is_file() or marker.read_text() != requirements_digest():
+    if not portable() and (not marker.is_file() or marker.read_text() != requirements_digest(requirements)):
         step("Installing Python packages")
         run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q",
-             *[arg for name in REQUIREMENTS for arg in ("-r", name)]])
-        marker.write_text(requirements_digest())
+             *([] if build_source else ["--only-binary=:all:"]),
+             *[arg for name in requirements for arg in ("-r", name)]])
+        marker.write_text(requirements_digest(requirements))
+
+    if portable():
+        from tools.lamina_release import validate_runtime
+        validate_runtime(ENGINE.parent, arch)
+    elif not build_source and not local_engine_supports(arch):
+        from tools.lamina_release import install_engine
+        step("Installing the prebuilt engine (no compiler needed)")
+        ENGINE = install_engine(DATA, arch)
+    elif build_source:
+        if not (DATA / "toolchains" / "cuda" / "bin" / "nvcc.exe").is_file():
+            step("Installing the pinned CUDA compiler into Lamina-data")
+            run([sys.executable, "-m", "tools.bootstrap_cuda"])
+        step(f"Building the engine for compute capability {arch} (incremental)")
+        run([sys.executable, "-m", "tools.build_windows", "--cuda-arch", arch])
 
     if not (DATA / "models" / FILENAME).is_file():
         step("Downloading the model (22 GB, resumable)")
@@ -167,14 +204,9 @@ def setup(config, cuda_arch=None):
         step("Downloading the tokenizer")
         run([sys.executable, "setup.py", "--tokenizer"])
     step("Checking the chat template and assets")
-    run([sys.executable, "-m", "tools.lamina_assets"])
-    if not (DATA / "toolchains" / "cuda" / "bin" / ("nvcc.exe" if sys.platform == "win32" else "nvcc")).is_file():
-        step("Installing the pinned CUDA compiler into Lamina-data")
-        run([sys.executable, "-m", "tools.bootstrap_cuda"])
-
-    step(f"Building the engine for compute capability {arch} (incremental)")
-    run([sys.executable, "-m", "tools.build_windows", "--cuda-arch", arch])
+    run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if portable() else [])])
     config["cuda_arch"] = arch
+    config["engine"] = str(ENGINE.resolve())
 
     if config.get("mtp") and not MTP_FILE.is_file():
         step("Fetching and packing the MTP head (about 1.6 GB download)")
@@ -307,6 +339,7 @@ def run_server(config, context, host, port, preload=True):
 
 
 def main():
+    global ENGINE
     argv = sys.argv[1:]
     ensure_venv(argv)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -314,18 +347,32 @@ def main():
     parser.add_argument("--reconfigure", action="store_true", help="ask for context length and MTP again")
     parser.add_argument("--max-context", type=int, help="override the stored context length for this run")
     parser.add_argument("--cuda-arch", help="override the detected compute capability, e.g. 86 or 89")
+    parser.add_argument("--build-source", action="store_true", help="compile locally instead of downloading the release (needs C++ build tools)")
     parser.add_argument("--thinking", action="store_true", help="chat: let the model think before answering")
     parser.add_argument("--max-tokens", type=int, default=2048, help="chat: longest answer in tokens (default 2048)")
     parser.add_argument("--host", default="127.0.0.1", help="serve: listening address")
     parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
     parser.add_argument("--no-preload", action="store_true", help="serve: do not load the model at startup (the first request does)")
     args = parser.parse_args(argv)
+    if portable() and args.build_source:
+        parser.error("--build-source needs a source checkout; the portable release contains no build toolchain")
 
+    DATA.mkdir(parents=True, exist_ok=True)
     config = ask(load_config(), args.reconfigure)
-    needs_setup = (args.command == "setup" or not ENGINE.is_file() or args.cuda_arch
+    # A portable ZIP always uses its own matching binaries. Source checkouts
+    # retain an already-built developer engine, or the last downloaded release.
+    if not portable() and not args.build_source and not ENGINE.is_file():
+        from tools.lamina_release import VERSION
+        ENGINE = DATA / "engine" / VERSION / "lamina-infer.exe"
+    from tools.lamina_model import FILENAME
+    marker = DATA / ".quickstart-requirements"
+    needs_setup = (args.command == "setup" or portable() or args.build_source or not ENGINE.is_file() or args.cuda_arch
+                   or not (DATA / "models" / FILENAME).is_file()
+                   or not (DATA / "tokenizer/tokenizer.json").is_file()
+                   or not marker.is_file() or marker.read_text() != requirements_digest(RUNTIME_REQUIREMENTS)
                    or (config.get("mtp") and not MTP_FILE.is_file()))
     if needs_setup:
-        setup(config, args.cuda_arch)
+        setup(config, args.cuda_arch, args.build_source)
     if args.command == "setup":
         return 0
     context = args.max_context or config["max_context"]
@@ -346,3 +393,5 @@ if __name__ == "__main__":
                  " finished steps are skipped.")
     except KeyboardInterrupt:  # Ctrl+C is the normal way to stop the server or leave the chat
         sys.exit(0)
+    except (OSError, RuntimeError, ValueError) as error:
+        sys.exit(f"\nSetup failed: {error}")
