@@ -77,7 +77,9 @@ For faster, slightly lossy computation on an 8 GB GPU / 64 GB RAM machine:
 It is lossy; checked FP32 remains the default. In fast mode, experts missing from
 the GPU cache run on CPU worker threads (a quarter of the hardware threads by
 default) instead of being copied over PCIe. Prefill does the same for experts
-routed by at most 12 prompt tokens (`LAMINA_PREFILL_CPU_TOKENS`, 0 disables).
+routed by at most 12 prompt tokens (`LAMINA_PREFILL_CPU_TOKENS`, 0 disables),
+using up to 12 CPU workers (`LAMINA_PREFILL_CPU_THREADS`), because prefill is
+compute bound while decode is bound by RAM bandwidth.
 Optional `LAMINA_HOST_REGISTER=1`
 pins about 21 GiB of model RAM and enables background admission of CPU experts
 into VRAM. In fast mode it measured no faster than leaving it unset, while it

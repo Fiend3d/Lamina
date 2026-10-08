@@ -17,8 +17,8 @@
 
 namespace lamina::model {
 namespace {
-constexpr int kGateRows = 32;   // rows per gate/up work item
-constexpr int kDownRows = 128;  // rows per down work item
+constexpr int kGateRows = 32;   // rows per gate/up work item (16 and 64 measured the same)
+constexpr int kDownRows = 128;  // rows per down work item (64 and 256 measured the same)
 constexpr int kSpins = 1 << 16; // roughly a millisecond of polling before sleeping
 
 int64_t now_ns() {
@@ -127,7 +127,7 @@ void project_rows(const strata::TensorInfo& t, const uint8_t* data, int expert, 
 }
 }
 
-CpuExperts::CpuExperts(unsigned workers, bool fast) : fast_(fast) {
+CpuExperts::CpuExperts(unsigned workers, bool fast, unsigned extra) : fast_(fast) {
 #ifdef LAMINA_CPU_QUANT
     if (fast) {
         if (!avx2_available()) throw std::runtime_error("quantized CPU experts require AVX2");
@@ -139,10 +139,11 @@ CpuExperts::CpuExperts(unsigned workers, bool fast) : fast_(fast) {
 #endif
     try {
         for (unsigned i = 0; i < std::max(1u, workers); ++i) workers_.emplace_back([this] { worker_loop(); });
+        for (unsigned i = 0; i < extra; ++i) workers_.emplace_back([this] { extra_loop(); });
     } catch (...) {
         stopping_.store(true);
         { std::lock_guard lock(mutex_); }
-        wake_.notify_all(); for (auto& worker : workers_) worker.join(); throw;
+        wake_.notify_all(); wake_extra_.notify_all(); for (auto& worker : workers_) worker.join(); throw;
     }
 }
 
@@ -150,7 +151,22 @@ CpuExperts::~CpuExperts() {
     stopping_.store(true, std::memory_order_release);
     { std::lock_guard lock(mutex_); }
     wake_.notify_all();
+    wake_extra_.notify_all();
     for (auto& worker : workers_) worker.join();
+}
+
+// Extra workers never spin: they sleep until a wide batch starts.
+void CpuExperts::extra_loop() {
+    uint64_t seen = 0;
+    while (true) {
+        {
+            std::unique_lock lock(mutex_);
+            wake_extra_.wait(lock, [&] { return stopping_.load() || wide_generation_.load() != seen; });
+            if (stopping_.load()) return;
+            seen = wide_generation_.load();
+        }
+        work();
+    }
 }
 
 void CpuExperts::worker_loop() {
@@ -196,7 +212,7 @@ void CpuExperts::start(const MoeWeights& weights, const std::vector<int>& ids,
     start(weights, jobs);
 }
 
-void CpuExperts::start(const MoeWeights& weights, const std::vector<Job>& jobs) {
+void CpuExperts::start(const MoeWeights& weights, const std::vector<Job>& jobs, bool wide) {
     if (jobs.empty()) throw std::invalid_argument("empty CPU expert batch");
     const auto& g = *weights.gate;
     const auto& u = *weights.up;
@@ -269,8 +285,10 @@ void CpuExperts::start(const MoeWeights& weights, const std::vector<Job>& jobs) 
     count_.store(items_.size(), std::memory_order_relaxed);
     next_.store(0, std::memory_order_release);
     generation_.fetch_add(1, std::memory_order_release);
+    if (wide) wide_generation_.fetch_add(1, std::memory_order_release);
     { std::lock_guard lock(mutex_); }
     wake_.notify_all();
+    if (wide) wake_extra_.notify_all();
 }
 
 void CpuExperts::wait() {

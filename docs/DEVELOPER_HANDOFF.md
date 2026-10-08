@@ -13,8 +13,11 @@ measures 37.49 tokens/s, and greedy MTP speculation 45.87 (see below), which
 passes the 40 tokens/s target for greedy requests only. Hybrid prefill runs
 experts used by at most 12 prompt tokens on the CPU and cut the short-prompt
 first token from 2.18 to 0.69 s
-([record](../bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md)); no
-Strata parity is claimed.
+([record](../bench/results/2026-10-08-rtx3050-hybrid-prefill/README.md)); 12
+prefill-only CPU workers cut it further, 0.87 to 0.57 s in interleaved runs.
+[The tuning record](../bench/results/2026-10-08-rtx3050-decode-tuning/README.md)
+lists the settings re-measured afterwards and a rejected miss prefetch (2% of
+prefetched experts were used). No Strata parity is claimed.
 Exact commands, the stage timeline that drove the work, fixed bugs and limits
 are in [the CPU-expert record](../bench/results/2026-10-07-rtx3050-cpu-experts/README.md)
 and [the DeltaNet step update](../bench/results/2026-10-07-rtx3050-gdn-step/README.md),

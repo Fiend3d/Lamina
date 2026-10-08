@@ -1178,7 +1178,13 @@ CudaProjection::CudaProjection(size_t vram_limit_mb, bool host_kv, bool half_kv,
             if (parsed.ec != std::errc{} || parsed.ptr != configured + std::strlen(configured) || workers < 1 || workers > 64)
                 throw std::invalid_argument("LAMINA_CPU_THREADS must be 1..64");
         }
-        impl_->cpu_experts = std::make_unique<CpuExperts>(workers, impl_->fast);
+        // Prefill batches are compute bound and use more threads. On a 16-thread
+        // Ryzen 7 5700X, 12 instead of 4 cut the first token 0.87 -> 0.57 s
+        // (8: 0.64 s, 16: 0.63 s) without changing decode speed.
+        unsigned prefill_workers = std::max(workers, std::min(12u, std::max(1u, std::thread::hardware_concurrency() * 3 / 4)));
+        if (const char* configured = std::getenv("LAMINA_PREFILL_CPU_THREADS"))
+            prefill_workers = std::max(workers, unsigned(std::clamp(std::atoi(configured), 1, 64)));
+        impl_->cpu_experts = std::make_unique<CpuExperts>(workers, impl_->fast, prefill_workers - workers);
     }
 #ifdef _MSC_VER
     char* raw_setting = nullptr;
@@ -2401,7 +2407,7 @@ std::vector<float> CudaProjection::moe_columns(const std::vector<float>& x, int 
             }
             cpu_jobs.push_back(job);
         }
-        impl_->cpu_experts->start(routed, cpu_jobs);
+        impl_->cpu_experts->start(routed, cpu_jobs, /*wide=*/true);
         impl_->stat_cpu_experts += cpu_jobs.size();
     }
     struct CpuBatchGuard {

@@ -29,14 +29,16 @@ public:
         std::array<float*, kMaxTokens> outputs{};       // hidden-width results
     };
 
-    explicit CpuExperts(unsigned workers, bool fast = false);
+    // `extra` further workers join only wide batches (prefill, which is compute
+    // bound); decode batches, bound by RAM bandwidth, run faster with fewer.
+    explicit CpuExperts(unsigned workers, bool fast = false, unsigned extra = 0);
     ~CpuExperts();
     CpuExperts(const CpuExperts&) = delete;
     CpuExperts& operator=(const CpuExperts&) = delete;
 
     // Starts a batch. Inputs and outputs must stay valid until wait() returns.
     // One batch at a time.
-    void start(const MoeWeights& weights, const std::vector<Job>& jobs);
+    void start(const MoeWeights& weights, const std::vector<Job>& jobs, bool wide = false);
     // One token: outputs[i] receives the down projection of ids[i] on input.
     void start(const MoeWeights& weights, const std::vector<int>& ids, const float* input,
                const std::vector<float*>& outputs);
@@ -69,6 +71,7 @@ private:
     static constexpr size_t kIdle = ~size_t(0) >> 1;
 
     void worker_loop();
+    void extra_loop();
     void work();
     void run(const Item& item);
     void finish_gate_up(int expert);
@@ -80,13 +83,13 @@ private:
     std::vector<std::unique_ptr<ExpertState>> experts_;
     size_t expert_count_ = 0;
     std::atomic<size_t> next_{kIdle}, count_{0}, finished_{0};
-    std::atomic<uint64_t> generation_{0};
+    std::atomic<uint64_t> generation_{0}, wide_generation_{0};
     std::atomic<bool> failed_{false}, stopping_{false};
     std::atomic<int64_t> started_ns_{0}, first_claim_ns_{0};
     Stats stats_;
     std::exception_ptr error_;
     std::mutex mutex_;
-    std::condition_variable wake_;
+    std::condition_variable wake_, wake_extra_;
     std::vector<std::thread> workers_;
 };
 }
