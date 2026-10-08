@@ -8,6 +8,15 @@ attention prefix KV stays in place while suffixes append. `LAMINA_PREFIX_CACHE=0
 disables reuse. See [the RTX 4060 record](../bench/results/2026-10-08-rtx4060-prefix/README.md)
 for commands, measurements, numerical checks and limitations.
 
+v0.1.1 is published as a prerelease from `23f5a84`, authored by Vlad Tatintsev.
+The final extracted portable ZIP passed preload/startup, greedy MTP, streamed
+usage/text/tools/reasoning and prefix reuse after changing the user message,
+with PATH restricted to Windows directories. Local reports/logs are
+`../Lamina-data/releases/runtime-validation-011.json` and
+`releases/smoke-011/runtime-launcher.log`. Both ZIP checksums were verified.
+Windows/Ubuntu CI and the CUDA compile workflow passed. Runtime checks cover
+RTX 4060; RTX 30/50 coverage is compiled only.
+
 For the next optimization phase, follow the prioritized
 [Strata performance roadmap](STRATA_PERFORMANCE_ROADMAP.md), including measured
 gaps, profiling requirements, scheduling work and acceptance gates.

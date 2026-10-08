@@ -31,7 +31,16 @@ $env:LAMINA_PREFIX_CACHE='1'
 ```
 
 Original runs used the equivalent local `measure_ttft.py` script outside the
-repo; raw results are committed here. For the long case replace the final user
+repo; raw results are committed here. The exact original commands were:
+
+```powershell
+$env:LAMINA_PREFIX_CACHE='0'
+..\Lamina-data\venv\Scripts\python.exe ..\Lamina-data\releases\measure_ttft.py build-cuda\lamina-infer.exe ..\Lamina-data\releases\ttft\uncached
+$env:LAMINA_PREFIX_CACHE='1'
+..\Lamina-data\venv\Scripts\python.exe ..\Lamina-data\releases\measure_ttft.py build-cuda\lamina-infer.exe ..\Lamina-data\releases\ttft\cached
+```
+
+For the long case replace the final user
 message with `Explain why the sky is blue in about 100 words.` and set max_tokens
 to 96. `--profile` enables timeline instrumentation for diagnosis only.
 
@@ -50,3 +59,10 @@ with about 63 MiB of budgeted recurrent snapshots. Existing attention KV stores
 the prefix. Changed system/tools, images, unsupported/older binaries, host KV,
 process failure or cancellation fall back to RESET. No conversation suffix is
 cached. Set `LAMINA_PREFIX_CACHE=0` to disable reuse.
+
+Final portable v0.1.1 ZIP (`23f5a84`) passed startup/preload, greedy MTP,
+streamed text/usage/tools/reasoning and cached requests with changed user text
+using only Windows directories in PATH. Both asset checksums were verified.
+A separate 3,088-token prefix at temperature 0.7, seed 123 produced identical
+eight-token responses on the cache miss and two hits, covering the ignored
+long-prefix PROMPT token before request RNG configuration.
