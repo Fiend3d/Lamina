@@ -1,19 +1,14 @@
 # Lamina
 
-Lamina runs **Qwen3.6-35B-A3B**, a 35-billion-parameter mixture-of-experts
-language model, on an ordinary gaming PC. The 22 GB model does not fit in an
-8 GB graphics card, so Lamina keeps the frequently used parts on the GPU and
-computes the rest on the CPU from system RAM. It is a native C++/CUDA port of
-[Strata](https://github.com/Niko1221/Strata) for this model.
+Lamina runs an AI model on your own Windows PC. You can chat in a terminal or
+connect a coding app such as pi. After the initial downloads, inference runs
+locally.
 
-On an RTX 3050 8 GB with a Ryzen 7 5700X and 64 GB of RAM it generates about
-**44 tokens per second** with speculative decoding (37 without) and starts
-answering a short question in about **0.6 seconds**. You can chat with it in
-the terminal or use it as an OpenAI-compatible server.
-
-The server reuses unchanged system prompts and tool definitions on CUDA with
-device KV. Repeated Pi requests start much faster after the first request;
-see the [measured prefix-cache results](bench/results/2026-10-08-rtx4060-prefix/README.md).
+It supports **Qwen3.6-35B-A3B** and
+**Ornith-1.5-35B-A3B**. Each model is about 22 GB. Lamina keeps frequently used
+weights on the graphics card and computes the rest from system RAM, allowing
+these models to run with 8 GB of VRAM. It is a native C++/CUDA port of
+[Strata](https://github.com/Niko1221/Strata).
 
 ## What you need
 
@@ -31,10 +26,17 @@ Download **`lamina-windows-x64-portable.zip`** from
 writable folder, then double-click **`START-HERE.bat`**. Extract the whole ZIP;
 do not run the launcher inside it.
 
-The first run asks for context length and MTP, then downloads the 22 GB model,
-tokenizer and optional MTP head. Downloads and settings go into the sibling
-`..\Lamina-data` folder. It starts the server when ready; later launches reuse
-the downloaded files. No engine compilation happens on the user's PC.
+On the first run:
+
+1. Choose a model: Qwen3.6 or Ornith. Both work in the portable ZIP.
+2. Choose how much conversation history to support: 8K, 32K, 64K or 128K.
+3. Choose whether to enable MTP, an optional generation speedup.
+4. Let setup download the model and load it. The first download is large;
+   wait until you see **Lamina is ready**.
+
+Your choices and downloads are saved in the neighboring `Lamina-data` folder.
+Later launches reuse them and start the server without asking again. The
+portable ZIP does not require compiling anything.
 
 ```text
  Lamina is ready.
@@ -46,9 +48,23 @@ the downloaded files. No engine compilation happens on the user's PC.
 
 Leave the window open while using the model; close it or press Ctrl+C to stop.
 Connect a coding agent such as [pi](#connecting-pi-and-other-apps) or another
-OpenAI-compatible app. Run `START-HERE.bat chat` for terminal chat.
-The first portable release includes text, tools and reasoning. The optional
-image encoder requires the developer setup.
+OpenAI-compatible app. If you simply want to chat, open a terminal in the
+extracted folder and run:
+
+```powershell
+.\START-HERE.bat chat
+```
+
+Type your message at `You:`. Use `/new` to clear the conversation and `/exit`
+to quit. To open a terminal in the folder, right-click its empty space in File
+Explorer and choose **Open in Terminal**, or open PowerShell and `cd` there.
+The portable release includes text, tools, reasoning and image input for both
+models. Setup automatically downloads the selected model's image projector
+(about 900 MB). Apps can send screenshots or photos through the API using
+OpenAI-compatible `image_url` content, including base64 data URLs. The image
+encoder runs on the CPU, so large images can take longer to process.
+On older CPUs, an image response can take a minute or more. Text-only requests
+do not start the image encoder.
 
 If using a **source checkout**, install Python 3.11 or newer and run
 `START-HERE.bat`. Setup installs runtime Python packages and downloads the pinned
@@ -56,10 +72,36 @@ prebuilt engine. To compile locally, use `START-HERE.bat setup --build-source`;
 that requires the C++ build tools described in [the manual setup](docs/ADVANCED.md).
 See [Windows releases](docs/WINDOWS_RELEASE.md) for packaging and validation.
 
-## The two setup questions
+To switch to Ornith, run:
 
-Lamina asks these once and stores the answers in `..\Lamina-data\quickstart.json`.
-Run `.\START-HERE.bat --reconfigure` to answer them again.
+```powershell
+.\START-HERE.bat --model ornith
+```
+
+Setup downloads Ornith, its tokenizer and image projector, and prepares its MTP
+head automatically. No compiler is needed.
+
+Setup saves Ornith as your model choice. You can switch back later without
+deleting either model's downloaded files.
+
+## Choosing and changing your settings
+
+Lamina saves **model, context length and MTP** in
+`..\Lamina-data\quickstart.json`. You do not need to edit that file.
+To answer all three questions again, stop the running server and run:
+
+```powershell
+.\START-HERE.bat --reconfigure
+```
+
+Press Enter at a question to keep its current setting. Your new choices are
+saved for future launches; setup downloads anything missing, then starts the
+server. To change settings without starting it, use
+`.\START-HERE.bat setup --reconfigure`.
+
+**Model:** choose Qwen3.6 or Ornith. You can also switch directly with
+`.\START-HERE.bat --model ornith` or `.\START-HERE.bat --model qwen3.6`.
+An explicit `--model` skips the model question, even with `--reconfigure`.
 
 **Context length** is how much text one conversation can hold: your messages,
 the model's answers and any pasted documents together. A token is roughly
@@ -70,14 +112,20 @@ three quarters of an English word.
 | 8K | 6,000 words | Short questions; leaves the most VRAM for speed. |
 | **32K (recommended)** | 24,000 words | Normal chats and medium documents. |
 | 64K | 48,000 words | Long documents. |
-| 128K | 96,000 words | Very long documents. The context memory grows with the conversation to about 2.7 GB of VRAM and generation slows down: on an RTX 3050 a 64K-token prompt took about 3 minutes to read, then 18 tokens per second. Prompts beyond 64K are untested on 8 GB GPUs. |
+| 128K | 96,000 words | Long coding sessions and large documents. Full 128K history is tested on RTX 4060 8 GB. Reading a fresh full prompt can take minutes, and generation slows as history grows. |
+
+The context budget includes the answer you ask for. Choosing 128K does not
+make every small request ingest 128K tokens: memory and work grow with the
+actual conversation. The server reuses unchanged history on follow-up turns,
+so it usually needs to read only the added messages and tool results.
 
 **MTP speculative decoding** uses a small extra part of the model (its
 multi-token-prediction head) to guess the next token in advance. The model
-checks each guess in the same step it would compute anyway, so answers stay
-exactly the model's own and generation is about 20% faster. It applies to the
-default deterministic answers (temperature 0); it needs a one-time download of
-about 1.6 GB and about 100 MB of VRAM. Saying yes is recommended.
+checks the guesses before accepting them. This can make generation faster;
+the gain varies by model, hardware and context length. It applies to requests
+with temperature 0, the default. Setup prepares the model's prediction head,
+which uses some extra GPU memory. Saying yes is a reasonable starting choice; you
+can turn it off with `--reconfigure`.
 
 ## Everyday commands
 
@@ -87,7 +135,9 @@ about 1.6 GB and about 100 MB of VRAM. Saying yes is recommended.
 | `.\START-HERE.bat chat` | Talks to the model in the terminal instead of starting the server. |
 | `.\START-HERE.bat setup` | Downloads and sets up without starting the server. |
 | `.\START-HERE.bat setup --build-source` | Developer source build; requires Visual Studio C++ tools. |
-| `.\START-HERE.bat --reconfigure` | Asks the two setup questions again. |
+| `.\START-HERE.bat --reconfigure` | Asks about model, context length and MTP again; saves your choices. |
+| `.\START-HERE.bat --model ornith` | Switches to Ornith, downloads missing files and saves the choice. |
+| `.\START-HERE.bat --model qwen3.6` | Switches to Qwen3.6 and saves the choice. |
 | `.\START-HERE.bat --max-context 65536` | Uses another context length for this run only. |
 | `.\START-HERE.bat chat --thinking` | Lets the model reason before answering (slower, often better on hard problems); the reasoning is printed separately. |
 | `.\START-HERE.bat chat --max-tokens 4096` | Allows longer answers in the terminal chat (default 2048 tokens). |
@@ -98,21 +148,14 @@ about 1.6 GB and about 100 MB of VRAM. Saying yes is recommended.
 `.\START-HERE.bat` starts an OpenAI-compatible HTTP server. Any client
 that supports a custom OpenAI base URL can use it, with base URL
 `http://127.0.0.1:8000/v1`, any API key, and the model name
-`Qwen3.6-35B-A3B-UD-Q4_K_M`. A quick test from PowerShell:
+`Qwen3.6-35B-A3B-UD-Q4_K_M`. Copy the connection details printed under
+**Lamina is ready** into your app. The current API uses that same model ID
+when serving Ornith; your saved model choice determines the loaded weights.
+A quick test from a second PowerShell window:
 
 ```powershell
 $body = @{ model = "Qwen3.6-35B-A3B-UD-Q4_K_M"; messages = @(@{ role = "user"; content = "Name three primary colors." }) } | ConvertTo-Json -Depth 4
 (Invoke-RestMethod http://127.0.0.1:8000/v1/chat/completions -Method Post -ContentType "application/json" -Body $body).choices[0].message.content
-```
-
-The same request with the official Python client:
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
-reply = client.chat.completions.create(model="Qwen3.6-35B-A3B-UD-Q4_K_M",
-                                       messages=[{"role": "user", "content": "Name three primary colors."}])
-print(reply.choices[0].message.content)
 ```
 
 The server supports streaming, `temperature`, `top_p`, `top_k`, `seed`,
@@ -142,7 +185,7 @@ whole file is written in one answer, so a small value cuts big files off:
         "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
         "name": "Qwen3.6-35B-A3B (Lamina)",
         "reasoning": true,
-        "input": ["text"],
+        "input": ["text", "image"],
         "contextWindow": 32768,
         "maxTokens": 8192,
         "compat": {
@@ -176,12 +219,15 @@ an answer reaches `maxTokens` in the middle of a tool call, pi shows the error
 call": raise `maxTokens`, or ask for a smaller step (a big page in several
 files, or one part at a time).
 
-What to expect from an agent: pi's own instructions take about 1,700 tokens
-and Lamina starts every request from scratch, so each step costs about 7
-seconds on an RTX 3050 even when the answer is short, and more as the
-conversation grows (reading a prompt runs at roughly 300-400 tokens per
-second). The model is a 4-bit 35B-parameter model, so check what it reports
-and what it changes.
+The first request in a long conversation takes longer because Lamina must
+read its history. Later requests reuse the unchanged conversation prefix and
+process only the new text. Restarting the server, editing earlier messages or
+compacting the conversation can require reading the history again. Check the
+server log's `reused` token count to see whether reuse is working.
+
+For 128K sessions, set pi's `contextWindow` to `131072` and leave room for
+answers with its `maxTokens` setting. Review generated code and changes before
+using them.
 
 ## Troubleshooting
 
@@ -189,7 +235,8 @@ and what it changes.
 | --- | --- |
 | "Python 3.11 or newer is required" | Install Python from python.org with "Add to PATH" ticked, then open a new terminal. |
 | "No NVIDIA GPU found" | Install or update the NVIDIA driver; `nvidia-smi` must work in a terminal. |
-| The build fails | Check that Visual Studio 2022 with "Desktop development with C++" and Git are installed, then run `.\START-HERE.bat setup` again. |
+| The source build fails | Check that Visual Studio 2022 with "Desktop development with C++" and Git are installed, then run `.\START-HERE.bat setup --build-source` again. |
+| I want a different model or context length | Stop the server, then run `.\START-HERE.bat --reconfigure`. Press Enter to keep any setting you do not want to change. |
 | A download stopped | Run the same command again; downloads resume. |
 | Out of GPU memory, or the engine exits | Close other programs that use the GPU (browsers and video players take GPU memory), or run `.\START-HERE.bat --reconfigure` and pick a shorter context. When memory runs low Lamina now releases cached experts and keeps going, slower, with one "GPU memory is low" note in its log. |
 | Generation is slower than expected | With less than 48 GB of RAM the model cannot be pinned, which costs speed. Other GPU work (games, video) also competes. |
@@ -215,7 +262,16 @@ in the [hybrid prefill](bench/results/2026-10-08-rtx3050-hybrid-prefill/README.m
 [speculation](bench/results/2026-10-08-rtx3050-mtp-speculation/README.md) and
 [tuning](bench/results/2026-10-08-rtx3050-decode-tuning/README.md) records.
 A GPU with more VRAM keeps more of the model on the GPU and should be
-considerably faster; this has not been measured.
+able to reduce CPU work. Actual speed also depends on CPU, RAM, context length
+and model; the numbers above describe that specific machine.
+
+On RTX 4060 8 GB / Ryzen 7 1700X, the latest source build measures **39.17
+tokens/s for Ornith, or 41.27 with MTP**, on short prompts with 128K capacity
+enabled. Full-history rates are lower. See the
+[decode and context measurements](bench/results/2026-10-09-decode-admission-128k/README.md)
+for exact commands, memory use, full-context limits and cached 80K conversation
+timings, and the [initial Ornith benchmark](bench/results/2026-10-09-ornith-rtx4060/README.md)
+for setup and output-comparison limitations.
 
 ## More
 

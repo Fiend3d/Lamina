@@ -65,9 +65,10 @@ def main():
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--stop", action="append", default=[])
     parser.add_argument("--vision", action="store_true")
+    parser.add_argument("--vision-projector", type=Path, help="image projector belonging to the selected model")
     parser.add_argument("--vision-engine", type=Path, default=ROOT / "build-vision/bin/Release/strata-vision.exe" if sys.platform == "win32" else ROOT / "build-vision/bin/strata-vision")
     parser.add_argument("--image", type=Path, action="append", default=[])
-    parser.add_argument("--max-image-tokens", type=int, default=1024)
+    parser.add_argument("--max-image-tokens", type=int, default=2048)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
@@ -79,7 +80,8 @@ def main():
     cuda = args.cuda if args.cuda is not None else "build-cuda" in str(args.engine)
     engine = Engine(args.model, args.tokenizer, args.engine, cuda, args.max_context, args.kv_cache,
                     args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image else None,
-                    args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode, args.mtp)
+                    args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode, args.mtp,
+                    vision_projector=args.vision_projector)
     atexit.register(engine.close)
     try:
         if args.command == "serve":

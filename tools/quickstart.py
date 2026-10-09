@@ -2,7 +2,7 @@
 
     python tools/quickstart.py            set up if needed, then start the server
     python tools/quickstart.py chat       talk to the model in this window instead
-    python tools/quickstart.py setup      install, download and build only
+    python tools/quickstart.py setup      install and download only
     python tools/quickstart.py --reconfigure   ask the questions again
 
 The server speaks the OpenAI API on http://127.0.0.1:8000/v1, so coding agents such as
@@ -10,7 +10,7 @@ pi and other apps can use it. It loads the model at startup and stops when this 
 is closed or Ctrl+C is pressed.
 
 Every setup step is skipped when its result is already present, so re-running
-is cheap. Answers to the two questions (context length, MTP speculation) are
+is cheap. Answers to the three questions (model, context length, MTP speculation) are
 stored in ../Lamina-data/quickstart.json.
 """
 import argparse
@@ -89,8 +89,8 @@ def context_menu(vram_mib):
     lines = []
     for i, (context, text) in enumerate(CONTEXTS, 1):
         if vram_mib <= SMALL_GPU_MIB and context == 131072:
-            text += ("\n       works on %.0f GB GPUs but slowly: reading a 64K-token prompt takes about 3 minutes;"
-                     "\n       prompts beyond 64K are untested" % (vram_mib / 1024))
+            text += ("\n       full 128K history is tested on an RTX 4060 8 GB; a fresh full prompt can take minutes;"
+                     "\n       cached follow-up turns reuse unchanged history")
         lines.append(f"  {i}) {text}")
     return lines
 
@@ -159,34 +159,37 @@ def prompt(text):
         return ""
 
 
-def ask(config, reconfigure):
+def ask(config, reconfigure, choose_model=True):
     """Asks for the model, context length and MTP once; non-interactive runs take the defaults."""
     interactive = sys.stdin.isatty()
-    if "model" not in config:                 # first run only; use --model to change it later
-        choice = 1
+    if choose_model and (reconfigure or "model" not in config):
+        choice = 2 if config.get("model") == "ornith" else 1
         if interactive:
             print("\nWhich model should Lamina run?")
             print("  1) Qwen3.6-35B-A3B      the pinned model (recommended)")
-            print("  2) Ornith-1.5-35B-A3B   same architecture, coding-focused; needs the source-built engine")
-            answer = prompt("Choose 1-2 [1]: ")
-            choice = int(answer) if answer in ("1", "2") else 1
+            print("  2) Ornith-1.5-35B-A3B   same architecture, coding-focused")
+            answer = prompt(f"Choose 1-2 [{choice}]: ")
+            choice = int(answer) if answer in ("1", "2") else choice
         config["model"] = "ornith" if choice == 2 else "qwen3.6"
     if reconfigure or "max_context" not in config:
-        choice = 2
+        choice = next((i for i, (context, _) in enumerate(CONTEXTS, 1)
+                       if context == config.get("max_context")), 2)
         if interactive:
             print("\nHow much context (prompt plus answer) should Lamina support?")
             print("\n".join(context_menu(gpu()[2])))
-            answer = prompt("Choose 1-4 [2]: ")
-            choice = int(answer) if answer in ("1", "2", "3", "4") else 2
+            answer = prompt(f"Choose 1-4 [{choice}]: ")
+            choice = int(answer) if answer in ("1", "2", "3", "4") else choice
         config["max_context"] = CONTEXTS[choice - 1][0]
     if reconfigure or "mtp" not in config:
-        enable = True
+        enable = config.get("mtp", True)
         if interactive:
             print("\nEnable MTP speculative decoding? It drafts one token ahead with the model's own")
-            print("multi-token-prediction head and verifies it in the same pass: about 20% faster")
-            print("generation at temperature 0 (the default), identical quality. It needs a one-time")
-            print("download of about 1.6 GB, packed to 857 MB, and about 100 MB of extra VRAM.")
-            enable = prompt("Enable MTP? [Y/n]: ").lower() not in ("n", "no")
+            print("multi-token-prediction head and verifies its guesses. It can speed up generation")
+            print("at temperature 0 (the default); the gain depends on the model and hardware.")
+            print("Setup prepares the model's extra prediction head; it uses some additional GPU memory.")
+            answer = prompt(f"Enable MTP? [{'Y/n' if enable else 'y/N'}]: ").lower()
+            if answer:
+                enable = answer not in ("n", "no")
         config["mtp"] = enable
     CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return config
@@ -227,16 +230,17 @@ def setup(config, cuda_arch=None, build_source=False):
             step("Installing the pinned CUDA compiler into Lamina-data")
             run([sys.executable, "-m", "tools.bootstrap_cuda"])
         step(f"Building the engine for compute capability {arch} (incremental)")
-        run([sys.executable, "-m", "tools.build_windows", "--cuda-arch", arch])
+        run([sys.executable, "-m", "tools.build_windows", "--vision", "--cuda-arch", arch])
 
     paths = model_paths(config)
     if config.get("model") == "ornith":
-        if not local_engine_supports(arch) and not build_source:
-            print("WARNING: Ornith needs the qwen35moe engine built from source; run"
-                  " START-HERE.bat --model ornith --build-source once, then serve normally.")
         step("Setting up Ornith-1.5-35B-A3B (download, SSM fix, MTP pack)")
         from tools.lamina_ornith import setup as ornith_setup
         ornith_setup(DATA)
+        if vision_executable() is not None:
+            from tools.lamina_assets import download_assets
+            step("Checking Ornith image support (about 903 MB on first download)")
+            download_assets(DATA, model="ornith")
     else:
         if not paths["model"].is_file():
             step("Downloading the model (22 GB, resumable)")
@@ -245,7 +249,7 @@ def setup(config, cuda_arch=None, build_source=False):
             step("Downloading the tokenizer")
             run([sys.executable, "setup.py", "--tokenizer"])
         step("Checking the chat template and assets")
-        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if portable() else [])])
+        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if vision_executable() is None else [])])
         if config.get("mtp") and not paths["mtp"].is_file():
             step("Fetching and packing the MTP head (about 1.6 GB download)")
             run([sys.executable, "-m", "tools.lamina_mtp", "fetch"])
@@ -266,6 +270,17 @@ def engine_environment():
     return env
 
 
+def vision_executable():
+    for path in (ENGINE.parent / "strata-vision.exe", ROOT / "build-vision/bin/Release/strata-vision.exe"):
+        if path.is_file():
+            return path
+    return None
+
+
+def vision_projector(config):
+    return DATA / "vision" / ("ornith-mmproj-BF16.gguf" if config.get("model") == "ornith" else "mmproj-F16.gguf")
+
+
 def engine_options(config, context):
     paths = model_paths(config)
     options = ["--engine", ENGINE, "--cuda", "--compute-mode", "fast", "--kv-type", "f16", "--kv-cache", "device",
@@ -274,6 +289,9 @@ def engine_options(config, context):
         options += ["--model", str(paths["model"]), "--tokenizer", str(paths["tokenizer"])]
     if config.get("mtp") and paths["mtp"].is_file():
         options += ["--mtp", str(paths["mtp"])]
+    if vision_executable() is not None:
+        options += ["--vision", "--vision-engine", str(vision_executable()),
+                    "--vision-projector", str(vision_projector(config))]
     return options
 
 
@@ -283,7 +301,8 @@ def chat(config, context, thinking, max_tokens):
     paths = model_paths(config)
     engine = Engine(paths["model"], paths["tokenizer"], ENGINE, cuda=True,
                     max_context=context, kv_cache="device", kv_type="f16", compute_mode="fast",
-                    mtp=paths["mtp"] if config.get("mtp") and paths["mtp"].is_file() else None)
+                    mtp=paths["mtp"] if config.get("mtp") and paths["mtp"].is_file() else None,
+                    vision_engine=vision_executable(), vision_projector=vision_projector(config))
     print(f"\nLamina chat, context {context // 1024}K, MTP {'on' if engine.mtp else 'off'}. "
           "Commands: /new starts a new conversation, /exit quits.")
     print("The first answer takes longer while the model loads.\n")
@@ -388,7 +407,7 @@ def main():
     ensure_venv(argv)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="serve", choices=("serve", "chat", "setup"))
-    parser.add_argument("--reconfigure", action="store_true", help="ask for context length and MTP again")
+    parser.add_argument("--reconfigure", action="store_true", help="ask for model, context length and MTP again")
     parser.add_argument("--max-context", type=int, help="override the stored context length for this run")
     parser.add_argument("--cuda-arch", help="override the detected compute capability, e.g. 86 or 89")
     parser.add_argument("--build-source", action="store_true", help="compile locally instead of downloading the release (needs C++ build tools)")
@@ -401,14 +420,12 @@ def main():
     args = parser.parse_args(argv)
     if portable() and args.build_source:
         parser.error("--build-source needs a source checkout; the portable release contains no build toolchain")
-    if args.model == "ornith" and not args.build_source and not (ROOT / "build-cuda").is_dir():
-        parser.error("--model ornith needs the qwen35moe source engine: add --build-source once")
 
     DATA.mkdir(parents=True, exist_ok=True)
     stored = load_config()
     if args.model:
         stored["model"] = args.model          # --model skips the first-run question
-    config = ask(stored, args.reconfigure)
+    config = ask(stored, args.reconfigure, choose_model=args.model is None)
     if args.model:
         config["model"] = args.model
     config.setdefault("model", "qwen3.6")
@@ -422,6 +439,7 @@ def main():
     needs_setup = (args.command == "setup" or portable() or args.build_source or not ENGINE.is_file() or args.cuda_arch
                    or not paths["model"].is_file()
                    or not paths["tokenizer"].is_file()
+                   or (vision_executable() is not None and not vision_projector(config).is_file())
                    or not marker.is_file() or marker.read_text() != requirements_digest(RUNTIME_REQUIREMENTS)
                    or (config.get("mtp") and not paths["mtp"].is_file()))
     if needs_setup:

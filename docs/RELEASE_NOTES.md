@@ -1,3 +1,22 @@
+# v0.1.4
+
+Choose Qwen3.6-35B-A3B or Ornith-1.5-35B-A3B in the portable Windows ZIP.
+Both support text, tools, reasoning and image input. Python, the engine and
+the CPU image encoder are included; no compiler or CUDA toolkit is needed.
+Setup downloads the selected model and its own verified image projector.
+
+`START-HERE.bat --reconfigure` asks for model, context and MTP again; Enter
+keeps each saved choice. The README explains setup, saved settings and coding
+clients, including advertising image support in pi's model configuration.
+
+Retain the full 128K context option and include the measured expert-admission
+scheduling improvements. No model math, quantization or history truncation is
+changed. Image preprocessing uses sufficient resolution for text reading;
+CPU encoding can take a minute or more on older CPUs. Compiled GPU coverage is
+RTX 30/40/50; this release is tested on RTX 4060, with other generations pending.
+
+# Earlier releases
+
 Lamina's first portable Windows x64 release runs Qwen3.6-35B-A3B with a local
 OpenAI-compatible API, streaming tool calls, thinking, and optional greedy MTP
 speculative decoding.

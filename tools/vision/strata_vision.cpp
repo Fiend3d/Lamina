@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -39,6 +40,12 @@ void quiet_log(ggml_log_level level, const char* text, void*) {
 bool parse_enc(const std::string& line, std::string& img, std::string& out) {
     if (line.rfind("ENC ", 0) != 0) return false;
     const std::string rest = line.substr(4);
+    if (!rest.empty() && rest.front() == '"') {
+        std::istringstream paths(rest);
+        std::string extra;
+        return bool(paths >> std::quoted(img) >> std::quoted(out)) &&
+               !(paths >> extra) && !img.empty() && !out.empty();
+    }
     const size_t sp = rest.rfind(' ');
     if (sp == std::string::npos || sp == 0) return false;
     img = rest.substr(0, sp);
@@ -102,7 +109,11 @@ int main(int argc, char** argv) {
     // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
     if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);
     if (threads > 0) cp.n_threads = threads;
-    if (max_tokens > 0) cp.image_max_tokens = max_tokens;
+    if (max_tokens > 0) {
+        cp.image_max_tokens = max_tokens;
+        // Qwen-VL needs sufficient spatial resolution for text and grounding.
+        cp.image_min_tokens = std::min(max_tokens, 1024);
+    }
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
     if (!ctx || !mtmd_support_vision(ctx)) {
         std::printf("ERR cannot load the vision encoder %s\n", mmproj.c_str());

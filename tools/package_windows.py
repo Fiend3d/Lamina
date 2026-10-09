@@ -1,6 +1,6 @@
 """Package a portable Windows release and a downloadable engine-only asset.
 
-Build with tools.build_windows --portable --cuda-arch "86;89;120" first.
+Build with tools.build_windows --portable --vision --cuda-arch "86;89;120" first.
 Generated staging files, dependency wheels and ZIPs stay in ../Lamina-data.
 """
 import argparse
@@ -60,6 +60,11 @@ def stage_engine(build, stage, revision):
     for name in ("lamina-infer.exe", "lamina-gguf.exe", "lamina-sampling-check.exe", "lamina-prefix-check.exe",
                  "lamina-cuda-elementwise-check.exe", "lamina-cuda-attention-check.exe"):
         shutil.copy2(build / name, stage / name)
+    vision_build = ROOT / "build-vision"
+    vision_values = cache_values(vision_build / "CMakeCache.txt")
+    if vision_values.get("STRATA_PORTABLE") != "ON" or vision_values.get("STRATA_VISION_CUDA") != "OFF":
+        raise ValueError("Build the portable CPU image encoder with tools.build_windows --portable --vision")
+    shutil.copy2(vision_build / "bin/Release/strata-vision.exe", stage / "strata-vision.exe")
     dlls = sorted(build.glob("*.dll"))
     for prefix in ("cudart64_", "cublas64_", "cublasLt64_"):
         if not any(d.name.startswith(prefix) for d in dlls):
@@ -97,7 +102,8 @@ def stage_python(stage, cache):
                     "-r", str(ROOT / "requirements.txt"), "-r", str(ROOT / "requirements-reference.txt")], check=True)
     # Import from the embedded runtime, not the developer's Python or venv.
     subprocess.run([str(python / "python.exe"), "-c",
-                    "import tokenizers, jinja2, PIL, jsonschema, numpy, gguf; import tools.quickstart"],
+                    "import tokenizers, jinja2, PIL, jsonschema, numpy, gguf; "
+                    "import tools.quickstart, tools.lamina_ornith, tools.lamina_inline_mtp, tools.lamina_vision"],
                    cwd=stage, check=True)
 
 
@@ -125,7 +131,7 @@ def main():
         (stage / "tools").mkdir()
         for name in ("__init__.py", "quickstart.py", "lamina_release.py", "lamina_model.py", "gguf_reader.py",
                      "lamina_assets.py", "lamina_mtp.py", "lamina_chat.py", "lamina_protocol.py",
-                     "lamina_vision.py", "lamina_toolcalls.py"):
+                     "lamina_vision.py", "lamina_toolcalls.py", "lamina_ornith.py", "lamina_inline_mtp.py"):
             source = ROOT / "tools" / name
             if source.is_file():
                 shutil.copy2(source, stage / "tools" / name)

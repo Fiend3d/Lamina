@@ -29,7 +29,7 @@ jobs:
       - name: Install pinned CUDA compiler
         run: python -m tools.bootstrap_cuda
       - name: Build portable RTX 30, 40 and 50 binaries
-        run: python -m tools.build_windows --portable --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
+        run: python -m tools.build_windows --portable --vision --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
       - name: Sampling check
         run: ../Lamina-data/release-build/lamina-sampling-check.exe
       - name: Package embedded Python and runtime DLLs

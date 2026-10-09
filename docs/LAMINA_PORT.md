@@ -1,5 +1,9 @@
 # Qwen3.6 port status
 
+The quickstart launcher saves model, context length and MTP. `--reconfigure`
+asks all three again with saved values as defaults; an explicit `--model`
+skips its question. See the [user guide](../README.md) for setup and commands.
+
 CUDA device-KV server requests can reuse a prefix checkpoint across turns. v0.1.1
 reused an exact unchanged system/tools prefix; v0.1.2 caches the whole message
 history up to the generation prompt and advances that checkpoint when the
@@ -14,15 +18,25 @@ The same `qwen35moe` graph also runs `Ornith-1.5-35B-A3B` (Q4_K_M) after the
 contract tolerates its in-file MTP layer and the grouped qkv/gate and q/k/v
 dispatches (single and pair) split per encoding; its `ssm_alpha/beta` are
 re-encoded to F32 and its in-file MTP head is packed to an `mtp.*` side file.
-`START-HERE.bat --model ornith` selects it. This is a bring-up with no quality or
-sustained speed claim. See
+`START-HERE.bat --model ornith` selects it. No reference-quality claim is made.
+Short-prompt RTX 4060 8 GB measurements are 36.35 tokens/s without MTP and
+40.79 with MTP; mode outputs differ. See
+[the RTX 4060 benchmark](../bench/results/2026-10-09-ornith-rtx4060/README.md) and
 [the Ornith bring-up](../bench/results/2026-10-09-ornith-bringup/README.md).
+
+The latest short-prompt scheduling measurement, with 131072 capacity configured,
+is 39.17 tokens/s ordinary Ornith decode and 41.27 with MTP; ordinary pinned Qwen
+measures 38.53 (43.88 with MTP). CPU-expert admission now overlaps the CPU wait; ordinary MoE
+graphs retain 512 variants while MTP retains 128. Matched per-mode output tokens
+are unchanged. Full-context and cached 80K server measurements are separate;
+see the [decode admission record](../bench/results/2026-10-09-decode-admission-128k/README.md).
 
 Windows distribution: portable ZIP packaging includes Python, dependencies,
 SM86/89/120 native binaries and CUDA runtime DLLs; source setup can download a
 checksum-verified pinned engine instead of compiling. `--build-source` keeps
-the developer path. See [Windows releases](WINDOWS_RELEASE.md). The first ZIP
-supports text/tools/reasoning; the optional image encoder is excluded. Compiled
+the developer path. See [Windows releases](WINDOWS_RELEASE.md). The v0.1.4 ZIP
+supports text/tools/reasoning and images for both Qwen3.6 and Ornith. It includes
+the portable CPU encoder; setup downloads each model's own verified projector. Compiled
 GPU coverage does not establish runtime correctness on all those GPUs.
 
 

@@ -28,7 +28,8 @@ Earlier records from an RTX 4060 machine (where llama.cpp measured 25.47 and
 Lamina 16.40 tokens/s before these changes) are in
 [the previous comparison](../bench/results/2026-10-07-llama-cuda/README.md) and
 [validation](../bench/results/2026-10-06-strata-plan/VALIDATION.md). That machine has
-not been remeasured.
+since been remeasured with Ornith and the pinned Qwen model: see the
+[RTX 4060 decode admission record](../bench/results/2026-10-09-decode-admission-128k/README.md).
 
 Lamina is a native [Strata](https://github.com/Niko1221/Strata) port for
 Qwen3.6-35B-A3B, pinned to Strata commit `6f32ec070f23ced9f50e704d854d775da52591ab`.

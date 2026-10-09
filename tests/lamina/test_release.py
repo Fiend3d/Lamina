@@ -112,7 +112,7 @@ class ReleaseTest(unittest.TestCase):
             (data / "tokenizer/tokenizer.json").touch()
             engine_fixture(root / "build-cuda")
             commands = []
-            with patch.object(quickstart, "DATA", data), patch.object(quickstart, "CONFIG", data / "quickstart.json"), \
+            with patch.object(quickstart, "ROOT", root), patch.object(quickstart, "DATA", data), patch.object(quickstart, "CONFIG", data / "quickstart.json"), \
                     patch.object(quickstart, "ENGINE", root / "build-cuda/lamina-infer.exe"), \
                     patch.object(quickstart, "portable", return_value=True), \
                     patch.object(quickstart, "gpu", return_value=("RTX 4060", "89", 8192)), \
@@ -122,6 +122,31 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(len(commands), 1)
             self.assertIn("tools.lamina_assets", commands[0])
             self.assertIn("--text-only", commands[0])
+
+    def test_portable_ornith_prepares_own_vision_without_compiler(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            data.mkdir()
+            engine_fixture(root / "engine")
+            (root / "engine/strata-vision.exe").touch()
+            with patch.object(quickstart, "ROOT", root), patch.object(quickstart, "DATA", data), \
+                    patch.object(quickstart, "CONFIG", data / "quickstart.json"), \
+                    patch.object(quickstart, "ENGINE", root / "engine/lamina-infer.exe"), \
+                    patch.object(quickstart, "portable", return_value=True), \
+                    patch.object(quickstart, "gpu", return_value=("RTX 4060", "89", 8192)), \
+                    patch.object(quickstart, "total_ram_gib", return_value=64), \
+                    patch.object(quickstart, "run", side_effect=AssertionError("compiler or package installer")), \
+                    patch("tools.lamina_ornith.setup") as prepare_model, \
+                    patch("tools.lamina_assets.download_assets") as prepare_vision:
+                config = {"model": "ornith", "mtp": True}
+                quickstart.setup(config)
+                prepare_model.assert_called_once_with(data)
+                prepare_vision.assert_called_once_with(data, model="ornith")
+                options = quickstart.engine_options(config, 131072)
+                self.assertEqual(Path(options[options.index("--vision-projector") + 1]),
+                                 data / "vision/ornith-mmproj-BF16.gguf")
+                self.assertIn("--vision", options)
 
 
 if __name__ == "__main__":

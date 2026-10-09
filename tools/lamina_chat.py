@@ -110,7 +110,8 @@ def tool_message(content, tools, choice):
 class Engine:
     def __init__(self, model, tokenizer, executable, cuda=False, max_context=32768,
                  kv_cache="auto", vram_limit_mb=0, prefill_chunk=2048, vision_engine=None,
-                 max_image_tokens=1024, cpu_threads=8, kv_type="f32", compute_mode="f32", mtp=None):
+                 max_image_tokens=2048, cpu_threads=8, kv_type="f32", compute_mode="f32", mtp=None,
+                 vision_projector=None):
         if kv_type not in ("f32", "f16") or (kv_type == "f16" and not cuda):
             raise ValueError("kv-type must be f32, or f16 with CUDA")
         if compute_mode not in ("f32", "fast") or (compute_mode == "fast" and not cuda):
@@ -133,6 +134,8 @@ class Engine:
         self.max_context, self.kv_cache, self.vram_limit_mb = max_context, kv_cache, vram_limit_mb
         self.prefill_chunk = prefill_chunk
         self.data = tokenizer.parent.parent
+        default_projector = "ornith-mmproj-BF16.gguf" if "ornith" in model.name.lower() else "mmproj-F16.gguf"
+        self.vision_projector = vision_projector or self.data / "vision" / default_projector
         self.tokenizer = Tokenizer.from_file(str(tokenizer))
         template = tokenizer.parent / "chat_template.jinja"
         if not template.is_file(): raise FileNotFoundError("official chat template missing; run python -m tools.lamina_assets")
@@ -252,7 +255,7 @@ class Engine:
                 if item["type"] in ("image", "image_url"):
                     if self.vision is None:
                         if self.vision_engine is None: raise ValueError("image input requires --vision")
-                        self.vision = Vision(self.vision_engine, self.model, self.data / "vision/mmproj-F16.gguf",
+                        self.vision = Vision(self.vision_engine, self.model, self.vision_projector,
                                              self.data / "tmp", self.max_image_tokens, self.cpu_threads)
                     images.append(self.vision.encode(item, directory, len(images)))
         for message in messages:

@@ -1,27 +1,56 @@
-"""CPU mtmd image encoder transport for the pinned Qwen3.6 projector."""
+"""CPU mtmd image encoder transport for each model's pinned projector."""
 import base64
+import json
 import struct
 import tempfile
 import urllib.request
 from pathlib import Path
 from tools.lamina_protocol import NativeProcess
+from tools.gguf_reader import GGUFFile
+
+
+def vocabulary_model(model, destination):
+    """Copy exact GGUF metadata without weights for mtmd's vocab-only loader.
+
+    Lamina's Ornith preparation appends F32 SSM tensors. llama.cpp requires a
+    contiguous tensor directory even for vocab-only loading; the image encoder
+    only needs the vocabulary and metadata, never those text-model weights.
+    """
+    header = GGUFFile(model)
+    with model.open("rb") as source:
+        magic, version, _, count = struct.unpack("<IIQQ", source.read(24))
+        metadata = source.read(header.metadata_end - 24)
+    with destination.open("wb") as output:
+        output.write(struct.pack("<IIQQ", magic, version, 0, count))
+        output.write(metadata)
+        output.write(b"\0" * ((-output.tell()) % header.alignment))
+    return destination
 
 
 class Vision:
-    def __init__(self, executable, model, projector, data, max_tokens=1024, threads=8):
+    def __init__(self, executable, model, projector, data, max_tokens=2048, threads=8):
         if not executable.is_file() or not projector.is_file():
-            raise FileNotFoundError("vision encoder/projector missing; build tools/vision and run python -m tools.lamina_assets")
+            raise FileNotFoundError("vision encoder/projector missing; run START-HERE.bat setup for the selected model")
         self.data = data
         self.data.mkdir(parents=True, exist_ok=True)
         self.max_tokens = max_tokens
-        self.native = NativeProcess([str(executable.resolve()), "--mmproj", str(projector.resolve()),
-                                     "--model", str(model.resolve()), "--threads", str(threads),
-                                     "--max-tokens", str(max_tokens), "--flash-attn", "off"], timeout=300)
+        self.vocabulary = tempfile.TemporaryDirectory(prefix="vision-vocab-", dir=self.data)
         try:
-            if self.native.read() != "READY 2048":
-                raise RuntimeError("vision encoder output width differs from Qwen3.6")
+            vocab = vocabulary_model(model, Path(self.vocabulary.name) / "vocab.gguf")
+            self.native = NativeProcess([str(executable.resolve()), "--mmproj", str(projector.resolve()),
+                                         "--model", str(vocab.resolve()), "--threads", str(threads),
+                                         "--max-tokens", str(max_tokens), "--flash-attn", "off"], timeout=300)
+        except BaseException:
+            self.vocabulary.cleanup()
+            raise
+        try:
+            ready = self.native.read()
+            if ready != "READY 2048":
+                detail = "\n".join(self.native.errors)
+                raise RuntimeError(f"vision encoder did not become ready: {ready}\n{detail}")
         except BaseException:
             self.native.close()
+            self.vocabulary.cleanup()
             raise
 
     def encode(self, item, directory, index):
@@ -54,7 +83,8 @@ class Vision:
             image = directory / f"image-{index}.png"
             picture.convert("RGB").save(image)
         destination = directory / f"image-{index}.sve"
-        self.native.process.stdin.write(f"ENC {image} {destination}\n")
+        self.native.process.stdin.write("ENC " + json.dumps(str(image), ensure_ascii=False) + " " +
+                                        json.dumps(str(destination), ensure_ascii=False) + "\n")
         self.native.process.stdin.flush()
         reply = self.native.read().split()
         if len(reply) != 5 or reply[0] != "OK":
@@ -62,8 +92,9 @@ class Vision:
         with destination.open("rb") as output: header = output.read(20)
         magic, count, nx, ny, width = struct.unpack("<5i", header)
         if magic != 0x31455653 or width != 2048 or count != nx * ny or count != int(reply[1]) or count > self.max_tokens:
-            raise RuntimeError("invalid vision output header")
+            raise RuntimeError(f"invalid vision output header: tokens={count}, grid={nx}x{ny}, width={width}, limit={self.max_tokens}")
         return destination, count
 
     def close(self):
         self.native.close()
+        self.vocabulary.cleanup()

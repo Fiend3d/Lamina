@@ -13,8 +13,8 @@ Steps (each skipped when already done):
     second copy of the model is written);
   * pack the in-file nextn/MTP layer (blk.40.*) into an mtp.* side GGUF.
 
-The engine must be built from source with the qwen35moe changes; use
-`START-HERE.bat --model ornith --build-source` on a fresh checkout.
+The portable release includes the compatible engine; use
+`START-HERE.bat --model ornith` to select and prepare this model.
 """
 from __future__ import annotations
 
@@ -54,8 +54,6 @@ def download(url: str, dest: Path, size: int | None = None) -> None:
 def requantize_ssm_f32(path: Path) -> int:
     """Re-encode blk.*.ssm_alpha/beta to F32 in place. Returns the number changed."""
     import numpy as np
-    from tools._paths import add_gguf_py
-    add_gguf_py()
     import gguf
     from gguf.quants import dequantize
 
@@ -125,8 +123,7 @@ def setup(data: Path) -> None:
     mtp = data / "mtp" / "ornith-mtp.gguf"
     if not mtp.is_file():
         import tools.lamina_inline_mtp as inline
-        sys.argv = ["lamina_inline_mtp", "--model", str(model), "--out", str(mtp), "--norms", "raw"]
-        inline.main()
+        inline.main(["--model", str(model), "--out", str(mtp), "--norms", "raw"])
     if not model.is_file():
         raise SystemExit("Ornith model missing after setup")
 

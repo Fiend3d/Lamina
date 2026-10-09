@@ -1,5 +1,20 @@
 # Lamina developer handoff
 
+`START-HERE.bat --reconfigure` asks for model, context length and MTP again.
+Enter preserves each saved setting; `--model` overrides and skips the model
+question. Normal launches reuse `../Lamina-data/quickstart.json`. The README
+covers first launch, portable Ornith and image setup, saved settings and client setup.
+
+v0.1.4 bundles the portable CPU mtmd encoder and both models' setup helpers.
+`--vision-projector` selects a model-specific projector; Ornith's BF16 projector
+is pinned by revision, size and SHA-256 in `tools/lamina_assets.py`. The encoder
+reads an exact metadata-only GGUF vocabulary copy, so Ornith's appended F32 SSM
+tensors do not violate llama.cpp's contiguous-tensor loader checks. Quoted ENC
+paths support application/data folders containing spaces. Qwen-VL preprocessing
+uses a 1024-token minimum and a 2048-token maximum by default, retaining enough
+spatial resolution for text reading; CPU image encoding can take a minute or
+more on the Ryzen 7 1700X. Text-only sessions retain lazy encoder startup.
+
 v0.1.1 adds one prefix checkpoint for CUDA device KV. The Python server probes
 native capabilities and verifies exact BPE prefix IDs; older engines, host KV,
 images, changed prefixes and restarts use RESET. Independent recurrent snapshots
@@ -36,8 +51,33 @@ encodings differ (Ornith mixes Q4_K/Q6_K where the pinned model is uniform).
 to F32 (the DeltaNet path requires it), and packs the in-file MTP head into an
 `mtp.*` side file with `tools/lamina_inline_mtp.py` (`--norms raw`, acceptance
 ~0.87). `START-HERE.bat --model ornith` (or `python -m tools.quickstart --model
-ornith`) selects it; the default stays Qwen3.6. Ornith needs the engine built from
-source. See [the Ornith bring-up record](../bench/results/2026-10-09-ornith-bringup/README.md).
+ornith`) selects it; the default stays Qwen3.6. The v0.1.4 portable engine supports both models and includes the CPU image
+encoder; each model uses its own pinned projector. See [the Ornith bring-up record](../bench/results/2026-10-09-ornith-bringup/README.md).
+
+Ornith now has a short-prompt benchmark on RTX 4060 8 GB / Ryzen 7 1700X:
+nine-run median 36.35 tokens/s without MTP, 40.79 with MTP, warm first token
+~0.73 s, peak total GPU memory 5.62/5.72 GiB. Outputs repeat within each mode
+but differ between modes; no output-equivalence or quality claim. See
+[the Ornith RTX 4060 benchmark](../bench/results/2026-10-09-ornith-rtx4060/README.md)
+for exact commands, startup latency and limitations. `tools.compare_lamina`
+accepts `--model` and `--tokenizer` for this measurement.
+
+Decode admissions now queue after GPU expert submission and before the CPU
+expert wait, overlapping their host/DMA work with CPU rows. Reader retirement
+epochs and deterministic next-token promotion remain intact. Disable with
+`LAMINA_ADMIT_EARLY=0`. Ordinary decode also retains up to 512 MoE graph variants;
+loading MTP preserves its measured 128-entry budget. `LAMINA_MOE_GRAPH_CACHE`
+explicitly overrides either budget (1..4096).
+
+On RTX 4060 8 GB / Ryzen 7 1700X, nine-run ordinary decode medians improved
+36.07 -> 39.17 tokens/s for Ornith and 35.26 -> 38.53 for pinned Qwen.
+The configured capacity is 131072; these rates use short prompts. Ornith MTP
+measured 40.58 -> 41.27 and pinned Qwen MTP 41.51 -> 43.88. All short-prompt
+before/after tokens match within each mode.
+Earlier full-history stress runs used 130816 prompt tokens plus 256 output
+tokens and passed early retrieval, but showed no graph-cache speed benefit.
+An 80K Ornith server conversation reused its prefix and started follow-up turns
+in ~2.5 s. See [commands, raw records and checks](../bench/results/2026-10-09-decode-admission-128k/README.md).
 
 v0.1.1 is published as a prerelease from `23f5a84`, authored by Vlad Tatintsev.
 The final extracted portable ZIP passed preload/startup, greedy MTP, streamed
@@ -59,8 +99,9 @@ binaries for SM86/89/120, CUDA/cuBLAS DLLs, notices and checksum manifests.
 without installing packages or invoking a compiler. Source setup downloads the
 pinned engine release unless `--build-source` is selected. Local developer
 builds remain usable. See [Windows releases](WINDOWS_RELEASE.md) for packaging,
-runtime validation and the draft-release workflow. The initial ZIP is text-only;
-the optional CPU image encoder is not packaged. Generated release assets stay
+runtime validation and the draft-release workflow. The v0.1.4 ZIP includes the
+portable CPU image encoder and downloads the selected model's own projector.
+Qwen3.6 uses pinned F16 mmproj; Ornith uses its pinned BF16 mmproj. Generated release assets stay
 in `../Lamina-data/releases`. Hosted-runner builds have no GPU runtime evidence.
 
 The v0.1.0 portable assets were built from `321bd3a` and checked on the RTX 4060 /
@@ -277,11 +318,12 @@ identical to `step<false>`, which the prefill path still uses.
   at most eight (`LAMINA_CPU_THREADS`). The decode router publishes the expert
   input to mapped host memory before the doorbell, CPU results return through
   mapped memory read by a kernel, and the batch starts before GPU setup.
-- CPU-miss admission (`cuda_projection.cpp`, registered RAM only): after a
-  layer's combine, up to `LAMINA_ADMIT_PER_LAYER` (default 1) CPU experts are
+- CPU-miss admission (`cuda_projection.cpp`, registered RAM only): after GPU
+  expert submission, before waiting for CPU results, up to
+  `LAMINA_ADMIT_PER_LAYER` (default 1) CPU experts are
   copied into a request-local VRAM pool (`LAMINA_ADMIT_MB`, default 2048) with
   its own LRU. Admissions become visible only at the next decode token, after
-  their copy event completes, and RESET drops the pool. Base-cache uploads never
+  the copy stream completes, and RESET drops the pool. Base-cache uploads never
   evict admissions unless only pinned entries remain. This keeps fast-mode output
   identical across repeated requests although CPU and GPU expert arithmetic
   differ in their last bits.

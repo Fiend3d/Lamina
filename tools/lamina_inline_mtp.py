@@ -55,12 +55,12 @@ def _str(out, value: str):
     out.write(raw)
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--norms", choices=("raw", "plus1"), default="raw")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     model = GGUFFile(a.model)
     by_name = {t.name: t for t in model.tensors}
@@ -83,6 +83,7 @@ def main() -> int:
                 data = (np.frombuffer(data, dtype=np.float32) + 1.0).tobytes()
             tensors.append([name, list(t.shape), type_id, data])
 
+    a.out.parent.mkdir(parents=True, exist_ok=True)
     with a.out.open("wb") as out:
         out.write(struct.pack("<I", 0x46554747))
         out.write(struct.pack("<I", 3))

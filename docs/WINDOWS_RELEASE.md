@@ -11,10 +11,11 @@ Download `lamina-windows-x64-portable.zip` from
 [GitHub Releases](https://github.com/Fiend3d/Lamina/releases), extract it into
 a writable folder, then double-click `START-HERE.bat`. Do not run inside the ZIP.
 The model, tokenizer, optional MTP head and settings go into the sibling
-`Lamina-data` folder. The first launch asks for context length and MTP, downloads
-the pinned model and assets, and starts the server. Later launches reuse them.
-The GPU driver is not bundled. The initial portable package supports text,
-tools and reasoning; the optional image encoder is not included.
+`Lamina-data` folder. The first launch asks for model, context length and MTP, downloads
+the selected model and assets, and starts the server. Later launches reuse them.
+The GPU driver is not bundled. The v0.1.4 portable package supports text,
+tools, reasoning and images for Qwen3.6 and Ornith. It includes the CPU image
+encoder and downloads the selected model's verified projector automatically.
 
 The first release, [v0.1.0](https://github.com/Fiend3d/Lamina/releases/tag/v0.1.0),
 is published as a prerelease. Both ZIPs and checksums are public; source setup
@@ -22,7 +23,7 @@ can download the pinned engine automatically.
 
 Source checkouts also support downloading the pinned engine-only release on
 first setup. Its ZIP checksum and the manifest's per-file checksums are verified
-before installation into `../Lamina-data/engine/v0.1.3`. The version is pinned in
+before installation into `../Lamina-data/engine/v0.1.4`. The version is pinned in
 `tools/lamina_release.py`, rather than following whatever release is newest.
 An existing local developer build remains usable. Use `START-HERE.bat setup
 --build-source` to compile from source instead.
@@ -33,7 +34,7 @@ Run from a clean source checkout with the developer requirements installed:
 
 ```powershell
 python -m tools.bootstrap_cuda
-python -m tools.build_windows --portable --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
+python -m tools.build_windows --portable --vision --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
 ../Lamina-data/release-build/lamina-sampling-check.exe
 python -m tools.package_windows
 ```

@@ -95,6 +95,7 @@ class GGUFFile:
         for _ in range(n_kv):
             key = self._str(fh)
             self.metadata[key] = self._value(fh)
+        self.metadata_end = fh.tell()
         for _ in range(n_tensors):
             name = self._str(fh)
             (n_dims,) = struct.unpack("<I", fh.read(4))
