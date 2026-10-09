@@ -1,0 +1,53 @@
+[
+  {
+    "turn": 1,
+    "usage": {
+      "prompt_tokens": 80000,
+      "completion_tokens": 256,
+      "total_tokens": 80256
+    },
+    "timings": {
+      "first_token_seconds": 159.7131375000008,
+      "total_seconds": 172.79032689999985,
+      "cached_prompt_tokens": 0
+    },
+    "later_tokens_per_second": 19.49960287338338,
+    "peak_total_gpu_mib": 7065.4296875,
+    "content": "# File Indexing Service with SQLite\n\nHere's a complete, production-quality Python implementation of a file indexing service.\n\n```python\n\"\"\"\nfile_indexer.py\n\nA file indexing service backed by SQLite with:\n  - Incremental updates (only re-index files that changed)\n  - Content hashing (SHA-256) with fast path via mtime/size\n  - Deduplication of identical content\n  - A command-line interface\n  - A test suite (run with: python -m pytest tests/test_file_indexer.py)\n\nRun the CLI:\n    python file_indexer.py add /path/to/dir\n    python file_indexer.py scan /path/to/dir\n    python file_indexer.py list\n    python file_indexer.py find <filename>\n    python file_indexer.py stats\n    python file_indexer.py remove <path>\n    python file_indexer.py verify\n\"\"\"\n\nfrom __future__ import annotations\n\nimport argparse\nimport hashlib\nimport os\nimport sqlite3\nimport sys\nimport time\nfrom dataclasses import dataclass\nfrom datetime import datetime, timezone\nfrom enum import Enum\nfrom typing import Iterable, Iterator, Optional\n\n\n# --------------------------------------------------------------------------- #\n# Configuration constants\n#",
+    "finish_reason": "length"
+  },
+  {
+    "turn": 2,
+    "usage": {
+      "prompt_tokens": 80290,
+      "completion_tokens": 256,
+      "total_tokens": 80546
+    },
+    "timings": {
+      "first_token_seconds": 2.5196978000003583,
+      "total_seconds": 15.176203099999839,
+      "cached_prompt_tokens": 79993
+    },
+    "later_tokens_per_second": 20.14774173088763,
+    "peak_total_gpu_mib": 7080.7421875,
+    "content": "# File Indexing Service \u2014 Complete Implementation\n\nBelow is the complete, runnable implementation. It's split into logical modules for clarity, but you can paste them all into a single file or a package.\n\n## Project structure\n\n```\nfile_indexer/\n\u251c\u2500\u2500 __init__.py\n\u251c\u2500\u2500 models.py\n\u251c\u2500\u2500 database.py\n\u251c\u2500\u2500 indexer.py\n\u251c\u2500\u2500 cli.py\n\u2514\u2500\u2500 errors.py\n\ntests/\n\u251c\u2500\u2500 __init__.py\n\u2514\u2500\u2500 test_file_indexer.py\n```\n\n---\n\n## `file_indexer/errors.py`\n\n```python\n\"\"\"Custom exceptions for the file indexing service.\"\"\"\n\nfrom __future__ import annotations\n\n\nclass FileIndexerError(Exception):\n    \"\"\"Base class for all file indexer errors.\"\"\"\n\n\nclass IndexerConfigError(FileIndexerError):\n    \"\"\"Raised when the indexer is misconfigured.\"\"\"\n\n\nclass FileNotFound(IndexerConfigError):\n    \"\"\"Raised when a referenced file no longer exists.\"\"\"\n\n\nclass DirectoryNotFound(IndexerConfigError):\n    \"\"\"Raised when a referenced directory no longer exists.\"\"\"\n\n\nclass IndexCorruptError(FileIndexerError):\n    \"\"\"Raised when the SQLite index is in an invalid state.\"\"\"\n\n\nclass LockError(FileIndex",
+    "finish_reason": "length"
+  },
+  {
+    "turn": 3,
+    "usage": {
+      "prompt_tokens": 80580,
+      "completion_tokens": 256,
+      "total_tokens": 80836
+    },
+    "timings": {
+      "first_token_seconds": 2.541040400001293,
+      "total_seconds": 14.908982200000537,
+      "cached_prompt_tokens": 80283
+    },
+    "later_tokens_per_second": 20.617820177647957,
+    "peak_total_gpu_mib": 7080.7421875,
+    "content": "# File Indexing Service \u2014 Complete Implementation\n\nHere's the full, runnable implementation with robust error handling, concurrency control, and comprehensive tests.\n\n## Project Structure\n\n```\nfile_indexer/\n\u251c\u2500\u2500 __init__.py\n\u251c\u2500\u2500 errors.py\n\u251c\u2500\u2500 models.py\n\u251c\u2500\u2500 database.py\n\u251c\u2500\u2500 indexer.py\n\u251c\u2500\u2500 cli.py\n\u2514\u2500\u2500 __main__.py\n\ntests/\n\u251c\u2500\u2500 __init__.py\n\u2514\u2500\u2500 test_file_indexer.py\n```\n\n---\n\n## `file_indexer/__init__.py`\n\n```python\n\"\"\"File indexing service with SQLite, incremental updates, and content hashing.\"\"\"\n\nfrom .errors import (\n    FileIndexerError,\n    IndexerConfigError,\n    FileNotFound,\n    DirectoryNotFound,\n    IndexCorruptError,\n    LockError,\n)\nfrom .models import (\n    FileRecord,\n    IndexStats,\n    ScanResult,\n    HashAlgorithm,\n)\nfrom .database import IndexDatabase\nfrom .indexer import FileIndexer\n\n__all__ = [\n    \"FileIndexerError\",\n    \"IndexerConfigError\",\n    \"FileNotFound\",\n   ",
+    "finish_reason": "length"
+  }
+]

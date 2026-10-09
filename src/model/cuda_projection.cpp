@@ -620,6 +620,13 @@ struct CudaProjection::Impl {
         uint64_t used = 0;
     };
     std::unordered_map<std::string, MoeGraph> moe_graphs;
+    // CPU misses change the routed GPU batch size. Retain the variants across
+    // all 40 layers instead of repeatedly evicting and recapturing them. Loading
+    // MTP restores 128: its eager pair path did not benefit from this budget.
+    size_t moe_graph_limit = [] {
+        const char* v = std::getenv("LAMINA_MOE_GRAPH_CACHE");
+        return size_t(v && *v ? std::clamp(std::atoi(v), 1, 4096) : 512);
+    }();
     uint64_t moe_graph_hits = 0, moe_graph_misses = 0;
     strata::kernels::NativeF32Grouped *expert_table_host = nullptr, *expert_table_gpu = nullptr;
     float* g_qkv = nullptr;
@@ -1917,7 +1924,7 @@ void CudaProjection::moe_pipeline(const float* x, float* output, const MoeWeight
         const auto timed = impl_->begin_time(impl_->stream, 1);
         auto it = impl_->moe_graphs.find(key);
         if (it == impl_->moe_graphs.end()) {
-            if (impl_->moe_graphs.size() >= 128) {
+            if (impl_->moe_graphs.size() >= impl_->moe_graph_limit) {
                 auto oldest = impl_->moe_graphs.begin();
                 for (auto q = impl_->moe_graphs.begin(); q != impl_->moe_graphs.end(); ++q) if (q->second.used < oldest->second.used) oldest = q;
                 if (oldest->second.exec) check(cudaGraphExecDestroy(oldest->second.exec), "release pipeline graph");
@@ -2286,7 +2293,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
         auto found = impl_->moe_graphs.find(key);
         if (found == impl_->moe_graphs.end()) {
             ++impl_->moe_graph_misses;
-            if (impl_->moe_graphs.size() >= 128) {
+            if (impl_->moe_graphs.size() >= impl_->moe_graph_limit) {
                 auto oldest = impl_->moe_graphs.begin();
                 for (auto it = impl_->moe_graphs.begin(); it != impl_->moe_graphs.end(); ++it)
                     if (it->second.used < oldest->second.used) oldest = it;
@@ -2341,6 +2348,20 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     const auto t_after_gu = std::chrono::steady_clock::now();
     impl_->lease_active = false;
     impl_->leases.clear();
+    // Queue future-token admissions while CPU rows are still running. Reused
+    // blocks wait on the compute-stream epoch after their current GPU readers;
+    // promotion still happens only at the next token, independent of DMA timing.
+    static const bool early_admit = !env_is("LAMINA_ADMIT_EARLY", '0');
+    const auto admit_cpu = [&] {
+        const auto h_admit = HostClock::now();
+        for (size_t i = 0; i < cpu_slots.size() && int(i) < impl_->admit_per_layer; ++i) {
+            const int expert = experts[cpu_slots[i]];
+            if (!(impl_->admit(*routed.gate, routed.gate_data, expert) && impl_->admit(*routed.up, routed.up_data, expert) &&
+                  impl_->admit(*routed.down, routed.down_data, expert))) break;
+        }
+        if (impl_->timeline) impl_->tl_host[3] += host_ms(h_admit, HostClock::now());
+    };
+    if (early_admit) admit_cpu();
     impl_->tl_mark(kTlMissWait);  // the stream idles here if the CPU experts finish after the GPU ones
     if (!cpu_slots.empty()) {
         cpu_batch.pool = nullptr;
@@ -2363,19 +2384,7 @@ void CudaProjection::moe_core(const float* x_dev, float* out_dev, const MoeWeigh
     } else cuda::moe_combine(impl_->down_dev, impl_->scales_dev, static_cast<int>(slots), hidden, out_dev,
                              impl_->stream);
     check(cudaGetLastError(), "launch MoE");
-    // Copy this layer's CPU experts into the cache in the background, highest
-    // router weight first, so following tokens run them on the GPU. Evicted
-    // blocks are fenced by their retirement events. (Deferring this host work
-    // into the next layer's doorbell wait measured slower: 31.0 -> 29.0 tok/s.)
-    const auto h_admit = HostClock::now();
-    // (Admitting only experts already used two or three times on the CPU, or
-    // more than one per layer, measured no better.)
-    for (size_t i = 0; i < cpu_slots.size() && int(i) < impl_->admit_per_layer; ++i) {
-        const int expert = experts[cpu_slots[i]];
-        if (!(impl_->admit(*routed.gate, routed.gate_data, expert) && impl_->admit(*routed.up, routed.up_data, expert) &&
-              impl_->admit(*routed.down, routed.down_data, expert))) break;
-    }
-    if (impl_->timeline) impl_->tl_host[3] += host_ms(h_admit, HostClock::now());
+    if (!early_admit) admit_cpu();
     if (device_profile()) {
         const auto t_end = std::chrono::steady_clock::now();
         std::fprintf(stderr, "  core scales=%.3f gu=%.3f down=%.3f combine=%.3f\n",
@@ -3063,6 +3072,17 @@ void CudaProjection::pair_moe(const strata::TensorInfo& router, const uint8_t* r
         prof_ms[1] += std::chrono::duration<double, std::milli>(launched - routed_at).count();
         prof_union += unique.size(); prof_cpu += cpu_ids.size();
     }
+    static const bool early_admit = !env_is("LAMINA_ADMIT_EARLY", '0');
+    const auto admit_cpu = [&] {
+        int admitted = 0;
+        for (const auto& u : unique) {
+            if (!u.cpu) continue;
+            if (admitted++ >= impl_->admit_per_layer) break;
+            if (!(impl_->admit(*routed.gate, routed.gate_data, u.expert) && impl_->admit(*routed.up, routed.up_data, u.expert) &&
+                  impl_->admit(*routed.down, routed.down_data, u.expert))) break;
+        }
+    };
+    if (early_admit) admit_cpu();
     if (!cpu_ids.empty()) {
         cpu_batch.pool = nullptr;
         impl_->cpu_experts->wait();
@@ -3079,15 +3099,7 @@ void CudaProjection::pair_moe(const strata::TensorInfo& router, const uint8_t* r
         check(cudaEventRecord(impl_->cpu_down_copied, impl_->stream), "record CPU staging reuse");
     }
     check(cudaGetLastError(), "launch pair MoE");
-    // Admit CPU experts into the cache as the single-token path does, first
-    // column's highest router weight first.
-    int admitted = 0;
-    for (const auto& u : unique) {
-        if (!u.cpu) continue;
-        if (admitted++ >= impl_->admit_per_layer) break;
-        if (!(impl_->admit(*routed.gate, routed.gate_data, u.expert) && impl_->admit(*routed.up, routed.up_data, u.expert) &&
-              impl_->admit(*routed.down, routed.down_data, u.expert))) break;
-    }
+    if (!early_admit) admit_cpu();
     if (profile && ++prof_calls % 2560 == 0)
         std::fprintf(stderr, "pair moe calls=%llu route_wait_ms=%.3f setup_ms=%.3f cpu_wait_ms=%.3f union=%.2f cpu=%.2f\n",
                      static_cast<unsigned long long>(prof_calls), prof_ms[0] / double(prof_calls), prof_ms[1] / double(prof_calls),
@@ -3517,6 +3529,21 @@ double CudaProjection::mark_end_ms() {
     return static_cast<double>(ms);
 }
 
+void CudaProjection::configure_mtp_graph_cache() {
+    const char* configured = std::getenv("LAMINA_MOE_GRAPH_CACHE");
+    if (configured && *configured) return;
+    impl_->moe_graph_limit = 128;
+    if (impl_->moe_graphs.size() <= impl_->moe_graph_limit) return;
+    check(cudaStreamSynchronize(impl_->stream), "finish graphs before MTP cache configuration");
+    while (impl_->moe_graphs.size() > impl_->moe_graph_limit) {
+        auto oldest = impl_->moe_graphs.begin();
+        for (auto it = impl_->moe_graphs.begin(); it != impl_->moe_graphs.end(); ++it)
+            if (it->second.used < oldest->second.used) oldest = it;
+        if (oldest->second.exec) check(cudaGraphExecDestroy(oldest->second.exec), "release graph for MTP cache");
+        impl_->moe_graphs.erase(oldest);
+    }
+}
+
 void CudaProjection::timeline_mark(TimelineStage stage) { impl_->tl_mark(stage); }
 
 void CudaProjection::timeline_token() {
@@ -3607,6 +3634,7 @@ std::vector<float> CudaProjection::normalize_columns(const strata::TensorInfo&, 
     throw std::runtime_error("Lamina was built without CUDA");
 }
 void CudaProjection::register_weight_ram(const uint8_t*, size_t) {}
+void CudaProjection::configure_mtp_graph_cache() { throw std::runtime_error("CUDA unavailable"); }
 void CudaProjection::prefill_layer(int) { throw std::runtime_error("CUDA unavailable"); }
 void CudaProjection::prefill_long_upload(const std::vector<float>&, const std::vector<std::array<int, 3>>&) { throw std::runtime_error("CUDA unavailable"); }
 void CudaProjection::prefill_long_tile(int,int) { throw std::runtime_error("CUDA unavailable"); }

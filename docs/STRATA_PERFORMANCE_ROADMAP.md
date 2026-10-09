@@ -6,6 +6,25 @@ Lamina has a working Qwen3.6 port, but the performance objective is unmet.
 The next phase must reduce measured end-to-end inference cost. Reusing
 Strata kernels alone has not reproduced its execution performance.
 
+**Update, 9 October 2026 (RTX 4060 8 GB / Ryzen 7 1700X).** Decode admissions
+now queue before waiting for CPU experts, overlapping host submission and DMA
+with CPU rows while retaining reader fences and next-token promotion. Combined
+with a larger ordinary MoE graph cache, nine-run short-prompt medians improved
+36.07 -> 39.17 tokens/s for Ornith and 35.26 -> 38.53 for pinned Qwen; MTP
+measured 40.58 -> 41.27 and 41.51 -> 43.88 respectively. All output tokens match
+before/after within each mode. Capacity remains 131072. See the
+[decode admission record](../bench/results/2026-10-09-decode-admission-128k/README.md).
+These changes do not establish Strata parity or a full-context speed gain.
+
+The long-context architectural comparison also needs care: the inherited
+Qwen3.8 QSA path scores pooled history and gathers at most 2051 selected cells
+for attention (`qsa_real_shapes`, `qsa_selection_width` in
+`include/strata/kernels/qsa.hpp`). Qwen3.6/Ornith uses dense attention over the
+complete KV history in its ten attention layers. The index scoring still grows
+with history, but the final attention reads far fewer KV cells. That trained
+selection mechanism cannot be transplanted into Ornith by simply dropping
+unselected tokens. Optimize its full-history attention and scheduling separately.
+
 **Update, 7 October 2026 (RTX 3050 8 GB / Ryzen 7 5700X machine).** Step 1 has
 a tool: `LAMINA_TIMELINE=1` partitions each token's stream time into stages.
 Acceptance milestone 2 is reached on that machine: with CPU experts as the

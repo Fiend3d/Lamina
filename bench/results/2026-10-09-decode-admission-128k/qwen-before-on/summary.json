@@ -1,0 +1,25 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer-ornith-baseline.exe",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--cuda",
+    "--compute-mode",
+    "fast",
+    "--kv-type",
+    "f16",
+    "--kv-cache",
+    "device",
+    "--max-context",
+    "131072",
+    "--mtp",
+    "D:\\Projects\\lamina\\Lamina-data\\mtp\\qwen36-mtp-q8_0.gguf",
+    "--interactive"
+  ],
+  "startup_seconds": 0.26053309999952035,
+  "prompt_medians": {
+    "prose": 41.51199581910595,
+    "code": 41.14278390179284,
+    "math": 41.72015231095508
+  },
+  "median_later_tokens_per_second": 41.51199581910595
+}

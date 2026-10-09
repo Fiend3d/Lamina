@@ -1,0 +1,1 @@
+swiglu max_abs_diff=9.53674e-07 accumulate max_abs_diff=7.62939e-06 long_rope_first_pair max_abs_diff=9.13092e-07

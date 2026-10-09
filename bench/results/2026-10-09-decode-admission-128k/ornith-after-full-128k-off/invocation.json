@@ -1,0 +1,34 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina-data\\venv\\Scripts\\python.exe",
+    "-m",
+    "tools.compare_lamina",
+    "--engine",
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "--model",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "--tokenizer",
+    "D:\\Projects\\lamina\\Lamina-data\\ornith\\tokenizer.json",
+    "--context",
+    "131072",
+    "--repeats",
+    "1",
+    "--tokens",
+    "256",
+    "--host-register",
+    "1",
+    "--report-dir",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\acceptance\\ornith-after-full-128k-off",
+    "--prompt-file",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\ornith-full-128k.txt",
+    "--fixed-tokens",
+    "--warmup-tokens",
+    "64",
+    "--progress-file",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\acceptance\\ornith-after-full-128k-off\\progress.json"
+  ],
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_PROGRESS": "1"
+  }
+}

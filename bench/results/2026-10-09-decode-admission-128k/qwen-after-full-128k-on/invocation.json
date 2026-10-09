@@ -1,0 +1,36 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina-data\\venv\\Scripts\\python.exe",
+    "-m",
+    "tools.compare_lamina",
+    "--engine",
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "--model",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "--tokenizer",
+    "D:\\Projects\\lamina\\Lamina-data\\tokenizer\\tokenizer.json",
+    "--context",
+    "131072",
+    "--repeats",
+    "1",
+    "--tokens",
+    "256",
+    "--host-register",
+    "1",
+    "--report-dir",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\acceptance\\qwen-after-full-128k-on",
+    "--prompt-file",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\qwen-full-128k.txt",
+    "--fixed-tokens",
+    "--warmup-tokens",
+    "64",
+    "--progress-file",
+    "D:\\Projects\\lamina\\Lamina-data\\performance\\ornith-optimization\\acceptance\\qwen-after-full-128k-on\\progress.json",
+    "--mtp",
+    "D:\\Projects\\lamina\\Lamina-data\\mtp\\qwen36-mtp-q8_0.gguf"
+  ],
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_PROGRESS": "1"
+  }
+}

@@ -1,0 +1,10 @@
+registered model RAM: 21109.1 MiB, direct expert DMA enabled
+speculation steps=151 accepted=103 rate=0.682 backoffs=0 draft_ms=3.920 verify_ms=40.681
+speculation steps=302 accepted=206 rate=0.682 backoffs=0 draft_ms=3.661 verify_ms=40.416
+speculation steps=453 accepted=309 rate=0.682 backoffs=0 draft_ms=3.491 verify_ms=38.846
+speculation steps=591 accepted=426 rate=0.721 backoffs=0 draft_ms=3.447 verify_ms=39.327
+speculation steps=729 accepted=543 rate=0.745 backoffs=0 draft_ms=3.395 verify_ms=39.569
+speculation steps=867 accepted=660 rate=0.761 backoffs=0 draft_ms=3.358 verify_ms=39.727
+speculation steps=997 accepted=784 rate=0.786 backoffs=0 draft_ms=3.335 verify_ms=40.088
+speculation steps=1127 accepted=908 rate=0.806 backoffs=0 draft_ms=3.315 verify_ms=40.365
+speculation steps=1257 accepted=1032 rate=0.821 backoffs=0 draft_ms=3.297 verify_ms=40.578

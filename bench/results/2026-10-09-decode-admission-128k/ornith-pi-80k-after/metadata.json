@@ -1,0 +1,14 @@
+{
+  "engine_sha256": "a15c3d17a9136c75fa84319b6bab6a622de5ec65d6c189da65d893cb00ac60c1",
+  "context_capacity": 131072,
+  "model": "D:\\Projects\\lamina\\Lamina-data\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+  "kv_type": "f16",
+  "compute_mode": "fast",
+  "mtp": "D:\\Projects\\lamina\\Lamina-data\\mtp\\ornith-mtp.gguf",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "driver": "610.88",
+  "environment": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_PREFILL_PROGRESS": "1"
+  }
+}

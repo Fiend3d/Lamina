@@ -227,6 +227,7 @@ void Inference::load_mtp(const std::string& path) {
     auto file = std::make_unique<strata::GgufFile>(path);
     for (const char* name : {"mtp.fc.weight", "mtp.attn_q.weight", "mtp.ffn_gate_exps.weight", "mtp.output_norm.weight"})
         if (!file->find(name)) throw std::runtime_error(std::string("MTP file lacks ") + name);
+    cuda_->configure_mtp_graph_cache();
     mtp_file_ = std::move(file);
     mtp_position_ = 0;
 }

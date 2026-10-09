@@ -1,0 +1,2 @@
+f32 restored suffix max_abs_diff=0
+fast restored suffix max_abs_diff=0

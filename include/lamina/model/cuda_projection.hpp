@@ -83,6 +83,8 @@ public:
     // Optional direct DMA from the mapped model, with a staging fallback when
     // the Windows driver refuses registration of a large read-only arena.
     void register_weight_ram(const uint8_t* source, size_t bytes);
+    // Preserve the measured speculation budget unless explicitly overridden.
+    void configure_mtp_graph_cache();
     // Batched device chain: empty vector inputs below select its normalized
     // activation. Only the last hidden row is downloaded at the chunk boundary.
     void prefill_upload(const std::vector<float>& embeddings, int columns, const std::vector<std::array<int, 3>>& positions);

@@ -1,0 +1,12 @@
+﻿{
+    "driver":  "610.88",
+    "ram_bytes":  68640178176,
+    "gpu_total_mib":  8188,
+    "cpu":  "AMD Ryzen 7 1700X Eight-Core Processor         ",
+    "source_commit":  "5cbe58ae5e3a056dc36a4cf646f5626ea45c813e",
+    "os":  "Microsoft Windows 11 Enterprise LTSC",
+    "cuda_toolkit":  "13.3",
+    "logical_processors":  16,
+    "original_model_sha256":  "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+    "gpu":  "NVIDIA GeForce RTX 4060"
+}

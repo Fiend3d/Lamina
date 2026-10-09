@@ -1,0 +1,23 @@
+{
+  "command": [
+    "D:\\Projects\\lamina\\Lamina\\build-cuda\\lamina-infer.exe",
+    "D:\\Projects\\lamina\\Lamina-data\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "--cuda",
+    "--compute-mode",
+    "fast",
+    "--kv-type",
+    "f16",
+    "--kv-cache",
+    "device",
+    "--max-context",
+    "32768",
+    "--interactive"
+  ],
+  "startup_seconds": 0.33746419999988575,
+  "prompt_medians": {
+    "prose": 40.09675299324761,
+    "code": 36.438443644052626,
+    "math": 35.503230940205015
+  },
+  "median_later_tokens_per_second": 36.34701547600324
+}

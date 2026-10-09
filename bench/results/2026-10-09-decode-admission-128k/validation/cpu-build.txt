@@ -1,0 +1,22 @@
+MSBuild version 17.14.40+3e7442088 for .NET Framework
+
+  lamina-gguf.vcxproj -> D:\Projects\lamina\Lamina\build\Release\lamina-gguf.exe
+MSBuild version 17.14.40+3e7442088 for .NET Framework
+
+  cpu_experts.cpp
+  cuda_projection.cpp
+  inference.cpp
+D:\Projects\lamina\Lamina\src\model\inference.cpp(298,61): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina_model.vcxproj]
+D:\Projects\lamina\Lamina\src\model\inference.cpp(773,57): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina_model.vcxproj]
+D:\Projects\lamina\Lamina\src\model\inference.cpp(826,17): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina_model.vcxproj]
+D:\Projects\lamina\Lamina\src\model\inference.cpp(1009,59): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina_model.vcxproj]
+  Generating Code...
+  lamina_model.vcxproj -> D:\Projects\lamina\Lamina\build\Release\lamina_model.lib
+  infer_main.cpp
+D:\Projects\lamina\Lamina\src\model\infer_main.cpp(180,78): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina-infer.vcxproj]
+D:\Projects\lamina\Lamina\src\model\infer_main.cpp(153,41): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\Projects\lamina\Lamina\build\lamina-infer.vcxproj]
+  lamina-infer.vcxproj -> D:\Projects\lamina\Lamina\build\Release\lamina-infer.exe
+MSBuild version 17.14.40+3e7442088 for .NET Framework
+
+  sampling_check.cpp
+  lamina-sampling-check.vcxproj -> D:\Projects\lamina\Lamina\build\Release\lamina-sampling-check.exe

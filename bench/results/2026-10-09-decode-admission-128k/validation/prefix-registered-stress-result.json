@@ -1,0 +1,14 @@
+{
+  "command": [
+    "build-cuda/lamina-prefix-check.exe",
+    "../Lamina-data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+  ],
+  "environment_overrides": {
+    "LAMINA_HOST_REGISTER": "1",
+    "LAMINA_MOE_GRAPH_CACHE": "1",
+    "LAMINA_ADMIT_MB": "4"
+  },
+  "returncode": 0,
+  "f32_restored_suffix_max_abs_diff": 0,
+  "fast_restored_suffix_max_abs_diff": 0
+}

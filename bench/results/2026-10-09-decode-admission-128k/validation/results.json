@@ -1,0 +1,141 @@
+[
+  {
+    "check": "reference-40",
+    "command": [
+      "D:\\Projects\\lamina\\Lamina-data\\venv\\Scripts\\python.exe",
+      "-m",
+      "tools.reference_prefix",
+      "--layers",
+      "40",
+      "--engine",
+      "build-cuda/lamina-infer.exe",
+      "--cuda",
+      "--batched",
+      "--tokens",
+      "42",
+      "43",
+      "44",
+      "45",
+      "--max-context",
+      "131072",
+      "--kv-cache",
+      "host"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 102.93806489999952
+  },
+  {
+    "check": "elementwise",
+    "command": [
+      "build-cuda/lamina-cuda-elementwise-check.exe"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 0.18035670000062964
+  },
+  {
+    "check": "attention",
+    "command": [
+      "build-cuda/lamina-cuda-attention-check.exe"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 2.925727800000459
+  },
+  {
+    "check": "projection",
+    "command": [
+      "build-cuda/lamina-cuda-projection-check.exe",
+      "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 0.5618995999993786
+  },
+  {
+    "check": "prefix-default",
+    "command": [
+      "build-cuda/lamina-prefix-check.exe",
+      "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 10.46095509999941
+  },
+  {
+    "check": "prefix-eviction",
+    "command": [
+      "build-cuda/lamina-prefix-check.exe",
+      "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    ],
+    "environment_overrides": {
+      "LAMINA_MOE_GRAPH_CACHE": "1"
+    },
+    "returncode": 0,
+    "seconds": 10.385444699999425
+  },
+  {
+    "check": "prefill",
+    "command": [
+      "build-cuda/lamina-prefill-check.exe",
+      "D:\\Projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 91.50499180000043
+  },
+  {
+    "check": "cpu-configure",
+    "command": [
+      "cmake",
+      "-S",
+      ".",
+      "-B",
+      "build"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 0.47782899999947404
+  },
+  {
+    "check": "cpu-build",
+    "command": [
+      "cmake",
+      "--build",
+      "build",
+      "--config",
+      "Release",
+      "--target",
+      "lamina-gguf",
+      "lamina-infer",
+      "lamina-sampling-check"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 16.2523970000002
+  },
+  {
+    "check": "python-tests",
+    "command": [
+      "D:\\Projects\\lamina\\Lamina-data\\venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests/lamina"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 2.2130519000002096
+  },
+  {
+    "check": "sampling",
+    "command": [
+      "build/Release/lamina-sampling-check.exe"
+    ],
+    "environment_overrides": {},
+    "returncode": 0,
+    "seconds": 0.033262099999774364
+  }
+]

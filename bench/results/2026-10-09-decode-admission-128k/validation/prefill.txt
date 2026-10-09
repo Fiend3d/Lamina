@@ -1,0 +1,44 @@
+layers=4 cache=host tokens=1025 chunk=1024
+prefill max_abs_diff=2.38418579e-07
+decode after prefill max_abs_diff=1.78813934e-07
+reset after prefill max_abs_diff=1.78813934e-07
+image mRoPE prefill max_abs_diff=2.38418579e-06
+text after image max_abs_diff=1.1920929e-07
+layers=40 cache=host tokens=64 chunk=32
+prefill max_abs_diff=7.62939453e-06
+decode after prefill max_abs_diff=9.53674316e-07
+reset after prefill max_abs_diff=7.15255737e-07
+image mRoPE prefill max_abs_diff=8.85501504e-06
+text after image max_abs_diff=6.67572021e-06
+layers=4 cache=device tokens=1025 chunk=1024
+prefill max_abs_diff=2.38418579e-07
+decode after prefill max_abs_diff=1.78813934e-07
+reset after prefill max_abs_diff=1.78813934e-07
+image mRoPE prefill max_abs_diff=2.38418579e-06
+text after image max_abs_diff=1.1920929e-07
+layers=40 cache=device tokens=64 chunk=32
+prefill max_abs_diff=7.62939453e-06
+decode after prefill max_abs_diff=9.53674316e-07
+reset after prefill max_abs_diff=7.15255737e-07
+image mRoPE prefill max_abs_diff=8.85501504e-06
+text after image max_abs_diff=6.67572021e-06
+long layer-major layers=4 cache=host tokens=4097 chunk=1024
+layer-major residual max_abs_diff=1.1920929e-07
+layer-major later decode max_abs_diff=1.78813934e-07
+layer-major after captured decode max_abs_diff=1.49011612e-07
+layer-major reset max_abs_diff=1.1920929e-07
+long layer-major layers=40 cache=host tokens=129 chunk=32
+layer-major residual max_abs_diff=1.90734863e-06
+layer-major later decode max_abs_diff=1.07288361e-06
+layer-major after captured decode max_abs_diff=1.07288361e-06
+layer-major reset max_abs_diff=1.90734863e-06
+long layer-major layers=4 cache=device tokens=4097 chunk=1024
+layer-major residual max_abs_diff=1.1920929e-07
+layer-major later decode max_abs_diff=1.78813934e-07
+layer-major after captured decode max_abs_diff=1.49011612e-07
+layer-major reset max_abs_diff=1.1920929e-07
+long layer-major layers=40 cache=device tokens=129 chunk=32
+layer-major residual max_abs_diff=1.90734863e-06
+layer-major later decode max_abs_diff=1.07288361e-06
+layer-major after captured decode max_abs_diff=1.07288361e-06
+layer-major reset max_abs_diff=1.90734863e-06

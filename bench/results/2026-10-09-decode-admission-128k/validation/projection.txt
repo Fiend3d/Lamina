@@ -1,0 +1,6 @@
+blk.0.attn_gate.weight type=Q8_0 shape=2048x4096 expert=-1 relative_l2=9.48841e-08 max_abs=1.98447e-07 repeat_max=0 zero_rows=0/4096 reference_nonzero=4096 first(cuda/ref)=-0.0354677/-0.0354677
+blk.0.ffn_gate_exps.weight type=Q4_K shape=2048x512 expert=0 relative_l2=1.02344e-07 max_abs=6.22433e-08 repeat_max=0 zero_rows=280/512 reference_nonzero=232 first(cuda/ref)=0.139055/0.139055
+blk.0.ffn_up_exps.weight type=Q4_K shape=2048x512 expert=112 relative_l2=8.97997e-08 max_abs=5.11713e-08 repeat_max=0 zero_rows=132/512 reference_nonzero=380 first(cuda/ref)=0/0
+blk.0.ffn_down_exps.weight type=Q5_K shape=512x2048 expert=112 relative_l2=8.22179e-08 max_abs=3.96331e-08 repeat_max=0 zero_rows=0/2048 reference_nonzero=2048 first(cuda/ref)=-0.115789/-0.115789
+blk.34.ffn_down_exps.weight type=Q6_K shape=512x2048 expert=0 relative_l2=8.37361e-08 max_abs=3.96022e-08 repeat_max=0 zero_rows=0/2048 reference_nonzero=2048 first(cuda/ref)=0.0741195/0.0741195
+CUDA projection checks passed
