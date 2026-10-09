@@ -62,6 +62,14 @@ but differ between modes; no output-equivalence or quality claim. See
 for exact commands, startup latency and limitations. `tools.compare_lamina`
 accepts `--model` and `--tokenizer` for this measurement.
 
+On the RTX 3050 8 GB / Ryzen 7 5700X machine, Ornith measures a nine-run median
+of 42.03 tokens/s without MTP and 46.15 with MTP (prose 45.38 -> 42.44, because
+its drafts are accepted only 49% of the time). The 40-layer reference matches,
+and all-GPU speculative output equals single-token output. Cache, admission
+and thread settings, a faster acceptance guard and the official Q8_0 MTP head
+did not help and were not kept. See
+[the Ornith RTX 3050 record](../bench/results/2026-10-09-ornith-rtx3050/README.md).
+
 Decode admissions now queue after GPU expert submission and before the CPU
 expert wait, overlapping their host/DMA work with CPU rows. Reader retirement
 epochs and deterministic next-token promotion remain intact. Disable with
