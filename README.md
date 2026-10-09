@@ -169,10 +169,8 @@ Start the server with `.\START-HERE.bat` and leave its window open. Then add
 Lamina to the app as an OpenAI-compatible provider. For the
 [pi coding agent](https://pi.dev) (needs Node.js 22.19 or newer and Git for
 Windows), put this in `~\.pi\agent\models.json`, creating the file if needed.
-Set `contextWindow` to the context length you chose. `maxTokens` is the longest
-answer pi asks for; the server rejects a budget that does not fit beside the
-prompt, so keep it well below the context (8192 for 32K, 32768 for 128K). A
-whole file is written in one answer, so a small value cuts big files off:
+The example is for the 131072-token (128K) context and lets one answer use up
+to 32768 tokens:
 
 ```json
 {
@@ -186,10 +184,9 @@ whole file is written in one answer, so a small value cuts big files off:
         "name": "Qwen3.6-35B-A3B (Lamina)",
         "reasoning": true,
         "input": ["text", "image"],
-        "contextWindow": 32768,
-        "maxTokens": 8192,
+        "contextWindow": 131072,
+        "maxTokens": 32768,
         "compat": {
-          "supportsDeveloperRole": false,
           "supportsReasoningEffort": false,
           "supportsUsageInStreaming": true,
           "maxTokensField": "max_tokens",
@@ -201,10 +198,18 @@ whole file is written in one answer, so a small value cuts big files off:
 }
 ```
 
+`contextWindow` must match the context length chosen at setup. If you chose
+32K, use `"contextWindow": 32768` and `"maxTokens": 8192`; run
+`.\START-HERE.bat --reconfigure` to switch the server to 128K. `maxTokens` is
+the longest answer pi asks for. The server rejects a request whose prompt and
+`maxTokens` together exceed the context, so keep it well below
+`contextWindow`. A whole file is written in one answer, so a small value cuts
+big files off. The `id` stays `Qwen3.6-35B-A3B-UD-Q4_K_M` when the server runs
+Ornith, because that is the only model name the server reports and accepts;
+`name` is only the label pi shows.
+
 Then run `pi --model lamina/Qwen3.6-35B-A3B-UD-Q4_K_M` in your project folder
-and pick the model with `/model` if needed. The `compat` lines matter: the
-server accepts only the system, user, assistant and tool message roles, and
-answers `max_tokens`, not `max_completion_tokens`. With `"reasoning": true` and
+and pick the model with `/model` if needed. With `"reasoning": true` and
 `"thinkingFormat": "qwen"` pi sends `enable_thinking`, so the model's reasoning
 appears in pi while it is generated; switch it off with `/thinking` for faster
 answers. If pi's bash tool reports
@@ -225,9 +230,7 @@ process only the new text. Restarting the server, editing earlier messages or
 compacting the conversation can require reading the history again. Check the
 server log's `reused` token count to see whether reuse is working.
 
-For 128K sessions, set pi's `contextWindow` to `131072` and leave room for
-answers with its `maxTokens` setting. Review generated code and changes before
-using them.
+Review generated code and changes before using them.
 
 ## Troubleshooting
 
