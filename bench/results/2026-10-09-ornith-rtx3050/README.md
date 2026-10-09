@@ -181,4 +181,4 @@ The reference check used `OPENBLAS_NUM_THREADS=1` and, for each model:
 ```
 
 Raw reports, per-mode summaries and native stderr are in `mtp-off/` and
-`mtp-on/`; `mtp-off.log` and `mtp-on.log` hold the per-run console lines.
+`mtp-on/`.
