@@ -56,6 +56,17 @@ REQUIREMENTS = ["requirements.txt", "requirements-build.txt", "requirements-refe
 RUNTIME_REQUIREMENTS = ["requirements.txt", "requirements-reference.txt"]
 
 
+def required_requirements(config, build_source=False):
+    """Runtime packages, plus the build toolchain whenever a local compile may run.
+
+    Building the engine or the CUDA image encoder needs requirements-build.txt
+    (ninja), so a source build or GPU image encoding must install it too.
+    """
+    if build_source or (config.get("vision", True) and config.get("vision_device") == "gpu"):
+        return REQUIREMENTS
+    return RUNTIME_REQUIREMENTS
+
+
 def portable():
     return (ROOT / "portable.json").is_file()
 
@@ -228,7 +239,7 @@ def setup(config, cuda_arch=None, build_source=False):
     arch = cuda_arch or capability
     print(f"GPU: {name}, compute capability {capability[0]}.{capability[1:]}, {memory} MiB; RAM: {total_ram_gib():.0f} GiB")
 
-    requirements = REQUIREMENTS if build_source else RUNTIME_REQUIREMENTS
+    requirements = required_requirements(config, build_source)
     marker = DATA / ".quickstart-requirements"
     if not portable() and (not marker.is_file() or marker.read_text() != requirements_digest(requirements)):
         step("Installing Python packages")
@@ -553,7 +564,7 @@ def main():
                    or not paths["model"].is_file()
                    or not paths["tokenizer"].is_file()
                    or (config.get("vision", True) and (selected_vision(config) is None or not vision_projector(config).is_file()))
-                   or not marker.is_file() or marker.read_text() != requirements_digest(RUNTIME_REQUIREMENTS)
+                   or not marker.is_file() or marker.read_text() != requirements_digest(required_requirements(config, args.build_source))
                    or (config.get("mtp") and not paths["mtp"].is_file()))
     if needs_setup:
         setup(config, args.cuda_arch, args.build_source)
