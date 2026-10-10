@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -16,10 +17,17 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT.parent / "Lamina-data"
 TOKENIZER_URL = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/resolve/995ad96eacd98c81ed38be0c5b274b04031597b0/tokenizer.json"
 TOKENIZER_SHA256 = "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
+# Bahushruth's abliterated (uncensored) build of the pinned base model. Same
+# qwen35moe graph and tokenizer; the revision and SHA-256 pin the exact weights.
+ABLITERATED_REPO = "Bahushruth/Qwen3.6-35B-A3B-abliterated-v4-GGUF"
+ABLITERATED_REVISION = "b8a9ab20c8bde880621a7bab65073c0078ef33f7"
+ABLITERATED_FILENAME = "Qwen3.6-35B-A3B-abliterated-v4-Q4_K_M.gguf"
+ABLITERATED_SIZE = 21_166_757_792
+ABLITERATED_SHA256 = "0a9c6bcf5bf63877aa1eb686841e3d5538fcdc825500f1a715ce0f7e74da5f9f"
+ABLITERATED_URL = f"https://huggingface.co/{ABLITERATED_REPO}/resolve/{ABLITERATED_REVISION}/{ABLITERATED_FILENAME}"
 
 
 def download_tokenizer(target: Path) -> None:
-    import hashlib
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == TOKENIZER_SHA256:
         print(f"Already verified: {target}")
@@ -33,21 +41,21 @@ def download_tokenizer(target: Path) -> None:
     print(f"Verified tokenizer: {target}")
 
 
-def download(target: Path) -> None:
+def download_stream(url: str, size: int, target: Path, verify) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        validate_file(target)
+        verify(target)
         print(f"Already verified: {target}")
         return
     partial = target.with_name(target.name + ".part")
     offset = partial.stat().st_size if partial.exists() else 0
-    if offset > SIZE:
-        raise ValueError(f"Partial download is larger than the pinned model: {partial}")
+    if offset > size:
+        raise ValueError(f"Partial download is larger than the expected file: {partial}")
     failures = 0
     next_report = offset + 512 * 1024 * 1024
-    while offset < SIZE:
+    while offset < size:
         start = offset
-        request = urllib.request.Request(URL, headers={"Range": f"bytes={offset}-"} if offset else {})
+        request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-"} if offset else {})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 if offset:
@@ -60,25 +68,49 @@ def download(target: Path) -> None:
                     while block := response.read(8 * 1024 * 1024):
                         output.write(block)
                         offset += len(block)
-                        if offset > SIZE:
-                            raise RuntimeError("Model server sent more data than the pinned file size")
+                        if offset > size:
+                            raise RuntimeError("Model server sent more data than the expected file size")
                         if offset >= next_report:
-                            print(f"Downloaded {offset / 1e9:.1f}/{SIZE / 1e9:.1f} GB", flush=True)
+                            print(f"Downloaded {offset / 1e9:.1f}/{size / 1e9:.1f} GB", flush=True)
                             next_report = offset + 512 * 1024 * 1024
             if offset == start:
                 raise OSError("Model server returned no bytes")
-            if offset < SIZE:
-                print(f"Model stream ended at {offset}/{SIZE}; resuming", file=sys.stderr)
+            if offset < size:
+                print(f"Model stream ended at {offset}/{size}; resuming", file=sys.stderr)
             failures = 0
         except (OSError, TimeoutError) as error:
             failures += 1
             if failures > 10:
-                raise RuntimeError(f"Model download failed repeatedly at {offset}/{SIZE}: {error}") from error
-            print(f"Model download interrupted at {offset}/{SIZE}: {error}; retrying", file=sys.stderr)
+                raise RuntimeError(f"Model download failed repeatedly at {offset}/{size}: {error}") from error
+            print(f"Model download interrupted at {offset}/{size}: {error}; retrying", file=sys.stderr)
             time.sleep(min(failures * 2, 20))
-    validate_file(partial)
+    verify(partial)
     partial.replace(target)
     print(f"Verified model: {target}")
+
+
+def download(target: Path) -> None:
+    download_stream(URL, SIZE, target, validate_file)
+
+
+def verify_abliterated(path: Path) -> None:
+    size = path.stat().st_size
+    if size < ABLITERATED_SIZE:
+        raise ValueError(f"{path.name} is {size} bytes, expected at least {ABLITERATED_SIZE}")
+    if size > ABLITERATED_SIZE:
+        # The setup step re-encodes ssm_alpha/beta to F32 in place, appending bytes;
+        # a larger file is that patched copy, not a foreign model.
+        return
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    if digest.hexdigest() != ABLITERATED_SHA256:
+        raise ValueError(f"{path.name} SHA-256 differs from the pinned abliterated model")
+
+
+def download_abliterated(target: Path) -> None:
+    download_stream(ABLITERATED_URL, ABLITERATED_SIZE, target, verify_abliterated)
 
 
 def index(target: Path, packs: Path) -> Path:
@@ -107,13 +139,17 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA,
                         help="model and pack directory (default: ../Lamina-data)")
     parser.add_argument("--download", action="store_true", help="download the pinned 22 GB GGUF")
+    parser.add_argument("--abliterated", action="store_true", help="download the abliterated (uncensored) 20 GB GGUF")
     parser.add_argument("--tokenizer", action="store_true", help="download the pinned tokenizer.json")
     parser.add_argument("--verify", action="store_true", help="verify the complete model and SHA-256")
     parser.add_argument("--index", action="store_true", help="write a validated tensor offset index")
     args = parser.parse_args()
     target = args.data_dir / "models" / FILENAME
+    abliterated_target = args.data_dir / "models" / ABLITERATED_FILENAME
     if args.download:
         download(target)
+    if args.abliterated:
+        download_abliterated(abliterated_target)
     if args.tokenizer:
         download_tokenizer(args.data_dir / "tokenizer" / "tokenizer.json")
     if args.verify or args.index:
@@ -123,9 +159,10 @@ def main() -> int:
         print(f"Model verified: {target}")
     if args.index:
         index(target, args.data_dir / "packs")
-    if not (args.download or args.verify or args.index or args.tokenizer):
+    if not (args.download or args.abliterated or args.verify or args.index or args.tokenizer):
         print(f"Lamina data: {args.data_dir.resolve()}")
         print(f"Model: {target} ({'present' if target.exists() else 'absent'})")
+        print(f"Abliterated: {abliterated_target} ({'present' if abliterated_target.exists() else 'absent'})")
         print("Run --download to fetch the model, then --index to inspect its tensors.")
     return 0
 

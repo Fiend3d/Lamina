@@ -11,6 +11,7 @@ rem   START-HERE.bat --video-input on enable sampled video in chat (also enables
 rem   START-HERE.bat chat --image "photo.png" --prompt "Describe this image"
 rem   START-HERE.bat chat --video "clip.mp4" --prompt "Describe what happens"
 rem   START-HERE.bat --model ornith  serve Ornith-1.5-35B-A3B instead of Qwen3.6
+rem   START-HERE.bat --model abliterated  serve the uncensored abliterated Qwen3.6 build
 rem   START-HERE.bat --port 9000     use another port
 rem Close the window or press Ctrl+C to stop the server.
 setlocal

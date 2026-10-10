@@ -40,6 +40,7 @@ def local_engine():
 
 ENGINE = local_engine()
 MTP_FILE = DATA / "mtp" / "qwen36-mtp-q8_0.gguf"
+ABLITERATED_FILE = DATA / "models" / "Qwen3.6-35B-A3B-abliterated-v4-Q4_K_M.gguf"
 
 
 def model_paths(config):
@@ -50,8 +51,23 @@ def model_paths(config):
                 "model": DATA / "models" / "Ornith-1.5-35B-Q4_K_M.gguf",
                 "tokenizer": DATA / "ornith" / "tokenizer.json",
                 "mtp": DATA / "mtp" / "ornith-mtp.gguf"}
+    if config.get("model") == "abliterated":
+        # Bahushruth's abliterated (uncensored) Q4_K_M of the pinned base model:
+        # same qwen35moe graph, tokenizer and vision projector. Setup re-encodes
+        # its quantized ssm_alpha/beta to F32 (the DeltaNet path requires it, as
+        # for Ornith). It ships no MTP head, so speculation stays off.
+        return {"name": "Qwen3.6-35B-A3B (abliterated v4)",
+                "model": ABLITERATED_FILE,
+                "tokenizer": DATA / "tokenizer" / "tokenizer.json",
+                "mtp": None}
     return {"name": "Qwen3.6-35B-A3B", "model": DATA / "models" / FILENAME,
             "tokenizer": DATA / "tokenizer" / "tokenizer.json", "mtp": MTP_FILE}
+
+
+def mtp_head(paths):
+    """The usable MTP head for a model, or None when the model has none."""
+    head = paths.get("mtp")
+    return head if head is not None and head.is_file() else None
 REQUIREMENTS = ["requirements.txt", "requirements-build.txt", "requirements-reference.txt", "requirements-benchmark.txt"]
 RUNTIME_REQUIREMENTS = ["requirements.txt", "requirements-reference.txt"]
 
@@ -174,14 +190,16 @@ def ask(config, reconfigure, choose_model=True, choose_vision=True, choose_video
     """Ask for saved launch settings; non-interactive runs take the defaults."""
     interactive = sys.stdin.isatty()
     if choose_model and (reconfigure or "model" not in config):
-        choice = 2 if config.get("model") == "ornith" else 1
+        options = {1: "qwen3.6", 2: "ornith", 3: "abliterated"}
+        choice = next((number for number, name in options.items() if name == config.get("model")), 1)
         if interactive:
             print("\nWhich model should Lamina run?")
             print("  1) Qwen3.6-35B-A3B      the pinned model (recommended)")
             print("  2) Ornith-1.5-35B-A3B   same architecture, coding-focused")
-            answer = prompt(f"Choose 1-2 [{choice}]: ")
-            choice = int(answer) if answer in ("1", "2") else choice
-        config["model"] = "ornith" if choice == 2 else "qwen3.6"
+            print("  3) Abliterated v4       pinned base model, safety guardrails removed")
+            answer = prompt(f"Choose 1-3 [{choice}]: ")
+            choice = int(answer) if answer in ("1", "2", "3") else choice
+        config["model"] = options.get(choice, "qwen3.6")
     if reconfigure or "max_context" not in config:
         choice = next((i for i, (context, _) in enumerate(CONTEXTS, 1)
                        if context == config.get("max_context")), 2)
@@ -282,6 +300,20 @@ def setup(config, cuda_arch=None, build_source=False):
             from tools.lamina_assets import download_assets
             step("Checking Ornith image support (about 903 MB on first download)")
             download_assets(DATA, model="ornith")
+    elif config.get("model") == "abliterated":
+        if not paths["model"].is_file():
+            step("Downloading the abliterated model (20 GB, resumable)")
+            run([sys.executable, "setup.py", "--abliterated"])
+        step("Checking the abliterated SSM encoding (F32 re-encode if needed)")
+        from tools.lamina_ornith import requantize_ssm_f32
+        changed = requantize_ssm_f32(paths["model"])
+        if changed:
+            print(f"   re-encoded {changed} ssm tensors to F32")
+        if not paths["tokenizer"].is_file():
+            step("Downloading the tokenizer")
+            run([sys.executable, "setup.py", "--tokenizer"])
+        step("Checking the chat template and vision projector")
+        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if not config.get("vision", True) or selected_vision(config) is None else [])])
     else:
         if not paths["model"].is_file():
             step("Downloading the model (22 GB, resumable)")
@@ -338,10 +370,11 @@ def engine_options(config, context):
     paths = model_paths(config)
     options = ["--engine", ENGINE, "--cuda", "--compute-mode", "fast", "--kv-type", "f16", "--kv-cache", "device",
                "--max-context", str(context)]
-    if config.get("model") == "ornith":
+    if config.get("model") in ("ornith", "abliterated"):
         options += ["--model", str(paths["model"]), "--tokenizer", str(paths["tokenizer"])]
-    if config.get("mtp") and paths["mtp"].is_file():
-        options += ["--mtp", str(paths["mtp"])]
+    head = mtp_head(paths) if config.get("mtp") else None
+    if head is not None:
+        options += ["--mtp", str(head)]
     if config.get("vision", True) and selected_vision(config) is not None:
         options += ["--vision", "--vision-engine", str(selected_vision(config)),
                     "--vision-projector", str(vision_projector(config))]
@@ -356,7 +389,7 @@ def chat(config, context, thinking, max_tokens, image=None, video=None, initial_
     paths = model_paths(config)
     engine = Engine(paths["model"], paths["tokenizer"], ENGINE, cuda=True,
                     max_context=context, kv_cache="device", kv_type="f16", compute_mode="fast",
-                    mtp=paths["mtp"] if config.get("mtp") and paths["mtp"].is_file() else None,
+                    mtp=mtp_head(paths) if config.get("mtp") else None,
                     vision_engine=selected_vision(config) if config.get("vision", True) else None, vision_projector=vision_projector(config), vision_gpu=config.get("vision_device") == "gpu" and config.get("vision", True))
     engine.log_requests = True
     print(f"\nLamina chat, context {context // 1024}K, MTP {'on' if engine.mtp else 'off'}. "
@@ -448,7 +481,7 @@ def run_server(config, context, host, port, preload=True):
         sys.exit(f"Something already answers on port {port}, probably a Lamina server that is still running.\n"
                  f"Close it first, or start this one on another port: START-HERE.bat --port {port + 1}")
     paths = model_paths(config)
-    mtp = bool(config.get("mtp") and paths["mtp"].is_file())
+    mtp = bool(config.get("mtp") and mtp_head(paths))
     device = config.get("vision_device", "cpu") if config.get("vision", True) else "off"
     print(f"\nStarting the Lamina server ({paths['name']}, context {context // 1024}K, MTP {'on' if mtp else 'off'}, vision {device}) ...")
     command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", host, "--port", str(port)]
@@ -511,7 +544,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="serve: listening address")
     parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
     parser.add_argument("--no-preload", action="store_true", help="serve: do not load the model at startup (the first request does)")
-    parser.add_argument("--model", choices=("qwen3.6", "ornith"), help="which model to serve (default: qwen3.6)")
+    parser.add_argument("--model", choices=("qwen3.6", "ornith", "abliterated"), help="which model to serve (default: qwen3.6)")
     parser.add_argument("--vision", choices=("on", "off"), help="save image input setting")
     parser.add_argument("--vision-device", choices=("cpu", "gpu"), help="save image/video encoder device (gpu needs CUDA encoder)")
     parser.add_argument("--video-input", choices=("on", "off"), help="save sampled video input setting; on also enables vision")
@@ -571,7 +604,7 @@ def main():
                    or not paths["tokenizer"].is_file()
                    or (config.get("vision", True) and (selected_vision(config) is None or not vision_projector(config).is_file()))
                    or not marker.is_file() or marker.read_text() != requirements_digest(required_requirements(config, args.build_source))
-                   or (config.get("mtp") and not paths["mtp"].is_file()))
+                   or (config.get("mtp") and paths.get("mtp") is not None and not paths["mtp"].is_file()))
     if needs_setup:
         setup(config, args.cuda_arch, args.build_source)
     if args.command == "setup":
