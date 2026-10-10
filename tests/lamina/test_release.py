@@ -153,6 +153,43 @@ class ReleaseTest(unittest.TestCase):
             install = commands[0]
             self.assertIn("install", install)
             self.assertIn("requirements-build.txt", install)
+            bootstrap = next(i for i, command in enumerate(commands) if "tools.bootstrap_cuda" in command)
+            build = next(i for i, command in enumerate(commands)
+                         if "tools.build_windows" in command and "--vision-gpu" in command)
+            self.assertLess(bootstrap, build)
+
+    def test_source_gpu_vision_reuses_installed_cuda_toolchain(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            data.mkdir()
+            for name in quickstart.REQUIREMENTS:
+                (root / name).write_text(name)
+            from tools.lamina_model import FILENAME
+            (data / "models").mkdir()
+            (data / "tokenizer").mkdir()
+            (data / "models" / FILENAME).touch()
+            (data / "tokenizer/tokenizer.json").touch()
+            nvcc = data / "toolchains/cuda/bin/nvcc.exe"
+            nvcc.parent.mkdir(parents=True)
+            nvcc.touch()
+            engine = root / "build-cuda/lamina-infer.exe"
+            engine.parent.mkdir(parents=True)
+            engine.touch()
+            (engine.parent / "CMakeCache.txt").write_text("CMAKE_CUDA_ARCHITECTURES:STRING=89\n")
+            encoder = root / "build-vision-gpu/bin/strata-vision.exe"
+            commands = []
+            selected = iter([None, encoder, encoder])
+            with patch.object(quickstart, "ROOT", root), patch.object(quickstart, "DATA", data), \
+                    patch.object(quickstart, "CONFIG", data / "quickstart.json"), \
+                    patch.object(quickstart, "ENGINE", engine), \
+                    patch.object(quickstart, "portable", return_value=False), \
+                    patch.object(quickstart, "selected_vision", side_effect=lambda config: next(selected)), \
+                    patch.object(quickstart, "gpu", return_value=("RTX 4060", "89", 8192)), \
+                    patch.object(quickstart, "total_ram_gib", return_value=64), \
+                    patch.object(quickstart, "run", side_effect=lambda args: commands.append(args)):
+                quickstart.setup({"model": "qwen3.6", "vision": True, "vision_device": "gpu", "mtp": False})
+            self.assertFalse(any("tools.bootstrap_cuda" in command for command in commands))
             self.assertTrue(any("tools.build_windows" in command and "--vision-gpu" in command for command in commands))
 
     def test_portable_setup_does_not_install_or_compile(self):

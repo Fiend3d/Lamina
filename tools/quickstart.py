@@ -232,6 +232,13 @@ def requirements_digest(requirements=REQUIREMENTS):
     return digest.hexdigest()
 
 
+def ensure_cuda_toolchain():
+    """Installs the pinned CUDA compiler into Lamina-data when it is missing."""
+    if not (DATA / "toolchains" / "cuda" / "bin" / "nvcc.exe").is_file():
+        step("Installing the pinned CUDA compiler into Lamina-data")
+        run([sys.executable, "-m", "tools.bootstrap_cuda"])
+
+
 def setup(config, cuda_arch=None, build_source=False):
     global ENGINE
     from tools.lamina_model import FILENAME
@@ -256,15 +263,14 @@ def setup(config, cuda_arch=None, build_source=False):
         step("Installing the prebuilt engine (no compiler needed)")
         ENGINE = install_engine(DATA, arch)
     elif build_source:
-        if not (DATA / "toolchains" / "cuda" / "bin" / "nvcc.exe").is_file():
-            step("Installing the pinned CUDA compiler into Lamina-data")
-            run([sys.executable, "-m", "tools.bootstrap_cuda"])
+        ensure_cuda_toolchain()
         step(f"Building the engine for compute capability {arch} (incremental)")
         run([sys.executable, "-m", "tools.build_windows", "--vision", "--cuda-arch", arch])
 
     if config.get("vision", True) and config.get("vision_device") == "gpu" and selected_vision(config) is None:
         if portable():
             raise RuntimeError("The portable GPU image encoder is missing. Extract a complete v0.2.0 or newer portable package.")
+        ensure_cuda_toolchain()
         step("Building the CUDA image encoder (incremental)")
         run([sys.executable, "-m", "tools.build_windows", "--vision-gpu", "--vision-only", "--cuda-arch", arch])
     paths = model_paths(config)
