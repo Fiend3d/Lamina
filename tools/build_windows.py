@@ -23,10 +23,15 @@ def main():
     parser.add_argument("--cuda-root", type=Path, default=DATA / "toolchains/cuda")
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--vision", action="store_true", help="also build the pinned CPU image encoder")
+    parser.add_argument("--vision-gpu", action="store_true", help="build the CUDA image encoder in build-vision-gpu")
+    parser.add_argument("--vision-only", action="store_true", help="build only the selected image encoder")
+    parser.add_argument("--vision-build-dir", type=Path, help="override the image encoder build directory")
     parser.add_argument("--portable", action="store_true", help="AVX2 baseline and static MSVC runtime for release packages")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--cuda-arch", default="89", help="CMAKE_CUDA_ARCHITECTURES (89 = RTX 4060, 86 = RTX 3050/3060/3090)")
     args = parser.parse_args()
+    if args.vision_gpu or args.vision_only:
+        args.vision = True
     if not re.fullmatch(r"[0-9]+(?:-(?:real|virtual))?(?:;[0-9]+(?:-(?:real|virtual))?)*", args.cuda_arch):
         parser.error("--cuda-arch must be a semicolon-separated list of CUDA architectures")
     if os.name != "nt": parser.error("this helper is for Windows")
@@ -55,24 +60,33 @@ def main():
     commands = ["@echo off", "call " + quoted(Path(visual_studio) / "VC/Auxiliary/Build/vcvars64.bat"),
                 "if errorlevel 1 exit /b 1", configure, "if errorlevel 1 exit /b 1",
                 f"cmake --build {quoted(args.build_dir.resolve())} --target {targets} -j {args.jobs}", "if errorlevel 1 exit /b 1"]
+    if args.vision_only:
+        commands = commands[:3]
     if args.vision:
-        commands += [f"cmake -S {quoted(ROOT / 'tools/vision')} -B {quoted(ROOT / 'build-vision')} -DLLAMA_DIR={quoted(source)} -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE={'ON' if args.portable else 'OFF'} -DCMAKE_BUILD_TYPE=Release",
-                     "if errorlevel 1 exit /b 1", f"cmake --build {quoted(ROOT / 'build-vision')} --config Release --target strata-vision -j {args.jobs}"]
+        vision_build = (args.vision_build_dir or ROOT / ("build-vision-gpu" if args.vision_gpu else "build-vision")).resolve()
+        vision_configure = f"cmake -S {quoted(ROOT / 'tools/vision')} -B {quoted(vision_build)} -DLLAMA_DIR={quoted(source)} -DSTRATA_VISION_CUDA={'ON' if args.vision_gpu else 'OFF'} -DSTRATA_PORTABLE={'ON' if args.portable else 'OFF'} -DCMAKE_BUILD_TYPE=Release"
+        if args.vision_gpu:
+            vision_configure += f" -G Ninja -DCMAKE_MAKE_PROGRAM={quoted(ninja_path)} -DCMAKE_CUDA_ARCHITECTURES={quoted(args.cuda_arch)} -DCMAKE_CUDA_COMPILER={quoted(args.cuda_root.resolve() / 'bin/nvcc.exe')} -DCUDAToolkit_ROOT={quoted(args.cuda_root.resolve())} -DGGML_CUDA_FA=OFF"
+        commands += [vision_configure, "if errorlevel 1 exit /b 1", f"cmake --build {quoted(vision_build)} --config Release --target strata-vision -j {args.jobs}"]
     commands += ["exit /b %errorlevel%"]
-    script = args.build_dir.resolve() / "build-lamina.cmd"
+    script = (vision_build if args.vision_only else args.build_dir).resolve() / "build-lamina.cmd"
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("\n".join(commands) + "\n", encoding="utf-8")
     subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(script)], check=True, cwd=ROOT)
-    if not args.cpu:
+    if not args.cpu or args.vision_gpu:
         import shutil
         for directory in (args.cuda_root / "bin", args.cuda_root / "bin/x64"):
             for pattern in ("cudart64*.dll", "cublas*.dll"):
                 for dll in directory.glob(pattern):
-                    target = args.build_dir / dll.name
-                    # Windows locks loaded DLLs. Leave an identical runtime in
-                    # place so a build can finish while a saved engine is tested.
-                    if target.is_file() and hashlib.sha256(dll.read_bytes()).digest() == hashlib.sha256(target.read_bytes()).digest():
-                        continue
-                    shutil.copy2(dll, target)
+                    directories = [] if args.vision_only else [args.build_dir]
+                    if args.vision_gpu:
+                        directories.append(vision_build / "bin")
+                    for directory in directories:
+                        target = directory / dll.name
+                        # Windows locks loaded DLLs; preserve identical runtimes.
+                        if target.is_file() and hashlib.sha256(dll.read_bytes()).digest() == hashlib.sha256(target.read_bytes()).digest():
+                            continue
+                        shutil.copy2(dll, target)
 
 
 if __name__ == "__main__": main()

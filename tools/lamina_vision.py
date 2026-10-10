@@ -1,4 +1,4 @@
-"""CPU mtmd image encoder transport for each model's pinned projector."""
+"""CPU/CUDA mtmd image encoder transport for each model's pinned projector."""
 import base64
 import json
 import struct
@@ -7,6 +7,32 @@ import urllib.request
 from pathlib import Path
 from tools.lamina_protocol import NativeProcess
 from tools.gguf_reader import GGUFFile
+
+
+def image_payload(item):
+    """Read bounded image bytes; HTTP URLs are fetched again to detect changes."""
+    url = item.get("image_url", item.get("image"))
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str):
+        raise ValueError("image_url requires a URL or base64 data URL")
+    limit = 20 * 1024 * 1024
+    if url.startswith("data:image/"):
+        prefix, sep, encoded = url.partition(",")
+        if not sep or not prefix.endswith(";base64") or len(encoded) > limit * 4 // 3 + 4:
+            raise ValueError("invalid or oversized image data URL")
+        try:
+            payload = base64.b64decode(encoded, validate=True)
+        except ValueError as error:
+            raise ValueError("invalid image base64") from error
+    elif url.startswith(("https://", "http://")):
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = response.read(limit + 1)
+    else:
+        raise ValueError("images require http(s) or base64 data URLs")
+    if len(payload) > limit:
+        raise ValueError("image exceeds 20 MiB")
+    return payload
 
 
 def vocabulary_model(model, destination):
@@ -28,7 +54,7 @@ def vocabulary_model(model, destination):
 
 
 class Vision:
-    def __init__(self, executable, model, projector, data, max_tokens=2048, threads=8):
+    def __init__(self, executable, model, projector, data, max_tokens=2048, threads=8, gpu=False):
         if not executable.is_file() or not projector.is_file():
             raise FileNotFoundError("vision encoder/projector missing; run START-HERE.bat setup for the selected model")
         self.data = data
@@ -39,7 +65,8 @@ class Vision:
             vocab = vocabulary_model(model, Path(self.vocabulary.name) / "vocab.gguf")
             self.native = NativeProcess([str(executable.resolve()), "--mmproj", str(projector.resolve()),
                                          "--model", str(vocab.resolve()), "--threads", str(threads),
-                                         "--max-tokens", str(max_tokens), "--flash-attn", "off"], timeout=300)
+                                         "--max-tokens", str(max_tokens), "--flash-attn", "off",
+                                         *(["--gpu"] if gpu else [])], timeout=300)
         except BaseException:
             self.vocabulary.cleanup()
             raise
@@ -54,28 +81,10 @@ class Vision:
             raise
 
     def encode(self, item, directory, index):
+        return self.encode_payload(image_payload(item), directory, index)
+
+    def encode_payload(self, payload, directory, index):
         from PIL import Image
-        url = item.get("image_url", item.get("image"))
-        if isinstance(url, dict):
-            url = url.get("url")
-        if not isinstance(url, str):
-            raise ValueError("image_url requires a URL or base64 data URL")
-        limit = 20 * 1024 * 1024
-        if url.startswith("data:image/"):
-            prefix, sep, encoded = url.partition(",")
-            if not sep or not prefix.endswith(";base64") or len(encoded) > limit * 4 // 3 + 4:
-                raise ValueError("invalid or oversized image data URL")
-            try:
-                payload = base64.b64decode(encoded, validate=True)
-            except ValueError as error:
-                raise ValueError("invalid image base64") from error
-        elif url.startswith(("https://", "http://")):
-            with urllib.request.urlopen(url, timeout=30) as response:
-                payload = response.read(limit + 1)
-        else:
-            raise ValueError("images require http(s) or base64 data URLs")
-        if len(payload) > limit:
-            raise ValueError("image exceeds 20 MiB")
         source = directory / f"image-{index}.input"
         source.write_bytes(payload)
         with Image.open(source) as picture:

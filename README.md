@@ -31,7 +31,8 @@ On the first run:
 1. Choose a model: Qwen3.6 or Ornith. Both work in the portable ZIP.
 2. Choose how much conversation history to support: 8K, 32K, 64K or 128K.
 3. Choose whether to enable MTP, an optional generation speedup.
-4. Let setup download the model and load it. The first download is large;
+4. Choose whether to enable CPU image input and sampled video input.
+5. Let setup download the model and load it. The first download is large;
    wait until you see **Lamina is ready**.
 
 Your choices and downloads are saved in the neighboring `Lamina-data` folder.
@@ -59,12 +60,41 @@ Type your message at `You:`. Use `/new` to clear the conversation and `/exit`
 to quit. To open a terminal in the folder, right-click its empty space in File
 Explorer and choose **Open in Terminal**, or open PowerShell and `cd` there.
 The portable release includes text, tools, reasoning and image input for both
-models. Setup automatically downloads the selected model's image projector
+models. With image input enabled, setup downloads the selected model's image projector
 (about 900 MB). Apps can send screenshots or photos through the API using
-OpenAI-compatible `image_url` content, including base64 data URLs. The image
-encoder runs on the CPU, so large images can take longer to process.
+OpenAI-compatible `image_url` content, including base64 data URLs. The default image
+encoder can use the CPU or GPU; both are included in v0.2.0 as described below.
 On older CPUs, an image response can take a minute or more. Text-only requests
 do not start the image encoder.
+
+To enable images or sampled video explicitly (saved for later launches):
+
+```powershell
+.\START-HERE.bat --vision on
+.\START-HERE.bat --video-input on
+```
+
+Video input also enables images. `--vision off` disables both; `--video-input off`
+preserves the image setting. In terminal chat, use `/image "C:\media\photo.jpg" Describe it`
+or `/video "C:\media\clip.mp4" Describe what happens`. For a single answer:
+
+```powershell
+.\START-HERE.bat chat --image "C:\media\photo.jpg" --prompt "Describe this image"
+.\START-HERE.bat chat --video "C:\media\clip.mp4" --video-frames 4 --video-interval 1 --prompt "What happens in order?"
+```
+
+**Video formats:** the bundled FFmpeg decoder accepts common MP4, MOV, MKV,
+AVI and WebM files, depending on the codec inside. MP4 with H.264 is the recommended
+choice. Video is sampled into timestamped images, starting at 0 seconds: the default
+reads at most four frames at 0, 1, 2 and 3 seconds, stopping at the end of the file.
+It does not scan the whole clip automatically. Increase `--video-interval` to cover
+a longer clip and `--video-frames` (1?16) for more samples. Each frame consumes image
+context and encoder time; sampled frames can miss brief events. Audio and native
+video temporal positions are not processed. The API still accepts `image_url` items;
+API clients must extract and submit frames themselves (the local helper is
+`tools.lamina_media.video_content`). It does not accept `video_url` or video data URLs.
+Images are decoded by Pillow; common PNG, JPEG and WebP inputs work, and animated
+images use their first frame.
 
 If using a **source checkout**, install Python 3.11 or newer and run
 `START-HERE.bat`. Setup installs runtime Python packages and downloads the pinned
@@ -86,9 +116,9 @@ deleting either model's downloaded files.
 
 ## Choosing and changing your settings
 
-Lamina saves **model, context length and MTP** in
+Lamina saves **model, context length, MTP, image input and sampled video input** in
 `..\Lamina-data\quickstart.json`. You do not need to edit that file.
-To answer all three questions again, stop the running server and run:
+To answer the settings questions again, stop the running server and run:
 
 ```powershell
 .\START-HERE.bat --reconfigure
@@ -215,6 +245,95 @@ appears in pi while it is generated; switch it off with `/thinking` for faster
 answers. If pi's bash tool reports
 that no shell is available, set `"shellPath"` in `~\.pi\agent\settings.json` to
 your Git Bash, for example `"C:\\Git\\bin\\bash.exe"`.
+
+**GPU images and video:** use your NVIDIA GPU for the image
+encoder instead of the CPU:
+
+```powershell
+.\START-HERE.bat --vision-device gpu
+```
+
+This saves the device choice. The v0.2.0 portable package uses its bundled GPU
+encoder and needs no compiler. In a source checkout, a missing GPU encoder is
+built on first use (requires Visual Studio C++ tools and the pinned CUDA toolkit).
+The separate `build-vision-gpu` directory preserves the CPU encoder.
+For an explicit build: `python -m tools.build_windows --vision-gpu --vision-only
+--cuda-arch 89` on RTX 4060; use the architecture detected for your own GPU.
+The v0.2.0 portable release includes both CPU and GPU encoders and the video decoder.
+
+GPU mode gives the encoder and language model separate turns on the GPU. For
+new images/video frames, it unloads the native text model, encodes the missing
+frames on the GPU, releases the encoder, and reloads the text model to answer.
+Previously encoded images are cached in server RAM (up to 256 MiB), so repeating
+them keeps the text model resident. With CUDA device KV, follow-up requests
+reuse the unchanged conversation, including images, and prefill only new content.
+Changed image bytes, image order or edited history invalidate prefix reuse.
+New images, evicted embeddings and server restarts can still require full prefill;
+the first image request in a long conversation can still take minutes. `/health` reports
+`"vision_device": "gpu"`, and the server logs each frame's encoding time.
+On RTX 4060, a repeated 102K-token image request reached its first answer in
+1.47 s versus 261 s for the initial pass; see the
+[image cache validation](bench/results/2026-10-10-image-cache/README.md).
+Long text sections around images also use the optimized prefill path when
+CUDA device-KV prefix caching is available. A 32K-token, two-image test on
+RTX 4060 reached its first answer in 63 s versus 90 s previously; see
+[image prefill measurements](bench/results/2026-10-10-image-prefill/README.md).
+Stop an existing server before switching; its encoder cannot change mid-request.
+Use `.\START-HERE.bat --vision-device cpu` to switch back. `--reconfigure` also
+asks for the encoder device. Images and sampled video in pi use whichever device
+the running server has selected; no further pi setting is required.
+The initial resident-encoder implementation failed during a 109K-token pi
+conversation on the RTX 4060 8 GB. Encoder release is required before text
+inference. The corrected lifecycle passed GPU video, 109K text, an append to
+129K, and an image after the long conversation. See the
+[GPU memory regression record](bench/results/2026-10-10-gpu-vision-memory/README.md)
+for commands, timing, peak VRAM and limitations.
+
+**Images in pi:** the Lamina model entry must contain `"input": ["text", "image"]`
+as shown above, and the server must start with image input enabled
+(`.\START-HERE.bat --vision on`). Attach a PNG, JPEG or WebP image with pi's
+`@path` input, or ask pi to read a local image file and describe it. After editing
+`models.json`, restart pi or run `/reload`. Check `pi --list-models lamina`:
+the Lamina row should show `yes` in the `images` column. With the CPU encoder, processing can take
+a minute or more per image.
+
+**Videos in pi:** use the included [lamina-video skill](.pi/skills/lamina-video/SKILL.md).
+It samples timestamped frames and submits them to the existing Lamina server,
+without loading a second model. Start pi from this installation folder to discover
+the project skill, or add its absolute directory to the `skills` array in
+`~\.pi\agent\settings.json` to make it available in other projects:
+
+```json
+{
+  "skills": ["D:/Projects/lamina/Lamina/.pi/skills/lamina-video"]
+}
+```
+
+Use your own installation path and merge this field with your existing settings.
+Restart pi or run `/reload`, then ask:
+
+```text
+/skill:lamina-video Look at C:/media/clip.mp4 and describe what happens in time order.
+```
+
+You can also ask pi to inspect a video normally; the skill's description makes
+it available for automatic selection. The explicit command ensures it is loaded.
+The default samples at most four frames at 0, 1, 2 and 3 seconds. Ask for a
+different interval or up to 16 frames to cover a longer clip. MP4/H.264 is
+recommended; tested combinations also include MOV/MKV with H.264, AVI with
+MPEG-4 and WebM with VP9. Audio and direct MP4 attachments are unsupported:
+keep pi's model `input` as `["text", "image"]`, without adding `"video"`.
+
+To use the same running-server video client directly:
+
+```powershell
+..\Lamina-data\venv\Scripts\python.exe -m tools.lamina_media --video "C:\media\clip.mp4" --prompt "Describe what happens" --frames 4 --interval 1
+```
+
+In a portable installation, use `.\python\python.exe` instead. `--base-url`
+overrides the default `http://127.0.0.1:8000/v1`. Use this client while the server
+is running; the earlier `START-HERE.bat chat --video` command is for standalone
+terminal chat when the server is stopped.
 
 While the model works, pi shows its reasoning, its text and the file it is
 writing as they are generated, and the server window logs every request with

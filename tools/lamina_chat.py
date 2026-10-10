@@ -1,5 +1,7 @@
 """Lamina's persistent CLI/chat API backend; text inference is always native."""
 import copy
+import hashlib
+from collections import OrderedDict
 import json
 import math
 import os
@@ -16,11 +18,12 @@ from http.server import BaseHTTPRequestHandler
 from serve.structured import prepare_format, validated_json, StructuredOutputError
 from tools.lamina_protocol import NativeProcess
 from tools.lamina_toolcalls import ToolStream, hold_suffix
-from tools.lamina_vision import Vision
+from tools.lamina_vision import Vision, image_payload
 
 MODEL_NAME = "Qwen3.6-35B-A3B-UD-Q4_K_M"
 STOP_IDS = {248044, 248046}
 IMAGE_ID = 248056
+IMAGE_CACHE_BYTES = 256 * 1024 * 1024
 
 
 def validate_options(options, context):
@@ -111,7 +114,7 @@ class Engine:
     def __init__(self, model, tokenizer, executable, cuda=False, max_context=32768,
                  kv_cache="auto", vram_limit_mb=0, prefill_chunk=2048, vision_engine=None,
                  max_image_tokens=2048, cpu_threads=8, kv_type="f32", compute_mode="f32", mtp=None,
-                 vision_projector=None):
+                 vision_projector=None, vision_gpu=False):
         if kv_type not in ("f32", "f16") or (kv_type == "f16" and not cuda):
             raise ValueError("kv-type must be f32, or f16 with CUDA")
         if compute_mode not in ("f32", "fast") or (compute_mode == "fast" and not cuda):
@@ -148,7 +151,12 @@ class Engine:
         self._cache_supported = None
         self._cache_prefix = []
         self._prepared_prefix = []
+        self._image_cache = OrderedDict()
+        self._image_cache_bytes = 0
         self.vision_engine, self.max_image_tokens, self.cpu_threads = vision_engine, max_image_tokens, cpu_threads
+        self.vision_gpu = vision_gpu
+        if vision_gpu and vision_engine is None:
+            raise ValueError("GPU vision requires an image encoder")
 
     log_requests = False  # the server prints one line per request and progress lines during long answers
 
@@ -163,6 +171,9 @@ class Engine:
         try:
             self._stop_native()
             if self.vision: self.vision.close(); self.vision = None
+            if hasattr(self, "_image_cache"):
+                self._image_cache.clear()
+            self._image_cache_bytes = 0
         finally:
             if locked: self.lock.release()
 
@@ -172,6 +183,10 @@ class Engine:
 
     def _start_native(self):
         if self.native is None:
+            # GPU vision and text inference take turns using VRAM. An idle
+            # encoder must not occupy memory needed by a growing device KV.
+            if getattr(self, "vision_gpu", False):
+                self._stop_vision()
             if getattr(self, "_cache_supported", None) is None:
                 self._cache_supported = False
                 if self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
@@ -188,6 +203,67 @@ class Engine:
             if getattr(self, "mtp", None): command += ["--mtp", str(Path(self.mtp).resolve())]
             command.append("--interactive")
             self.native = NativeProcess(command)
+
+    def _start_vision(self):
+        if self.vision is None:
+            if self.vision_engine is None:
+                raise ValueError("image input requires --vision")
+            self.vision = Vision(self.vision_engine, self.model, self.vision_projector,
+                                 self.data / "tmp", self.max_image_tokens, self.cpu_threads,
+                                 gpu=getattr(self, "vision_gpu", False))
+
+    def _stop_vision(self):
+        vision, self.vision = self.vision, None
+        if vision is not None:
+            vision.close()
+
+    def _encode_images(self, messages, directory):
+        items = [item for message in messages
+                 for item in (message.get("content", []) if isinstance(message.get("content"), list) else [])
+                 if item["type"] in ("image", "image_url")]
+        if not hasattr(self, "_image_cache"):
+            self._image_cache = OrderedDict()
+            self._image_cache_bytes = 0
+        # Resolve before releasing the text engine: a repeated URL may contain
+        # different bytes, and invalid input must not destroy a good checkpoint.
+        payloads = [image_payload(item) for item in items]
+        keys = [hashlib.sha256(payload).hexdigest() for payload in payloads]
+        self._image_keys = keys
+        missing = any(key not in self._image_cache for key in keys)
+        images = []
+        gpu = getattr(self, "vision_gpu", False)
+        if gpu and missing:
+            self._log("  releasing text model for GPU image encoding")
+            self._stop_native()
+        try:
+            for key, payload in zip(keys, payloads):
+                cached = self._image_cache.get(key)
+                if cached is not None:
+                    blob, count = cached
+                    destination = directory / f"image-{len(images)}.sve"
+                    destination.write_bytes(blob)
+                    images.append((destination, count))
+                    self._image_cache.move_to_end(key)
+                    self._log(f"  reused image {len(images)} embedding")
+                    continue
+                self._log(f"  encoding image {len(images) + 1} on {'GPU' if gpu else 'CPU'}")
+                encoding_start = time.perf_counter()
+                self._start_vision()
+                images.append(self.vision.encode_payload(payload, directory, len(images)))
+                destination, count = images[-1]
+                blob = destination.read_bytes()
+                self._image_cache[key] = (blob, count)
+                self._image_cache_bytes += len(blob)
+                # Bound server RAM; embeddings are private to this engine/model.
+                while self._image_cache_bytes > IMAGE_CACHE_BYTES:
+                    _, (removed, _) = self._image_cache.popitem(last=False)
+                    self._image_cache_bytes -= len(removed)
+                self._log(f"  encoded image {len(images)} in {time.perf_counter() - encoding_start:.2f} s")
+            return images
+        finally:
+            if gpu and missing:
+                self._stop_vision()
+                self._log("  released GPU image encoder; VRAM available for text inference")
 
     def validate(self, messages, options):
         o = validate_options(options, self.max_context)
@@ -249,15 +325,7 @@ class Engine:
         return messages, o, validator
 
     def _prepare(self, messages, o, directory):
-        images = []
-        for message in messages:
-            for item in message.get("content", []) if isinstance(message.get("content"), list) else []:
-                if item["type"] in ("image", "image_url"):
-                    if self.vision is None:
-                        if self.vision_engine is None: raise ValueError("image input requires --vision")
-                        self.vision = Vision(self.vision_engine, self.model, self.vision_projector,
-                                             self.data / "tmp", self.max_image_tokens, self.cpu_threads)
-                    images.append(self.vision.encode(item, directory, len(images)))
+        images = self._encode_images(messages, directory)
         for message in messages:
             for call in message.get("tool_calls", []) or []:
                 args = call.get("function", {}).get("arguments")
@@ -266,7 +334,7 @@ class Engine:
                                       enable_thinking=o["enable_thinking"], add_vision_id=False)
         ids = self.tokenizer.encode(prompt, add_special_tokens=False).ids
         self._prepared_prefix = []
-        if not images and self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
+        if self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
             # Cache the whole message history up to the generation prompt (the last
             # "<|im_start|>assistant"). Agent clients resend the conversation each
             # turn, so this checkpoint can be advanced - restore it, prefill only
@@ -277,9 +345,14 @@ class Engine:
             boundary = prompt.rfind("<|im_start|>assistant\n")
             if boundary > 0:
                 prefix = self.tokenizer.encode(prompt[:boundary], add_special_tokens=False).ids
-                if 256 <= len(prefix) < len(ids) and ids[:len(prefix)] == prefix:
+                if (len(prefix) >= 256 or images) and 0 < len(prefix) < len(ids) and ids[:len(prefix)] == prefix:
                     self._prepared_prefix = prefix
         if ids.count(IMAGE_ID) != len(images): raise ValueError("image marker count differs from image input")
+        # An image marker alone is not an identity: changed image bytes or order
+        # must invalidate the checkpoint even when all text tokens are identical.
+        keys = iter(getattr(self, "_image_keys", []))
+        self._prepared_signature = [next(keys) if token == IMAGE_ID else token
+                                    for token in self._prepared_prefix]
         count = len(ids) + sum(n - 1 for _, n in images)
         if not ids or count + o["max_tokens"] > self.max_context:
             raise ValueError(f"prompt and response exceed the {self.max_context}-token context")
@@ -296,8 +369,8 @@ class Engine:
         with self.lock:
             tmp = self.data / "tmp"; tmp.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=tmp, prefix="chat-") as path:
-                ids, images, prompt_count = self._prepare(messages, o, Path(path))
                 start = time.perf_counter()
+                ids, images, prompt_count = self._prepare(messages, o, Path(path))
                 self._log(f"request: {prompt_count} prompt tokens, up to {o['max_tokens']} answer tokens"
                           + (f", {len(o['tools'])} tools" if o.get("tools") else "")
                           + (", thinking" if o["enable_thinking"] else "") + (", streaming" if o.get("stream") else ""))
@@ -305,36 +378,55 @@ class Engine:
                 self.native.cancelled = cancelled
                 try:
                     prefix = self._prepared_prefix if getattr(self, "_cache_supported", False) else []
+                    signature = getattr(self, "_prepared_signature", prefix) if prefix else []
                     old = getattr(self, "_cache_prefix", [])
                     reused = 0
-                    def feed(tokens):
-                        if len(tokens) > self.prefill_chunk:
+                    def feed(tokens, offset=0):
+                        if IMAGE_ID in tokens and images:
+                            # Keep whole text spans: PROMPT runs layer-by-layer
+                            # across their tiles, avoiding repeated weight uploads.
+                            # IMAGE remains a boundary for its own mRoPE positions.
+                            image_index = ids[:offset].count(IMAGE_ID)
+                            pending = []
+                            for token in tokens:
+                                if token == IMAGE_ID:
+                                    if pending:
+                                        feed(pending)
+                                        pending = []
+                                    self.native.command("IMAGE " + str(images[image_index][0]), True)
+                                    image_index += 1
+                                else:
+                                    pending.append(token)
+                            if pending:
+                                feed(pending)
+                        elif len(tokens) > self.prefill_chunk:
                             self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str, tokens)))
                         else:
                             self.native.command("BATCH " + " ".join(map(str, tokens)), True)
-                    if prefix and prefix == old:
+                    if prefix and signature == old:
                         self.native.command("RESTORE_PREFIX", True)
-                        reused = len(prefix)
+                        reused = len(prefix) + sum(n - 1 for _, n in images[:prefix.count(IMAGE_ID)])
                         self._log(f"  reused {len(prefix)} prefix tokens")
-                    elif prefix and old and len(prefix) > len(old) and ids[:len(old)] == old:
+                    elif prefix and old and len(prefix) > len(old) and signature[:len(old)] == old:
                         # The conversation grew by an append: keep the checkpoint's
                         # KV and recurrent state, prefill only the new messages, and
                         # move the checkpoint forward so the next turn reuses it.
                         self.native.command("RESTORE_PREFIX", True)
                         delta = prefix[len(old):]
-                        feed(delta)
+                        feed(delta, len(old))
                         self.native.command("CACHE_PREFIX", True)
-                        reused = len(old)
+                        reused = len(old) + sum(n - 1 for _, n in images[:ids[:len(old)].count(IMAGE_ID)])
                         self._log(f"  extended prefix {len(old)} -> {len(prefix)} tokens (+{len(delta)})")
-                        self._cache_prefix = prefix
+                        self._cache_prefix = signature
                     else:
                         self._cache_prefix = []
                         self.native.command("RESET", True)
                         if prefix:
                             feed(prefix)
                             self.native.command("CACHE_PREFIX", True)
-                            self._cache_prefix = prefix
+                            self._cache_prefix = signature
                     if prefix:
+                        images = images[prefix.count(IMAGE_ID):]
                         ids = ids[len(prefix):]
                     # Long prefix PROMPT returns an ignored token. Configure
                     # sampling afterwards so cache misses cannot consume this
@@ -448,7 +540,7 @@ def make_handler(engine):
             self.send_header("Content-Length", str(len(encoded))); self.end_headers(); self.wfile.write(encoded)
 
         def do_GET(self):
-            if self.path == "/health": self.reply(200, {"status": "ok", "compute_mode": getattr(engine, "compute_mode", "f32"), "max_context": engine.max_context, "kv_type": getattr(engine, "kv_type", "f32"), "images": engine.vision_engine is not None})
+            if self.path == "/health": self.reply(200, {"status": "ok", "compute_mode": getattr(engine, "compute_mode", "f32"), "max_context": engine.max_context, "kv_type": getattr(engine, "kv_type", "f32"), "images": engine.vision_engine is not None, "vision_device": "gpu" if getattr(engine, "vision_gpu", False) else "cpu" if engine.vision_engine is not None else "off"})
             elif self.path == "/v1/models": self.reply(200, {"object": "list", "data": [{"id": MODEL_NAME, "object": "model"}]})
             else: self.reply(404, {"error": {"message": "not found"}})
 

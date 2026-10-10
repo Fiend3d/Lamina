@@ -65,6 +65,7 @@ def main():
     parser.add_argument("--thinking", action="store_true")
     parser.add_argument("--stop", action="append", default=[])
     parser.add_argument("--vision", action="store_true")
+    parser.add_argument("--vision-gpu", action="store_true", help="use a CUDA-built vision encoder; reserves its VRAM before model startup")
     parser.add_argument("--vision-projector", type=Path, help="image projector belonging to the selected model")
     parser.add_argument("--vision-engine", type=Path, default=ROOT / "build-vision/bin/Release/strata-vision.exe" if sys.platform == "win32" else ROOT / "build-vision/bin/strata-vision")
     parser.add_argument("--image", type=Path, action="append", default=[])
@@ -79,9 +80,9 @@ def main():
         os.environ["LAMINA_EXPERT_POLICY"] = args.expert_policy
     cuda = args.cuda if args.cuda is not None else "build-cuda" in str(args.engine)
     engine = Engine(args.model, args.tokenizer, args.engine, cuda, args.max_context, args.kv_cache,
-                    args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image else None,
+                    args.vram_limit_mb, args.prefill_chunk, args.vision_engine if args.vision or args.image or args.vision_gpu else None,
                     args.max_image_tokens, args.cpu_threads or 8, args.kv_type, args.compute_mode, args.mtp,
-                    vision_projector=args.vision_projector)
+                    vision_projector=args.vision_projector, vision_gpu=args.vision_gpu)
     atexit.register(engine.close)
     try:
         if args.command == "serve":

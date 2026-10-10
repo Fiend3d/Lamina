@@ -1,3 +1,33 @@
+# v0.2.0
+
+Run the local API server with GPU image input and sampled video from the portable
+Windows package. Both CPU and GPU image encoders, Python, CUDA runtimes and the
+video decoder are bundled. Qwen3.6 and Ornith use their own verified projectors;
+model data stays in the sibling Lamina-data folder.
+
+- `START-HERE.bat --reconfigure` saves image/video input and CPU/GPU selection.
+  Use `--vision-device gpu` for GPU image encoding. The default launch starts
+  the OpenAI-compatible server; `chat` supports image/video files and prompts.
+- Pi integration includes an image configuration guide and a `lamina-video`
+  skill that samples local clips and submits frames to the running server.
+  MP4/H.264 is recommended; MOV, MKV, AVI and WebM were also checked. Video
+  analysis uses sampled images, without audio or native video input.
+- GPU vision and text inference take turns using VRAM, fixing the resident
+  encoder crash during long conversations on 8 GB cards.
+- A bounded image-embedding cache and image-aware conversation checkpoints
+  prevent repeated images from forcing another full prefill. New images and
+  server restarts can still require a slow initial pass.
+- Long text around images uses the optimized prefill schedule. On RTX 4060 /
+  Ryzen 7 1700X, a paired 32K-token two-image check improved first content from
+  90.3 to 63.2 seconds with identical answers. See the linked README benchmarks
+  for commands, memory use and limits; short OCR replies are not decode-speed
+  benchmarks.
+
+The portable and engine-only ZIPs include the server engine and both encoders.
+Windows x64, a compatible NVIDIA driver and sufficient RAM remain required.
+RTX 30/40/50 kernels are compiled; runtime validation is on RTX 4060. No model
+layer math was changed. SHA-256 checksum files accompany both packages.
+
 # v0.1.4
 
 Choose Qwen3.6-35B-A3B or Ornith-1.5-35B-A3B in the portable Windows ZIP.

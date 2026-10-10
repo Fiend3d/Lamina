@@ -13,6 +13,7 @@
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
 #include "gguf.h"
+#include "ggml-backend.h"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -95,6 +96,10 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+    if (gpu && !ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
+        std::fprintf(stderr, "strata-vision: --gpu requires a CUDA-built encoder and available GPU\n");
+        return 1;
+    }
 
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only = true;
@@ -156,6 +161,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata-vision: warmed up at %d image tokens\n", warm_tokens);
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
+        if (warm_tokens <= 0) {
+            std::fprintf(stderr, "strata-vision: GPU warm-up failed\n");
+            mtmd_free(ctx);
+            llama_model_free(text);
+            return 1;
+        }
     }
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);

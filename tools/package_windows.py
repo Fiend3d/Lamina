@@ -1,6 +1,7 @@
 """Package a portable Windows release and a downloadable engine-only asset.
 
-Build with tools.build_windows --portable --vision --cuda-arch "86;89;120" first.
+Build the portable engine/CPU encoder and the separate portable GPU encoder
+with architectures "86;89;120" first; see docs/WINDOWS_RELEASE.md.
 Generated staging files, dependency wheels and ZIPs stay in ../Lamina-data.
 """
 import argparse
@@ -54,7 +55,17 @@ def write_zip(directory, output):
     output.with_suffix(output.suffix + ".sha256").write_text(f"{sha256(output)}  {output.name}\n", encoding="ascii")
 
 
-def stage_engine(build, stage, revision):
+def validate_gpu_vision(build):
+    values = cache_values(build / "CMakeCache.txt")
+    if values.get("STRATA_PORTABLE") != "ON" or values.get("STRATA_VISION_CUDA") != "ON" or values.get("CMAKE_BUILD_TYPE") != "Release":
+        raise ValueError("GPU image encoder must be a portable Release CUDA build")
+    architectures = {part.split("-", 1)[0] for part in values.get("CMAKE_CUDA_ARCHITECTURES", "").split(";")}
+    if not set(ARCHITECTURES) <= architectures:
+        raise ValueError(f"GPU image encoder must contain all GPU architectures: {ARCHITECTURES}")
+    return values
+
+
+def stage_engine(build, stage, revision, gpu_vision_build):
     values = validate_build(build)
     stage.mkdir(parents=True, exist_ok=True)
     for name in ("lamina-infer.exe", "lamina-gguf.exe", "lamina-sampling-check.exe", "lamina-prefix-check.exe",
@@ -65,6 +76,10 @@ def stage_engine(build, stage, revision):
     if vision_values.get("STRATA_PORTABLE") != "ON" or vision_values.get("STRATA_VISION_CUDA") != "OFF":
         raise ValueError("Build the portable CPU image encoder with tools.build_windows --portable --vision")
     shutil.copy2(vision_build / "bin/Release/strata-vision.exe", stage / "strata-vision.exe")
+    gpu_values = validate_gpu_vision(gpu_vision_build)
+    if Path(gpu_values["CUDAToolkit_ROOT"]).resolve() != Path(values["CUDAToolkit_ROOT"]).resolve():
+        raise ValueError("GPU image encoder and inference engine must use the same CUDA runtime")
+    shutil.copy2(gpu_vision_build / "bin/strata-vision.exe", stage / "strata-vision-gpu.exe")
     dlls = sorted(build.glob("*.dll"))
     for prefix in ("cudart64_", "cublas64_", "cublasLt64_"):
         if not any(d.name.startswith(prefix) for d in dlls):
@@ -80,6 +95,7 @@ def stage_engine(build, stage, revision):
     for name in ("cuda_cudart-LICENSE", "libcublas-LICENSE"):
         shutil.copy2(cuda / name, licenses / name)
     manifest = {"version": VERSION, "source_revision": revision, "cuda_architectures": list(ARCHITECTURES),
+                "vision_devices": ["cpu", "gpu"],
                 "cpu_baseline": "AVX2/FMA/F16C/BMI2", "cuda_toolkit": cuda_version,
                 "files": {p.name: sha256(p) for p in stage.iterdir() if p.is_file()}}
     (stage / "release.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -102,8 +118,9 @@ def stage_python(stage, cache):
                     "-r", str(ROOT / "requirements.txt"), "-r", str(ROOT / "requirements-reference.txt")], check=True)
     # Import from the embedded runtime, not the developer's Python or venv.
     subprocess.run([str(python / "python.exe"), "-c",
-                    "import tokenizers, jinja2, PIL, jsonschema, numpy, gguf; "
-                    "import tools.quickstart, tools.lamina_ornith, tools.lamina_inline_mtp, tools.lamina_vision"],
+                    "import tokenizers, jinja2, PIL, jsonschema, numpy, gguf, imageio_ffmpeg; "
+                    "import tools.quickstart, tools.lamina_ornith, tools.lamina_inline_mtp, tools.lamina_vision, tools.lamina_media; "
+                    "import subprocess; subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-version'], check=True, capture_output=True)"],
                    cwd=stage, check=True)
 
 
@@ -111,6 +128,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=DATA / "release-build")
     parser.add_argument("--output", type=Path, default=DATA / "releases")
+    parser.add_argument("--gpu-vision-build-dir", type=Path, default=DATA / "release-vision-gpu")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("Windows x64 packaging must be run on Windows")
@@ -123,7 +141,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="lamina-release-", dir=args.output) as temporary:
         stage = Path(temporary)
         engine = stage / "build-cuda"
-        stage_engine(args.build_dir.resolve(), engine, revision)
+        stage_engine(args.build_dir.resolve(), engine, revision, args.gpu_vision_build_dir.resolve())
         write_zip(engine, args.output / ENGINE_ASSET)
         for name in ("START-HERE.bat", "lamina.py", "setup.py", "LICENSE", "README.md",
                      "requirements.txt", "requirements-reference.txt"):
@@ -131,11 +149,12 @@ def main():
         (stage / "tools").mkdir()
         for name in ("__init__.py", "quickstart.py", "lamina_release.py", "lamina_model.py", "gguf_reader.py",
                      "lamina_assets.py", "lamina_mtp.py", "lamina_chat.py", "lamina_protocol.py",
-                     "lamina_vision.py", "lamina_toolcalls.py", "lamina_ornith.py", "lamina_inline_mtp.py"):
+                     "lamina_vision.py", "lamina_media.py", "lamina_toolcalls.py", "lamina_ornith.py", "lamina_inline_mtp.py"):
             source = ROOT / "tools" / name
             if source.is_file():
                 shutil.copy2(source, stage / "tools" / name)
         (stage / "docs").mkdir()
+        shutil.copytree(ROOT / ".pi/skills/lamina-video", stage / ".pi/skills/lamina-video")
         (stage / "serve").mkdir()
         shutil.copy2(ROOT / "serve/structured.py", stage / "serve/structured.py")
         for name in ("WINDOWS_RELEASE.md", "ADVANCED.md", "DEVELOPER_HANDOFF.md", "LAMINA_PORT.md"):

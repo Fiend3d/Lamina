@@ -9,7 +9,7 @@ import zipfile
 
 from tools import lamina_release as release
 from tools import quickstart
-from tools.package_windows import validate_build
+from tools.package_windows import validate_build, validate_gpu_vision
 
 
 def engine_fixture(directory):
@@ -24,6 +24,20 @@ def engine_fixture(directory):
 
 
 class ReleaseTest(unittest.TestCase):
+    def test_gpu_vision_release_requires_portable_cuda_and_all_architectures(self):
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            values = {"STRATA_PORTABLE": "ON", "STRATA_VISION_CUDA": "ON",
+                      "CMAKE_BUILD_TYPE": "Release", "CMAKE_CUDA_ARCHITECTURES": "86;89;120"}
+            for field, invalid in (("STRATA_PORTABLE", "OFF"), ("STRATA_VISION_CUDA", "OFF"),
+                                   ("CMAKE_BUILD_TYPE", "Debug"), ("CMAKE_CUDA_ARCHITECTURES", "89")):
+                with self.subTest(field=field):
+                    (directory / "CMakeCache.txt").write_text("\n".join(
+                        f"{key}:STRING={invalid if key == field else value}" for key, value in values.items()))
+                    with self.assertRaises(ValueError): validate_gpu_vision(directory)
+            (directory / "CMakeCache.txt").write_text("\n".join(f"{k}:STRING={v}" for k, v in values.items()))
+            self.assertEqual(validate_gpu_vision(directory)["CMAKE_CUDA_ARCHITECTURES"], "86;89;120")
+
     def test_download_installs_only_verified_archive(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -147,6 +161,25 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(Path(options[options.index("--vision-projector") + 1]),
                                  data / "vision/ornith-mmproj-BF16.gguf")
                 self.assertIn("--vision", options)
+
+    def test_portable_gpu_vision_selects_bundled_encoder_without_compiling(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary); data = root / "data"; data.mkdir()
+            engine_fixture(root / "engine")
+            (root / "engine/strata-vision-gpu.exe").touch()
+            with patch.object(quickstart, "ROOT", root), patch.object(quickstart, "DATA", data), \
+                    patch.object(quickstart, "CONFIG", data / "quickstart.json"), \
+                    patch.object(quickstart, "ENGINE", root / "engine/lamina-infer.exe"), \
+                    patch.object(quickstart, "portable", return_value=True), \
+                    patch.object(quickstart, "gpu", return_value=("RTX 4060", "89", 8192)), \
+                    patch.object(quickstart, "total_ram_gib", return_value=64), \
+                    patch.object(quickstart, "run", side_effect=AssertionError("compiler or package installer")), \
+                    patch("tools.lamina_ornith.setup"), patch("tools.lamina_assets.download_assets"):
+                config = {"model": "ornith", "mtp": False, "vision": True, "vision_device": "gpu"}
+                quickstart.setup(config)
+                options = quickstart.engine_options(config, 131072)
+                self.assertIn("--vision-gpu", options)
+                self.assertEqual(Path(options[options.index("--vision-engine") + 1]), root / "engine/strata-vision-gpu.exe")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ jobs:
         run: python -m tools.build_windows --portable --vision --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
       - name: Sampling check
         run: ../Lamina-data/release-build/lamina-sampling-check.exe
+      - name: Build portable GPU image encoder for RTX 30, 40 and 50
+        run: python -m tools.build_windows --portable --vision-gpu --vision-only --vision-build-dir ../Lamina-data/release-vision-gpu --cuda-arch '86;89;120' --build-dir ../Lamina-data/release-build
       - name: Package embedded Python and runtime DLLs
         run: python -m tools.package_windows
       - name: Stage release assets in workspace

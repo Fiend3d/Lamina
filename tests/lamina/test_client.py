@@ -55,6 +55,193 @@ class ClientTest(unittest.TestCase):
                 self.assertIn("--cuda", start.call_args.args[0])
             self.assertEqual(native.commands, ["RESET", "SAMPLE 0 1 20 0", "PREFILL 1 2", "5"] * 2)
 
+    def test_text_startup_does_not_start_gpu_encoder(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine.vision_gpu = True
+            engine.vision_engine = Path(directory) / "vision.exe"
+            engine.vision_projector = Path(directory) / "projector.gguf"
+            engine._cache_supported = False
+            calls = []
+            def vision(*args, **kwargs):
+                calls.append("vision")
+                self.assertTrue(kwargs["gpu"])
+                return Mock()
+            def native(*args, **kwargs):
+                calls.append("native")
+                return Mock()
+            with patch("tools.lamina_chat.Vision", side_effect=vision), \
+                    patch("tools.lamina_chat.NativeProcess", side_effect=native):
+                engine._start_native()
+            self.assertEqual(calls, ["native"])
+
+    def test_gpu_image_encoding_releases_model_then_encoder_even_on_error(self):
+        from unittest.mock import Mock
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                engine = self.engine(directory)
+                engine.vision_gpu = True
+                engine.vision_engine = Path(directory) / "vision.exe"
+                engine.vision_projector = Path(directory) / "projector.gguf"
+                calls = []
+                native = Mock()
+                native.close.side_effect = lambda: calls.append("model-close")
+                engine.native = native
+                encoder = Mock()
+                def encode(*args):
+                    calls.append("encode")
+                    if fail:
+                        raise RuntimeError("encoding failed")
+                    destination = Path(directory) / "frame.sve"
+                    destination.write_bytes(b"embedding")
+                    return destination, 1
+                encoder.encode_payload.side_effect = encode
+                encoder.close.side_effect = lambda: calls.append("encoder-close")
+                def start(*args, **kwargs):
+                    calls.append("encoder-start")
+                    return encoder
+                messages = [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,eA=="}}]}]
+                with patch("tools.lamina_chat.Vision", side_effect=start):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "encoding failed"):
+                            engine._encode_images(messages, Path(directory))
+                    else:
+                        self.assertEqual(len(engine._encode_images(messages, Path(directory))), 1)
+                self.assertEqual(calls, ["model-close", "encoder-start", "encode", "encoder-close"])
+                self.assertIsNone(engine.native)
+                self.assertIsNone(engine.vision)
+
+    def test_repeated_images_keep_native_and_restore_embedding_after_temp_cleanup(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine.vision_gpu = True
+            engine.vision_engine = Path(directory) / "vision"
+            engine.vision_projector = Path(directory) / "projector"
+            encoder = Mock()
+            def encode(payload, folder, index):
+                destination = folder / f"{index}.sve"
+                destination.write_bytes(payload + b"embedding")
+                return destination, 1024
+            encoder.encode_payload.side_effect = encode
+            def message(data):
+                return [{"role": "user", "content": [{"type": "image_url",
+                    "image_url": "data:image/png;base64," + data}]}]
+            with patch("tools.lamina_chat.Vision", return_value=encoder) as start:
+                with tempfile.TemporaryDirectory() as first:
+                    engine._encode_images(message("eA=="), Path(first))
+                native = Mock(); engine.native = native; engine._cache_prefix = [1, 2]
+                with tempfile.TemporaryDirectory() as second:
+                    image, count = engine._encode_images(message("eA=="), Path(second))[0]
+                    self.assertEqual(image.read_bytes(), b"xembedding")
+                    self.assertEqual(count, 1024)
+                    self.assertEqual(engine._cache_prefix, [1, 2])
+                    native.close.assert_not_called()
+                    self.assertEqual(start.call_count, 1)
+                    engine._encode_images(message("eQ=="), Path(second))
+                    native.close.assert_called_once()
+                    self.assertEqual(start.call_count, 2)
+
+    def test_image_prefix_restore_extension_and_changed_image_reset(self):
+        from tools.lamina_chat import IMAGE_ID
+        class Native:
+            def __init__(self): self.commands = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory); native = Native(); engine.native = native
+            engine._cache_supported = True; engine._cache_prefix = []
+            prefix = [1] * 256 + [IMAGE_ID, 2]
+            key = ["image-a"]
+            def prepare(*args):
+                engine._prepared_prefix = prefix.copy()
+                engine._prepared_signature = [key[0] if t == IMAGE_ID else t for t in prefix]
+                return prefix + [300], [(Path(directory) / "a.sve", 1024)], len(prefix) + 1024
+            engine._prepare = prepare
+            for _ in range(2): list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            prefix.extend([3, 4])
+            list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            self.assertEqual(sum(c.startswith("IMAGE ") for c in native.commands), 1)
+            self.assertEqual(native.commands.count("RESET"), 1)
+            self.assertEqual(native.commands.count("RESTORE_PREFIX"), 2)
+            key[0] = "image-b"
+            list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            self.assertEqual(native.commands.count("RESET"), 2)
+            self.assertEqual(sum(c.startswith("IMAGE ") for c in native.commands), 2)
+
+    def test_image_cache_eviction_and_changed_http_content(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            encoder = Mock(); engine.vision = encoder
+            def encode(payload, folder, index):
+                destination = folder / f"{index}.sve"
+                destination.write_bytes(payload * 8)
+                return destination, 1
+            encoder.encode_payload.side_effect = encode
+            messages = [{"role": "user", "content": [{"type": "image_url",
+                         "image_url": "https://example.test/image.png"}]}]
+            with patch("tools.lamina_chat.IMAGE_CACHE_BYTES", 8), \
+                    patch("tools.lamina_chat.image_payload", side_effect=[b"a", b"a", b"b", b"a"]):
+                for _ in range(4): engine._encode_images(messages, Path(directory))
+            # Same URL/same bytes hits; changed content misses; evicted content
+            # must be encoded again, and total cached bytes stay bounded.
+            self.assertEqual(encoder.encode_payload.call_count, 3)
+            self.assertEqual(engine._image_cache_bytes, 8)
+            self.assertEqual(len(engine._image_cache), 1)
+
+    def test_image_prefix_extension_feeds_only_appended_image(self):
+        from tools.lamina_chat import IMAGE_ID
+        class Native:
+            def __init__(self): self.commands = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory); native = Native(); engine.native = native
+            engine._cache_supported = True; engine._cache_prefix = []
+            prefix = [1] * 256 + [IMAGE_ID, 2]
+            images = [(Path(directory) / "first.sve", 1024)]
+            def prepare(*args):
+                engine._prepared_prefix = prefix.copy()
+                keys = iter(["first", "second"])
+                engine._prepared_signature = [next(keys) if t == IMAGE_ID else t for t in prefix]
+                return prefix + [300], images.copy(), len(prefix) + sum(n - 1 for _, n in images) + 1
+            engine._prepare = prepare
+            list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            prefix.extend([3, IMAGE_ID, 4])
+            images.append((Path(directory) / "second.sve", 1024))
+            list(engine.events([{"role": "user", "content": "Hi"}], 1))
+            self.assertEqual(native.commands.count("RESET"), 1)
+            self.assertEqual([c for c in native.commands if c.startswith("IMAGE ")],
+                             ["IMAGE " + str(path) for path, _ in images])
+
+    def test_long_image_prefix_uses_prompt_on_each_side_of_image_before_sampling(self):
+        from tools.lamina_chat import IMAGE_ID
+        class Native:
+            def __init__(self): self.commands = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                return None if acknowledgement else 5
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory); native = Native(); engine.native = native
+            engine._cache_supported = True; engine._cache_prefix = []
+            prefix = [1] * 256 + [IMAGE_ID] + [2] * 256
+            def prepare(*args):
+                engine._prepared_prefix = prefix.copy()
+                engine._prepared_signature = ["image" if t == IMAGE_ID else t for t in prefix]
+                return prefix + [300], [(Path(directory) / "a.sve", 1024)], len(prefix) + 1024
+            engine._prepare = prepare
+            list(engine.events([{"role": "user", "content": "Hi"}], 1, temperature=0.7, seed=42))
+            prompts = [c for c in native.commands if c.startswith("PROMPT ")]
+            self.assertEqual(prompts, ["PROMPT 32 " + " ".join([str(t)] * 256) for t in (1, 2)])
+            self.assertLess(native.commands.index(prompts[0]), native.commands.index("IMAGE " + str(Path(directory) / "a.sve")))
+            self.assertLess(native.commands.index(prompts[1]), native.commands.index("CACHE_PREFIX"))
+            self.assertLess(native.commands.index("CACHE_PREFIX"), native.commands.index("SAMPLE 0.7 1 20 42"))
+
     def test_fp16_mode_reaches_native_process(self):
         with tempfile.TemporaryDirectory() as directory:
             engine = self.engine(directory)

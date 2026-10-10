@@ -1,6 +1,63 @@
 # Lamina developer handoff
 
-`START-HERE.bat --reconfigure` asks for model, context length and MTP again.
+Source launchers support saved `--vision-device cpu|gpu`. GPU mode selects the
+separate CUDA encoder in `build-vision-gpu/bin/strata-vision.exe`, built with
+`python -m tools.build_windows --vision-gpu --vision-only --cuda-arch 89` on
+RTX 4060. CPU/portable builds are preserved. `lamina.py --vision-gpu` passes
+`--gpu` to mtmd. GPU image requests stop the native model before encoding and
+close the encoder before model inference; text startup does not load vision.
+This fixes the resident-encoder OOM reported at 109K pi tokens on RTX 4060 8 GB.
+Image embeddings now use a bounded 256 MiB per-engine RAM LRU keyed by SHA-256
+of image bytes. Cache hits avoid starting vision or stopping the text engine.
+CUDA device-KV checkpoints also cover image-containing prefixes: identity
+includes ordered image hashes, IMAGE commands are fed only for uncached prefix
+sections, and native checkpoints already preserve image mRoPE positions.
+New GPU image bytes still reload the native model and lose its checkpoint.
+HTTP URLs are fetched again to detect changed content; embeddings disappear
+on server restart. No native math or protocol changes are needed.
+The [image cache record](../bench/results/2026-10-10-image-cache/README.md)
+checks OCR, cached/full-prefill answer equality and a 102K image conversation.
+Long text spans inside image-containing CUDA device-KV prefixes now use the
+existing layer-major PROMPT path instead of individual BATCH chunks. IMAGE
+commands remain boundaries, preserving their native mRoPE positions. Sampling
+is configured after prefix processing, so ignored PROMPT results do not consume
+the requested RNG seed. Image cache hits and checkpoint extension still work.
+See [image prefill measurements](../bench/results/2026-10-10-image-prefill/README.md)
+for the old/new feed-loop comparison on RTX 4060.
+The [memory regression record](../bench/results/2026-10-10-gpu-vision-memory/README.md)
+checks video, 109K text, prefix extension to 129K, and a subsequent GPU image.
+`/health` reports the
+selected device and requests log per-image encoding progress. Request first-token
+timing now includes image encoding. v0.2.0 packages both CPU and GPU vision,
+the local API server, sampled-video decoder and pi video skill. The portable
+GPU encoder is built separately in `../Lamina-data/release-vision-gpu` with
+portable CPU flags and SM86/89/120; packaging checks its build and CUDA runtime.
+The [RTX 4060 GPU vision record](../bench/results/2026-10-10-gpu-vision/README.md)
+checks OCR, frame order, the user's six-frame MOV, post-video text, and VRAM.
+
+
+The launcher now saves CPU image input (`--vision on|off`) and sampled terminal
+video input (`--video-input on|off`); enabling video enables vision. `chat --image`
+and `chat --video` accept local files, `--prompt` makes a single request, and
+interactive chat accepts `/image "path" question` and `/video "path" question`.
+`tools/lamina_media.py` uses the bundled imageio-ffmpeg 0.6.0 decoder to extract
+up to 4 frames at 1-second intervals by default (overrides: `--video-frames`
+1..16 and positive `--video-interval`), with timestamps and a 1024-pixel bound.
+This uses ordinary independent-image embeddings, without audio or native video
+mRoPE. HTTP clients continue to submit image_url content; video_url is unsupported.
+Packaging includes the helper and decoder wheel. Model data and temporary frames
+stay in sibling Lamina-data; temporary frames are removed after conversion.
+See [launcher media validation](../bench/results/2026-10-10-launcher-media/README.md).
+
+Pi image providers must advertise `input: ["text", "image"]`. The packaged
+`.pi/skills/lamina-video` skill and `python -m tools.lamina_media --video PATH
+--prompt TEXT` submit sampled frames to the running server rather than starting
+a second engine. Pi's `settings.json` can register the skill's absolute directory
+for discovery outside this checkout. The README covers reload, verification and
+sampling limits; pi has no direct video model-input setting.
+
+
+`START-HERE.bat --reconfigure` asks for model, context, MTP and media settings again.
 Enter preserves each saved setting; `--model` overrides and skips the model
 question. Normal launches reuse `../Lamina-data/quickstart.json`. The README
 covers first launch, portable Ornith and image setup, saved settings and client setup.
@@ -17,7 +74,8 @@ more on the Ryzen 7 1700X. Text-only sessions retain lazy encoder startup.
 
 v0.1.1 adds one prefix checkpoint for CUDA device KV. The Python server probes
 native capabilities and verifies exact BPE prefix IDs; older engines, host KV,
-images, changed prefixes and restarts use RESET. Independent recurrent snapshots
+changed prefixes and restarts use RESET. That release excluded images; current
+source supports image prefix reuse. Independent recurrent snapshots
 are budgeted separately from MTP rollback; attention prefix KV stays in place
 while suffixes append. `LAMINA_PREFIX_CACHE=0` disables reuse. See
 [the RTX 4060 record](../bench/results/2026-10-08-rtx4060-prefix/README.md) for
@@ -29,7 +87,7 @@ advances that checkpoint across turns of an append-only conversation
 messages, re-cache. Agent clients that resend the conversation each turn reuse
 everything but the new content - pi's per-turn first token fell from 41-47 s to
 well under 1 s at 38K prompt tokens. A previous checkpoint that is not an exact
-token prefix (compaction, edits, host KV, images) still falls back to RESET. See
+token/image prefix (compaction, edits, host KV) still falls back to RESET. See
 [the conversation-prefix record](../bench/results/2026-10-09-conversation-prefix/README.md).
 
 Fast-mode `cpu-miss` now uses the overlapping expert pipeline while the GPU

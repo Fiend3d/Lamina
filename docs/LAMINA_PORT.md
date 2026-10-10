@@ -1,7 +1,58 @@
 # Qwen3.6 port status
 
+Source launchers support saved `--vision-device cpu|gpu`. GPU mode selects the
+separate CUDA encoder in `build-vision-gpu/bin/strata-vision.exe`, built with
+`python -m tools.build_windows --vision-gpu --vision-only --cuda-arch 89` on
+RTX 4060. CPU/portable builds are preserved. `lamina.py --vision-gpu` passes
+`--gpu` to mtmd. GPU image requests stop the native model before encoding and
+close the encoder before model inference; text startup does not load vision.
+This fixes the resident-encoder OOM reported at 109K pi tokens on RTX 4060 8 GB.
+Source now caches image embeddings in a bounded 256 MiB per-engine RAM LRU,
+keyed by image bytes. Repeated images keep the text engine resident. CUDA
+device-KV conversation checkpoints include image identity and order, and retain
+the native image mRoPE state; follow-ups prefill only appended content. New GPU
+images or evicted embeddings still require a model reload and full prefill.
+HTTP URLs are fetched again; server restarts clear both caches.
+See [image cache validation](../bench/results/2026-10-10-image-cache/README.md)
+for cached/full-prefill OCR comparison and 102K image-context reuse.
+Image-containing CUDA device-KV prefixes now route long text spans on either
+side of images through the existing layer-major PROMPT path. Native image
+position handling and the VRAM-exclusive encoder lifecycle are preserved;
+this is a Python request-routing change, without native math changes.
+See [image prefill measurements](../bench/results/2026-10-10-image-prefill/README.md)
+for the paired comparison and correctness checks.
+See the [109K/129K regression](../bench/results/2026-10-10-gpu-vision-memory/README.md)
+for checks of GPU release before long text inference.
+`/health` reports the
+selected device and requests log per-image encoding progress. Request first-token
+timing now includes image encoding. v0.2.0 packages the API server, both CPU/GPU
+encoders, video decoder and pi video skill. The GPU encoder uses portable CPU
+flags and SM86/89/120; RTX 30/50 runtime coverage remains unverified.
+See [GPU vision runtime validation](../bench/results/2026-10-10-gpu-vision/README.md)
+for first-content timing, later decode and sampled peak VRAM on RTX 4060.
+
+
+The launcher now saves CPU image input (`--vision on|off`) and sampled terminal
+video input (`--video-input on|off`); enabling video enables vision. `chat --image`
+and `chat --video` accept local files, `--prompt` makes a single request, and
+interactive chat accepts `/image "path" question` and `/video "path" question`.
+`tools/lamina_media.py` uses the bundled imageio-ffmpeg 0.6.0 decoder to extract
+up to 4 frames at 1-second intervals by default (overrides: `--video-frames`
+1..16 and positive `--video-interval`), with timestamps and a 1024-pixel bound.
+This uses ordinary independent-image embeddings, without audio or native video
+mRoPE. HTTP clients continue to submit image_url content; video_url is unsupported.
+Packaging includes the helper and decoder wheel. Model data and temporary frames
+stay in sibling Lamina-data; temporary frames are removed after conversion.
+See [launcher media validation](../bench/results/2026-10-10-launcher-media/README.md).
+
+Pi integration includes a project `lamina-video` skill and an existing-server
+client in `tools.lamina_media`; the image provider advertises text/image input.
+Video questions are answered from sampled image frames via HTTP, without a
+second engine. Direct video attachments and audio remain unsupported.
+
+
 The quickstart launcher saves model, context length and MTP. `--reconfigure`
-asks all three again with saved values as defaults; an explicit `--model`
+asks the settings again with saved values as defaults; an explicit `--model`
 skips its question. See the [user guide](../README.md) for setup and commands.
 
 CUDA device-KV server requests can reuse a prefix checkpoint across turns. v0.1.1
@@ -10,7 +61,7 @@ history up to the generation prompt and advances that checkpoint when the
 conversation grows by an append (restore, prefill only the new messages, re-cache),
 so an agent client reuses everything but the new content. Independent DeltaNet
 state snapshots and unchanged prefix attention KV; a checkpoint that is not an
-exact BPE prefix falls back to RESET, as do host KV and image requests. See the
+exact token/image prefix falls back to RESET, as does host KV. See the
 [conversation-prefix validation](../bench/results/2026-10-09-conversation-prefix/README.md)
 and the earlier [system/tools record](../bench/results/2026-10-08-rtx4060-prefix/README.md).
 

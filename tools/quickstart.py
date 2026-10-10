@@ -10,7 +10,7 @@ pi and other apps can use it. It loads the model at startup and stops when this 
 is closed or Ctrl+C is pressed.
 
 Every setup step is skipped when its result is already present, so re-running
-is cheap. Answers to the three questions (model, context length, MTP speculation) are
+is cheap. Settings (model, context length, MTP, image and sampled video input) are
 stored in ../Lamina-data/quickstart.json.
 """
 import argparse
@@ -159,8 +159,8 @@ def prompt(text):
         return ""
 
 
-def ask(config, reconfigure, choose_model=True):
-    """Asks for the model, context length and MTP once; non-interactive runs take the defaults."""
+def ask(config, reconfigure, choose_model=True, choose_vision=True, choose_video=True, choose_vision_device=True):
+    """Ask for saved launch settings; non-interactive runs take the defaults."""
     interactive = sys.stdin.isatty()
     if choose_model and (reconfigure or "model" not in config):
         choice = 2 if config.get("model") == "ornith" else 1
@@ -191,6 +191,25 @@ def ask(config, reconfigure, choose_model=True):
             if answer:
                 enable = answer not in ("n", "no")
         config["mtp"] = enable
+    for key, choose, default, question in (
+            ("vision", choose_vision, True, "Enable image input (model-specific projector)?"),
+            ("video_input", choose_video, False, "Enable sampled video input in terminal chat (no audio)?")):
+        if choose and (reconfigure or key not in config):
+            enable = config.get(key, default)
+            if interactive:
+                answer = prompt(f"\n{question} [{'Y/n' if enable else 'y/N'}]: ").lower()
+                if answer:
+                    enable = answer not in ("n", "no")
+            config[key] = enable
+    if config.get("video_input"):
+        config["vision"] = True
+    if choose_vision_device and config.get("vision", True) and (reconfigure or "vision_device" not in config):
+        device = config.get("vision_device", "cpu")
+        if interactive:
+            answer = prompt(f"Image encoder device: cpu or gpu [{device}]: ").lower()
+            if answer in ("cpu", "gpu"):
+                device = answer
+        config["vision_device"] = device
     CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return config
 
@@ -232,12 +251,17 @@ def setup(config, cuda_arch=None, build_source=False):
         step(f"Building the engine for compute capability {arch} (incremental)")
         run([sys.executable, "-m", "tools.build_windows", "--vision", "--cuda-arch", arch])
 
+    if config.get("vision", True) and config.get("vision_device") == "gpu" and selected_vision(config) is None:
+        if portable():
+            raise RuntimeError("The portable GPU image encoder is missing. Extract a complete v0.2.0 or newer portable package.")
+        step("Building the CUDA image encoder (incremental)")
+        run([sys.executable, "-m", "tools.build_windows", "--vision-gpu", "--vision-only", "--cuda-arch", arch])
     paths = model_paths(config)
     if config.get("model") == "ornith":
         step("Setting up Ornith-1.5-35B-A3B (download, SSM fix, MTP pack)")
         from tools.lamina_ornith import setup as ornith_setup
         ornith_setup(DATA)
-        if vision_executable() is not None:
+        if config.get("vision", True) and selected_vision(config) is not None:
             from tools.lamina_assets import download_assets
             step("Checking Ornith image support (about 903 MB on first download)")
             download_assets(DATA, model="ornith")
@@ -249,11 +273,13 @@ def setup(config, cuda_arch=None, build_source=False):
             step("Downloading the tokenizer")
             run([sys.executable, "setup.py", "--tokenizer"])
         step("Checking the chat template and assets")
-        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if vision_executable() is None else [])])
+        run([sys.executable, "-m", "tools.lamina_assets", *(["--text-only"] if not config.get("vision", True) or selected_vision(config) is None else [])])
         if config.get("mtp") and not paths["mtp"].is_file():
             step("Fetching and packing the MTP head (about 1.6 GB download)")
             run([sys.executable, "-m", "tools.lamina_mtp", "fetch"])
             run([sys.executable, "-m", "tools.lamina_mtp", "pack"])
+    if config.get("vision", False) and selected_vision(config) is None:
+        raise RuntimeError("Image input is enabled but the selected encoder is missing. Use --build-source or install a release with strata-vision.exe.")
     config["cuda_arch"] = arch
     config["engine"] = str(ENGINE.resolve())
     CONFIG.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -277,6 +303,16 @@ def vision_executable():
     return None
 
 
+def selected_vision(config):
+    if config.get("vision_device") != "gpu":
+        return vision_executable()
+    for path in (ENGINE.parent / "strata-vision-gpu.exe", ROOT / "build-vision-gpu/bin/strata-vision.exe",
+                 ROOT / "build-vision-gpu/bin/Release/strata-vision.exe"):
+        if path.is_file():
+            return path
+    return None
+
+
 def vision_projector(config):
     return DATA / "vision" / ("ornith-mmproj-BF16.gguf" if config.get("model") == "ornith" else "mmproj-F16.gguf")
 
@@ -289,34 +325,71 @@ def engine_options(config, context):
         options += ["--model", str(paths["model"]), "--tokenizer", str(paths["tokenizer"])]
     if config.get("mtp") and paths["mtp"].is_file():
         options += ["--mtp", str(paths["mtp"])]
-    if vision_executable() is not None:
-        options += ["--vision", "--vision-engine", str(vision_executable()),
+    if config.get("vision", True) and selected_vision(config) is not None:
+        options += ["--vision", "--vision-engine", str(selected_vision(config)),
                     "--vision-projector", str(vision_projector(config))]
+    if config.get("vision", True) and config.get("vision_device") == "gpu":
+        options += ["--vision-gpu"]
     return options
 
 
-def chat(config, context, thinking, max_tokens):
+def chat(config, context, thinking, max_tokens, image=None, video=None, initial_prompt=None, video_frames=4, video_interval=1.0):
     os.environ.update(engine_environment())
     from tools.lamina_chat import Engine
     paths = model_paths(config)
     engine = Engine(paths["model"], paths["tokenizer"], ENGINE, cuda=True,
                     max_context=context, kv_cache="device", kv_type="f16", compute_mode="fast",
                     mtp=paths["mtp"] if config.get("mtp") and paths["mtp"].is_file() else None,
-                    vision_engine=vision_executable(), vision_projector=vision_projector(config))
+                    vision_engine=selected_vision(config) if config.get("vision", True) else None, vision_projector=vision_projector(config), vision_gpu=config.get("vision_device") == "gpu" and config.get("vision", True))
+    engine.log_requests = True
     print(f"\nLamina chat, context {context // 1024}K, MTP {'on' if engine.mtp else 'off'}. "
           "Commands: /new starts a new conversation, /exit quits.")
     print("The first answer takes longer while the model loads.\n")
+    print(r'Media commands: /image "C:\path\photo.png" question; /video "C:\path\clip.mp4" question')
     history = []
+    one_shot = initial_prompt is not None or image is not None or video is not None
     try:
         while True:
             try:
-                text = input("You: ").strip()
+                text = (initial_prompt or "Describe this input.") if one_shot else input("You: ").strip()
             except (EOFError, KeyboardInterrupt):
                 print(); break
-            if text in ("/exit", "/quit"): break
-            if text == "/new": history = []; print("(new conversation)"); continue
+            if not one_shot and text in ("/exit", "/quit"): break
+            if not one_shot and text == "/new": history = []; print("(new conversation)"); continue
             if not text: continue
-            history.append({"role": "user", "content": text})
+            try:
+                from tools.lamina_media import image_content, video_content
+                media_image, media_video = image, video
+                if text.startswith(("/image ", "/video ")):
+                    import re
+                    match = re.fullmatch(r'/([a-z]+)\s+(?:"([^"\n]+)"|(\S+))(?:\s+(.*))?', text)
+                    if not match:
+                        raise ValueError('use /image or /video "path" question')
+                    kind, quoted, unquoted, question = match.groups()
+                    media_image = Path(quoted or unquoted) if kind == "image" else None
+                    media_video = Path(quoted or unquoted) if kind == "video" else None
+                    text = question or "Describe this input."
+                content = [{"type": "text", "text": text}]
+                if media_image or media_video:
+                    if not config.get("vision", True):
+                        raise ValueError("enable image input with --vision on")
+                    if media_image:
+                        content.append(image_content(media_image))
+                    if media_video:
+                        if not config.get("video_input"):
+                            raise ValueError("enable sampled video input with --video-input on")
+                        content += video_content(media_video, DATA, video_frames, video_interval)
+                else:
+                    content = text
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                if one_shot:
+                    raise
+                print(f"[{error}]")
+                continue
+            if isinstance(content, list):
+                count = sum(item["type"] == "image_url" for item in content)
+                print(f"Encoding {count} image(s) on the {config.get('vision_device', 'cpu').upper()}, then loading/prefilling the model. This can take minutes.", flush=True)
+            history.append({"role": "user", "content": content})
             reply = ""
             print("Lamina: ", end="", flush=True)
             try:
@@ -332,9 +405,13 @@ def chat(config, context, thinking, max_tokens):
             except ValueError as error:  # context full and similar request errors
                 print(f"\n[{error}; use /new to start over]")
                 history.pop()
+                if one_shot:
+                    raise
                 continue
             print("\n")
             history.append({"role": "assistant", "content": reply})
+            if one_shot:
+                break
     finally:
         engine.close()
 
@@ -355,7 +432,8 @@ def run_server(config, context, host, port, preload=True):
                  f"Close it first, or start this one on another port: START-HERE.bat --port {port + 1}")
     paths = model_paths(config)
     mtp = bool(config.get("mtp") and paths["mtp"].is_file())
-    print(f"\nStarting the Lamina server ({paths['name']}, context {context // 1024}K, MTP {'on' if mtp else 'off'}) ...")
+    device = config.get("vision_device", "cpu") if config.get("vision", True) else "off"
+    print(f"\nStarting the Lamina server ({paths['name']}, context {context // 1024}K, MTP {'on' if mtp else 'off'}, vision {device}) ...")
     command = [sys.executable, "lamina.py", "serve", *engine_options(config, context), "--host", host, "--port", str(port)]
     server = subprocess.Popen([str(c) for c in command], cwd=ROOT, env=engine_environment())
     try:
@@ -407,7 +485,7 @@ def main():
     ensure_venv(argv)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="serve", choices=("serve", "chat", "setup"))
-    parser.add_argument("--reconfigure", action="store_true", help="ask for model, context length and MTP again")
+    parser.add_argument("--reconfigure", action="store_true", help="ask for model, context, MTP, image and video input again")
     parser.add_argument("--max-context", type=int, help="override the stored context length for this run")
     parser.add_argument("--cuda-arch", help="override the detected compute capability, e.g. 86 or 89")
     parser.add_argument("--build-source", action="store_true", help="compile locally instead of downloading the release (needs C++ build tools)")
@@ -417,7 +495,24 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="serve: listening port")
     parser.add_argument("--no-preload", action="store_true", help="serve: do not load the model at startup (the first request does)")
     parser.add_argument("--model", choices=("qwen3.6", "ornith"), help="which model to serve (default: qwen3.6)")
+    parser.add_argument("--vision", choices=("on", "off"), help="save image input setting")
+    parser.add_argument("--vision-device", choices=("cpu", "gpu"), help="save image/video encoder device (gpu needs CUDA encoder)")
+    parser.add_argument("--video-input", choices=("on", "off"), help="save sampled video input setting; on also enables vision")
+    parser.add_argument("--image", type=Path, help="chat: local image to describe")
+    parser.add_argument("--video", type=Path, help="chat: local video to sample as images (no audio)")
+    parser.add_argument("--prompt", help="chat: answer this prompt once and exit")
+    parser.add_argument("--video-frames", type=int, default=4, help="chat: maximum sampled frames, 1..16 (default 4)")
+    parser.add_argument("--video-interval", type=float, default=1.0, help="chat: seconds between frames (default 1)")
     args = parser.parse_args(argv)
+    import math
+    if not 1 <= args.video_frames <= 16 or not math.isfinite(args.video_interval) or args.video_interval <= 0:
+        parser.error("video frames must be 1..16 and interval must be positive")
+    if args.command != "chat" and (args.image or args.video or args.prompt is not None):
+        parser.error("--image, --video and --prompt require chat")
+    if args.vision == "off" and (args.image or args.video or args.video_input == "on" or args.vision_device == "gpu"):
+        parser.error("media input requires --vision on")
+    if args.video and args.video_input == "off":
+        parser.error("--video requires --video-input on")
     if portable() and args.build_source:
         parser.error("--build-source needs a source checkout; the portable release contains no build toolchain")
 
@@ -425,7 +520,25 @@ def main():
     stored = load_config()
     if args.model:
         stored["model"] = args.model          # --model skips the first-run question
-    config = ask(stored, args.reconfigure, choose_model=args.model is None)
+    if args.vision_device:
+        stored["vision_device"] = args.vision_device
+        if args.vision_device == "gpu":
+            stored["vision"] = True
+    if args.vision:
+        stored["vision"] = args.vision == "on"
+        if args.vision == "off":
+            stored["video_input"] = False
+    if args.video_input:
+        stored["video_input"] = args.video_input == "on"
+    if args.image or args.video:
+        stored["vision"] = True
+    if args.video or args.video_input == "on":
+        stored["video_input"] = True
+        stored["vision"] = True
+    config = ask(stored, args.reconfigure, choose_model=args.model is None,
+                 choose_vision=args.vision is None and not (args.image or args.video or args.video_input == "on"),
+                 choose_video=args.video_input is None and args.video is None and args.vision != "off",
+                 choose_vision_device=args.vision_device is None)
     if args.model:
         config["model"] = args.model
     config.setdefault("model", "qwen3.6")
@@ -439,7 +552,7 @@ def main():
     needs_setup = (args.command == "setup" or portable() or args.build_source or not ENGINE.is_file() or args.cuda_arch
                    or not paths["model"].is_file()
                    or not paths["tokenizer"].is_file()
-                   or (vision_executable() is not None and not vision_projector(config).is_file())
+                   or (config.get("vision", True) and (selected_vision(config) is None or not vision_projector(config).is_file()))
                    or not marker.is_file() or marker.read_text() != requirements_digest(RUNTIME_REQUIREMENTS)
                    or (config.get("mtp") and not paths["mtp"].is_file()))
     if needs_setup:
@@ -451,7 +564,8 @@ def main():
         parser.error("--max-context must be 1024..131072")
     if args.command == "serve":
         return run_server(config, context, args.host, args.port, preload=not args.no_preload)
-    chat(config, context, args.thinking, min(args.max_tokens, context // 2))
+    chat(config, context, args.thinking, min(args.max_tokens, context // 2),
+         args.image, args.video, args.prompt, args.video_frames, args.video_interval)
     return 0
 
 
