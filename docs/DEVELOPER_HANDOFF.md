@@ -24,6 +24,15 @@ Recorded commands, correctness checks and performance limits:
 [sampled MTP](../bench/results/2026-10-11-sampled-mtp/README.md) and
 [vision snapshots](../bench/results/2026-10-11-vision-snapshot/README.md).
 
+On the RTX 3050 8 GB / Ryzen 7 5700X machine, sampled MTP measured 34.15 ->
+38.63 tokens/s for Qwen3.6 and 35.87 -> 38.52 for Ornith, with identical paired
+answers. Greedy nine-run medians were unchanged by these commits: Qwen3.6
+39.40 / 47.05 and Ornith 42.02 / 45.35 tokens/s (MTP off / on). See
+[the current-state record](../bench/results/2026-10-11-rtx3050-current/README.md).
+`check_sampled_mtp` and `check_vision_snapshot` now detect the hardware they
+report through `tools.lamina_hardware`; reports written before this change
+name the RTX 4060 machine regardless of where they ran.
+
 Source launchers support saved `--vision-device cpu|gpu`. GPU mode selects the
 separate CUDA encoder in `build-vision-gpu/bin/strata-vision.exe`, built with
 `python -m tools.build_windows --vision-gpu --vision-only --cuda-arch 89` on

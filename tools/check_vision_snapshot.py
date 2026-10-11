@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from tools.lamina_chat import Engine
+from tools.lamina_hardware import describe as describe_hardware
 from tools.lamina_media import image_content
 from tools.quickstart import load_config, model_paths, selected_vision, vision_projector
 
@@ -28,7 +29,7 @@ def main():
         font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 90)
         draw.text((60, 120), word, fill="black", font=font)
         image.save(args.output / (word + ".png"))
-    report = {"hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM", "model": args.model,
+    report = {"hardware": describe_hardware(), "model": args.model,
               "settings": {"max_context": 131072, "kv_type": "f16", "kv_cache": "device", "compute_mode": "fast"},
               "requests": []}
     stop, peak = threading.Event(), [0]

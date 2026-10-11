@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 from tools.lamina_chat import Engine
+from tools.lamina_hardware import describe as describe_hardware
 from tools.quickstart import load_config, model_paths
 
 
@@ -25,7 +26,7 @@ def main():
         "Explain how to frame three characters in a medium-wide shot. Give concrete camera and composition advice.",
         "Write a Python function that computes the bounding box of a list of 3D points. Explain empty input handling.",
         "Find the sum of the integers from 1 through 100 using two different methods and explain why they agree."]
-    report = {"hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM", "model": args.model,
+    report = {"hardware": describe_hardware(), "model": args.model,
               "temperature": args.temperature, "top_p": .95, "top_k": 20,
               "context": 131072, "kv_type": "f16", "compute_mode": "fast", "proposal": args.proposal, "runs": []}
     os.environ["LAMINA_SPEC_STATS"] = "1"
