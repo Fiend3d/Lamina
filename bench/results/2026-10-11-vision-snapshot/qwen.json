@@ -1,0 +1,235 @@
+{
+  "hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM",
+  "model": "qwen3.6",
+  "settings": {
+    "max_context": 131072,
+    "kv_type": "f16",
+    "kv_cache": "device",
+    "compute_mode": "fast"
+  },
+  "requests": [
+    {
+      "label": "baseline-initial",
+      "answer": "ALPHA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 24500,
+        "completion_tokens": 2,
+        "total_tokens": 24502
+      },
+      "timings": {
+        "first_token_seconds": 45.71014539999305,
+        "total_seconds": 46.158421400003135,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 45.710890499991365,
+      "later_tokens_per_second": 2.2320153132897707
+    },
+    {
+      "label": "baseline-new-image",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 25601,
+        "completion_tokens": 2,
+        "total_tokens": 25603
+      },
+      "timings": {
+        "first_token_seconds": 60.274915000016335,
+        "total_seconds": 60.82042380000348,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 60.275579200009815,
+      "later_tokens_per_second": 1.8339840920488126
+    },
+    {
+      "label": "baseline-repeat",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 25601,
+        "completion_tokens": 2,
+        "total_tokens": 25603
+      },
+      "timings": {
+        "first_token_seconds": 0.5339193999825511,
+        "total_seconds": 0.981547999981558,
+        "cached_prompt_tokens": 25594
+      },
+      "first_content_seconds": 0.5345810000144411,
+      "later_tokens_per_second": 2.2348740927964275
+    },
+    {
+      "label": "baseline-third-image",
+      "answer": "ALPHA BETA GAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 26702,
+        "completion_tokens": 6,
+        "total_tokens": 26708
+      },
+      "timings": {
+        "first_token_seconds": 68.11915260000387,
+        "total_seconds": 68.503151300014,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 68.11982069999794,
+      "later_tokens_per_second": 13.027296093655758
+    },
+    {
+      "label": "snapshot-initial",
+      "answer": "ALPHA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 24500,
+        "completion_tokens": 2,
+        "total_tokens": 24502
+      },
+      "timings": {
+        "first_token_seconds": 46.922520899999654,
+        "total_seconds": 47.36118449998321,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 46.9232804000203,
+      "later_tokens_per_second": 2.28061301052732
+    },
+    {
+      "label": "snapshot-new-image",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 25601,
+        "completion_tokens": 2,
+        "total_tokens": 25603
+      },
+      "timings": {
+        "first_token_seconds": 25.74795439999434,
+        "total_seconds": 26.444057899992913,
+        "cached_prompt_tokens": 24493
+      },
+      "first_content_seconds": 25.748482399998466,
+      "later_tokens_per_second": 1.4369579256128744
+    },
+    {
+      "label": "snapshot-repeat",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 25601,
+        "completion_tokens": 2,
+        "total_tokens": 25603
+      },
+      "timings": {
+        "first_token_seconds": 0.4359952000086196,
+        "total_seconds": 0.8100305999978445,
+        "cached_prompt_tokens": 25594
+      },
+      "first_content_seconds": 0.436538300011307,
+      "later_tokens_per_second": 2.6746950311669684
+    },
+    {
+      "label": "snapshot-third-image",
+      "answer": "ALPHA BETA GAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 26702,
+        "completion_tokens": 6,
+        "total_tokens": 26708
+      },
+      "timings": {
+        "first_token_seconds": 24.77954150000005,
+        "total_seconds": 25.452244299987797,
+        "cached_prompt_tokens": 25594
+      },
+      "first_content_seconds": 24.78009889999521,
+      "later_tokens_per_second": 7.434685544142289
+    },
+    {
+      "label": "snapshot-third-full-prefill",
+      "answer": "ALPHA BETA GAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 26702,
+        "completion_tokens": 6,
+        "total_tokens": 26708
+      },
+      "timings": {
+        "first_token_seconds": 56.419054300000425,
+        "total_seconds": 56.87591840000823,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 56.41964030000963,
+      "later_tokens_per_second": 10.94869812324152
+    },
+    {
+      "label": "loop-audit-mtp",
+      "answer": "1. Use the rule of thirds to place your subject along the intersecting lines of a 3x3 grid for a balanced composition.\n2. Get low to the ground to create a dramatic, imposing perspective that emphasizes height and power",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 410,
+        "completion_tokens": 48,
+        "total_tokens": 458
+      },
+      "timings": {
+        "first_token_seconds": 5.790192999993451,
+        "total_seconds": 8.459809599997243,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 5.791223200008972,
+      "later_tokens_per_second": 17.606755659646534
+    },
+    {
+      "label": "loop-audit-repeat-mtp",
+      "answer": "1. Use the rule of thirds to place your subject along the intersecting lines of a 3x3 grid for a balanced composition.\n2. Get low to the ground to create a dramatic, imposing perspective that emphasizes height and power",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 410,
+        "completion_tokens": 48,
+        "total_tokens": 458
+      },
+      "timings": {
+        "first_token_seconds": 0.18091569998068735,
+        "total_seconds": 2.658169899979839,
+        "cached_prompt_tokens": 403
+      },
+      "first_content_seconds": 0.18140699999639764,
+      "later_tokens_per_second": 18.97397082035909
+    },
+    {
+      "label": "loop-audit-single",
+      "answer": "1. Use the rule of thirds to place your subject along the intersecting lines of a 3x3 grid for a balanced composition.\n2. Get low to the ground to create a dramatic, imposing perspective that emphasizes height and power",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 410,
+        "completion_tokens": 48,
+        "total_tokens": 458
+      },
+      "timings": {
+        "first_token_seconds": 5.860610299976543,
+        "total_seconds": 8.005556399992201,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 5.861466599977575,
+      "later_tokens_per_second": 21.913563208548748
+    },
+    {
+      "label": "loop-audit-repeat-single",
+      "answer": "1. Use the rule of thirds to place your subject along the intersecting lines of a 3x3 grid for a balanced composition.\n2. Get low to the ground to create a dramatic, imposing perspective that emphasizes height and power",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 410,
+        "completion_tokens": 48,
+        "total_tokens": 458
+      },
+      "timings": {
+        "first_token_seconds": 0.16626530000939965,
+        "total_seconds": 2.0693373000249267,
+        "cached_prompt_tokens": 403
+      },
+      "first_content_seconds": 0.16674479999346659,
+      "later_tokens_per_second": 24.69938353991151
+    }
+  ],
+  "passed": true,
+  "peak_total_gpu_mib_sampled": 6986
+}

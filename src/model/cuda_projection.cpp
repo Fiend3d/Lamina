@@ -1,4 +1,5 @@
 #include "lamina/model/cuda_projection.hpp"
+#include "lamina/model/prefix_io.hpp"
 
 #include <stdexcept>
 
@@ -2657,6 +2658,92 @@ void CudaProjection::restore_prefix() {
     impl_->prefix_valid = true;
 }
 
+void CudaProjection::export_prefix(std::ostream& out, int position, const strata::GgufFile& file) {
+    using namespace prefix_io;
+    if (impl_->host_kv || !impl_->prefix_valid || position < 1)
+        throw std::logic_error("prefix snapshot requires a device-KV checkpoint");
+    check(cudaStreamSynchronize(impl_->stream), "wait for prefix export");
+    put(out, uint32_t(impl_->half_kv)); put(out, uint32_t(impl_->fast));
+    // Bounded host staging, not a second full-size host allocation.
+    std::vector<char> buffer(8 * MIB);
+    auto download = [&](const void* source, size_t bytes) {
+        const auto* data = static_cast<const char*>(source);
+        for (size_t offset = 0; offset < bytes; offset += buffer.size()) {
+            const size_t count = std::min(buffer.size(), bytes - offset);
+            check(cudaMemcpy(buffer.data(), data + offset, count, cudaMemcpyDeviceToHost), "export prefix state");
+            write(out, buffer.data(), count);
+        }
+    };
+    for (size_t layer = 0; layer < 40; ++layer) {
+        const bool gdn = layer < impl_->gdn_states.size() && impl_->gdn_states[layer].rec;
+        const bool attn = layer < impl_->attn_states.size() && impl_->attn_states[layer].keys;
+        put(out, uint32_t(gdn)); put(out, uint32_t(attn));
+        if (gdn) {
+            download(impl_->gdn_states[layer].conv, size_t(8192) * 3 * sizeof(float));
+            download(impl_->gdn_states[layer].rec, size_t(32) * 128 * 128 * sizeof(float));
+        }
+        if (attn) {
+            if (impl_->attn_states[layer].capacity < position) throw std::logic_error("prefix KV capacity mismatch");
+            download(impl_->attn_states[layer].keys, impl_->kv_bytes(position));
+            download(impl_->attn_states[layer].values, impl_->kv_bytes(position));
+        }
+    }
+    put(out, uint32_t(impl_->prefill_counts.size()));
+    for (const auto& [tensor, counts] : impl_->prefill_counts) {
+        // Tensor addresses change at reload. Store the checked GGUF directory index.
+        const auto& tensors = file.tensors();
+        const auto found = std::find_if(tensors.begin(), tensors.end(), [&](const auto& t) { return &t == tensor; });
+        if (found == tensors.end()) throw std::logic_error("prefix expert identity missing");
+        put(out, uint32_t(found - tensors.begin())); put(out, counts);
+    }
+}
+
+void CudaProjection::import_prefix(std::istream& in, int position, const strata::GgufFile& file) {
+    using namespace prefix_io;
+    if (impl_->host_kv || position < 1 || position > impl_->max_context ||
+        get<uint32_t>(in) != uint32_t(impl_->half_kv) || get<uint32_t>(in) != uint32_t(impl_->fast))
+        throw std::runtime_error("prefix CUDA settings mismatch");
+    std::vector<char> buffer(8 * MIB);
+    auto upload = [&](void* destination, size_t bytes) {
+        auto* data = static_cast<char*>(destination);
+        for (size_t offset = 0; offset < bytes; offset += buffer.size()) {
+            const size_t count = std::min(buffer.size(), bytes - offset);
+            read(in, buffer.data(), count);
+            check(cudaMemcpy(data + offset, buffer.data(), count, cudaMemcpyHostToDevice), "import prefix state");
+        }
+    };
+    impl_->gdn_states.resize(40); impl_->attn_states.resize(40);
+    for (size_t layer = 0; layer < 40; ++layer) {
+        const auto gdn = get<uint32_t>(in), attn = get<uint32_t>(in);
+        if (gdn != uint32_t(layer % 4 != 3) || attn != uint32_t(layer % 4 == 3))
+            throw std::runtime_error("prefix CUDA layer mismatch");
+        if (gdn) {
+            auto& state = impl_->gdn_states[layer];
+            if (!state.conv) impl_->allocate(reinterpret_cast<void**>(&state.conv), size_t(8192) * 3 * sizeof(float));
+            if (!state.rec) impl_->allocate(reinterpret_cast<void**>(&state.rec), size_t(32) * 128 * 128 * sizeof(float));
+            upload(state.conv, size_t(8192) * 3 * sizeof(float));
+            upload(state.rec, size_t(32) * 128 * 128 * sizeof(float));
+        }
+        if (attn) {
+            auto& state = impl_->attn_states[layer];
+            impl_->grow_kv(state, position);
+            upload(state.keys, impl_->kv_bytes(position)); upload(state.values, impl_->kv_bytes(position));
+        }
+    }
+    const auto count = get<uint32_t>(in);
+    if (count > 40) throw std::runtime_error("prefix expert count exceeds limit");
+    impl_->prefill_counts.clear();
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto index = get<uint32_t>(in);
+        if (index >= file.tensors().size()) throw std::runtime_error("prefix expert index invalid");
+        const auto& tensor = file.tensors()[index];
+        if (tensor.name.find("ffn_gate_exps.weight") == std::string::npos ||
+            !impl_->prefill_counts.emplace(&tensor, get<std::array<uint32_t, 256>>(in)).second)
+            throw std::runtime_error("prefix expert identity invalid");
+    }
+    check(cudaStreamSynchronize(impl_->stream), "finish prefix import");
+}
+
 void CudaProjection::hidden_upload(const std::vector<float>& x) {
     const auto promote_start = std::chrono::steady_clock::now();
     if (impl_->cpu_misses) impl_->promote_admissions();
@@ -3143,6 +3230,25 @@ std::array<int, 2> CudaProjection::matvec_argmax2(const strata::TensorInfo& tens
     check(cudaGetLastError(), "launch pair argmax");
     check(cudaStreamSynchronize(impl_->stream), "finish pair argmax");
     return {impl_->argmax_host[1] ? -1 : impl_->argmax_host[0], impl_->argmax_host[3] ? -1 : impl_->argmax_host[2]};
+}
+
+std::vector<float> CudaProjection::matvec_logits2(const strata::TensorInfo& tensor, const uint8_t* data,
+                                                 const std::vector<float>& x) {
+    if (!impl_->fast || !supports(tensor.type) || tensor.shape.size() != 2 || 2 * tensor.shape[0] != x.size())
+        throw std::invalid_argument("unsupported sampled two-column LM head: " + tensor.name);
+    const int n_in = int(tensor.shape[0]), n_out = int(tensor.shape[1]);
+    const size_t bytes = strata::kernels::native_mmvq_weight_bytes(tensor.type, n_in, n_out);
+    void* weight = impl_->weight(tensor, data, -1, bytes);
+    float* input = impl_->pair(Impl::kPHead, x.size());
+    impl_->reserve(size_t(n_in), 2 * size_t(n_out));
+    check(cudaMemcpyAsync(input, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice, impl_->stream), "upload sampled pair head");
+    impl_->ensure(impl_->dense_q8, impl_->dense_q8_cap, 2 * strata::kernels::native_q8_1_bytes(4096));
+    strata::kernels::native_quantize_q8_1(input, impl_->dense_q8, n_in, 2, impl_->stream);
+    strata::kernels::native_mmvq(tensor.type, weight, impl_->dense_q8, impl_->output, n_in, n_out, 2, impl_->stream);
+    std::vector<float> result(2 * size_t(n_out));
+    check(cudaMemcpyAsync(result.data(), impl_->output, result.size() * sizeof(float), cudaMemcpyDeviceToHost, impl_->stream), "download sampled pair logits");
+    check(cudaStreamSynchronize(impl_->stream), "finish sampled pair logits");
+    return result;
 }
 
 void CudaProjection::delta_net_into_mix(int layer, const GdnWeights& w) {
@@ -3689,6 +3795,8 @@ std::vector<float> CudaProjection::moe(const std::vector<float>&, const MoeWeigh
 void CudaProjection::set_context(int) { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::reset() { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::cache_prefix() { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::export_prefix(std::ostream&, int, const strata::GgufFile&) { throw std::runtime_error("Lamina was built without CUDA"); }
+void CudaProjection::import_prefix(std::istream&, int, const strata::GgufFile&) { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::restore_prefix() { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::finish_prefill() { throw std::runtime_error("Lamina was built without CUDA"); }
 void CudaProjection::hidden_upload(const std::vector<float>&) {
@@ -3726,6 +3834,9 @@ void CudaProjection::pair_moe(const strata::TensorInfo&, const uint8_t*, const s
 }
 void CudaProjection::pair_commit(bool) { throw std::runtime_error("Lamina was built without CUDA"); }
 std::array<int, 2> CudaProjection::matvec_argmax2(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
+    throw std::runtime_error("Lamina was built without CUDA");
+}
+std::vector<float> CudaProjection::matvec_logits2(const strata::TensorInfo&, const uint8_t*, const std::vector<float>&) {
     throw std::runtime_error("Lamina was built without CUDA");
 }
 void CudaProjection::delta_net_into_mix(int, const GdnWeights&) {

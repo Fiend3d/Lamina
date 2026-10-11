@@ -153,9 +153,16 @@ so it usually needs to read only the added messages and tool results.
 multi-token-prediction head) to guess the next token in advance. The model
 checks the guesses before accepting them. This can make generation faster;
 the gain varies by model, hardware and context length. It applies to requests
-with temperature 0, the default. Setup prepares the model's prediction head,
+with temperature 0, the default. Source builds also support sampled MTP at
+nonzero temperature: the main model samples its verified distribution and accepts
+the MTP guess when they match, after temperature/top-k/top-p filtering. Older v0.2.0
+binaries support greedy MTP only. Setup prepares the model's prediction head,
 which uses some extra GPU memory. Saying yes is a reasonable starting choice; you
 can turn it off with `--reconfigure`.
+
+See the [sampled MTP measurements](bench/results/2026-10-11-sampled-mtp/README.md)
+and [vision cache handoff checks](bench/results/2026-10-11-vision-snapshot/README.md)
+for tested speeds and limits.
 
 ## Everyday commands
 
@@ -190,8 +197,12 @@ $body = @{ model = "Qwen3.6-35B-A3B-UD-Q4_K_M"; messages = @(@{ role = "user"; c
 
 The server supports streaming, `temperature`, `top_p`, `top_k`, `seed`,
 `stop`, `max_tokens`, reasoning ("thinking") controls, function tools and JSON
-output. It handles one request at a time. Speculative decoding speeds up
-requests with temperature 0; other requests run at the normal speed.
+output. It handles one request at a time. Source engines advertise `sampled_mtp`
+to enable MTP for nonzero temperature; older engines fall back to ordinary
+sampling. Set `LAMINA_SAMPLED_MTP=0` before launching to compare ordinary
+sampling. Speculation can back off when acceptance is low; speed varies with
+model, prompt and hardware. At nonzero temperature, the same seed reproduces
+the speculative run but need not match ordinary sampling's token sequence.
 
 ## Connecting pi and other apps
 
@@ -238,6 +249,16 @@ big files off. The `id` stays `Qwen3.6-35B-A3B-UD-Q4_K_M` when the server runs
 Ornith, because that is the only model name the server reports and accepts;
 `name` is only the label pi shows.
 
+Pi supports sampling defaults in each model entry. For example, add
+`"samplingParams": {"temperature": 0.6, "top_p": 0.95, "top_k": 20}` beside
+`maxTokens`, then restart pi or `/reload`. This is a setting to experiment with,
+not a guarantee against repetition. Pi applies configured defaults and optional
+`samplingParamsByThinkingLevel` overrides; it does not automatically raise
+temperature when the model loops. Lamina defaults to temperature 0 when omitted.
+Temperature 0 uses greedy generation; source engines with `sampled_mtp` support
+also use the loaded MTP head for nonzero temperature. Tool retry loops require
+checking tool errors and correcting the task, not just changing sampling.
+
 Then run `pi --model lamina/Qwen3.6-35B-A3B-UD-Q4_K_M` in your project folder
 and pick the model with `/model` if needed. With `"reasoning": true` and
 `"thinkingFormat": "qwen"` pi sends `enable_thinking`, so the model's reasoning
@@ -268,8 +289,17 @@ Previously encoded images are cached in server RAM (up to 256 MiB), so repeating
 them keeps the text model resident. With CUDA device KV, follow-up requests
 reuse the unchanged conversation, including images, and prefill only new content.
 Changed image bytes, image order or edited history invalidate prefix reuse.
-New images, evicted embeddings and server restarts can still require full prefill;
-the first image request in a long conversation can still take minutes. `/health` reports
+Source builds with native `prefix_snapshot` support preserve a device-KV checkpoint
+across GPU image encoding. They export attention history, recurrent/convolution
+state, image positions and expert counts to a private temporary file under
+`../Lamina-data/tmp`, reload the text model, and import the checkpoint. Only
+appended conversation content then needs prefill. Temporary files are removed
+after restore, failure or server close; this is not a persistent session backup.
+Saving/restoring still costs time and disk space, and model/encoder reloads remain.
+Set `LAMINA_PREFIX_SNAPSHOT=0` before starting the server to compare the previous
+full-prefill handoff. Older release engines, host KV, edited prefixes, server
+restarts, or a failed export/import use full prefill. An initial uncached long
+conversation can still take minutes. `/health` reports
 `"vision_device": "gpu"`, and the server logs each frame's encoding time.
 On RTX 4060, a repeated 102K-token image request reached its first answer in
 1.47 s versus 261 s for the initial pass; see the

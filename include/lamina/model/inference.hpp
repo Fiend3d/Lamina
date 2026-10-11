@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace lamina::model {
+class Sampler;
 
 
 // Scalar, streaming reference implementation. Its state is per conversation;
@@ -41,6 +42,9 @@ public:
     // or captured graph addresses are stored in the checkpoint.
     void cache_prefix();
     void restore_prefix();
+    // Private, temporary same-model snapshot used during GPU vision handoff.
+    void export_prefix(const std::string& path);
+    void import_prefix(const std::string& path);
     // Multi-token prediction draft head (tools/lamina_mtp.py pack). After the
     // main model produced hidden state h_t and greedy token x_{t+1}, mtp_draft
     // runs the head's single layer and returns its greedy guess for x_{t+2}.
@@ -58,6 +62,7 @@ public:
     // otherwise it steps one token at a time.
     struct SpecStats { uint64_t steps = 0, drafted = 0, accepted = 0, backoffs = 0; double draft_ms = 0, verify_ms = 0; };
     std::vector<int> generate_greedy(int token, std::vector<float>& hidden, int count);
+    std::vector<int> generate_sampled(int token, std::vector<float>& hidden, int count, Sampler& sampler);
     const SpecStats& spec_stats() const { return spec_stats_; }
     int position() const { return position_; }
     int rope_position() const { return rope_position_; }
@@ -73,6 +78,7 @@ private:
     };
 
     strata::GgufFile file_;
+    std::string snapshot_identity_;
     int context_;
     int layers_;
     int position_ = 0;
@@ -93,6 +99,7 @@ private:
     double spec_rate_ = 0.87;  // running acceptance (exponential average)
     int spec_backoff_ = 0;     // single steps left before speculation is probed again
     bool pair_supported();
+    std::vector<float> mtp_hidden(int next_token, const std::vector<float>& hidden, int rope_position);
     // Two-token pass over `first` and `second` at the next two positions.
     // Returns both hidden columns; commit_pair advances by one or two tokens.
     std::vector<float> step_pair_hidden(int first, int second);

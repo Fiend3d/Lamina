@@ -149,6 +149,9 @@ class Engine:
         self.lock = threading.Lock()
         self.native = self.vision = None
         self._cache_supported = None
+        self._snapshot_supported = False
+        self._sampled_mtp_supported = False
+        self._pending_snapshot = None
         self._cache_prefix = []
         self._prepared_prefix = []
         self._image_cache = OrderedDict()
@@ -178,8 +181,35 @@ class Engine:
             if locked: self.lock.release()
 
     def _stop_native(self):
+        self._discard_snapshot()
         self._cache_prefix = []
         if self.native: self.native.close(); self.native = None
+
+    def _discard_snapshot(self):
+        pending, self._pending_snapshot = getattr(self, "_pending_snapshot", None), None
+        if pending is not None:
+            pending[0].cleanup()
+
+    def _pause_for_vision(self):
+        pending = None
+        prefix = list(getattr(self, "_cache_prefix", []))
+        if (self.native is not None and prefix and getattr(self, "_snapshot_supported", False)
+                and os.environ.get("LAMINA_PREFIX_SNAPSHOT", "1") != "0"):
+            (self.data / "tmp").mkdir(parents=True, exist_ok=True)
+            temporary = tempfile.TemporaryDirectory(dir=self.data / "tmp", prefix="prefix-")
+            snapshot = Path(temporary.name) / "state.bin"
+            started = time.perf_counter()
+            try:
+                self.native.command("EXPORT_PREFIX " + str(snapshot), True)
+                if not snapshot.is_file() or snapshot.stat().st_size == 0:
+                    raise RuntimeError("native engine did not write a prefix snapshot")
+                pending = (temporary, snapshot, prefix)
+                self._log(f"  saved prefix snapshot ({snapshot.stat().st_size / 1048576:.1f} MiB) in {time.perf_counter() - started:.2f} s")
+            except (OSError, RuntimeError, ValueError) as error:
+                temporary.cleanup()
+                self._log(f"  prefix snapshot unavailable; using full prefill: {error}")
+        self._stop_native()
+        self._pending_snapshot = pending
 
     def _start_native(self):
         if self.native is None:
@@ -189,12 +219,16 @@ class Engine:
                 self._stop_vision()
             if getattr(self, "_cache_supported", None) is None:
                 self._cache_supported = False
-                if self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0":
+                eligible_cache = self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0"
+                if eligible_cache or (self.cuda and getattr(self, "mtp", None)):
                     try:
                         caps = subprocess.run([str(self.executable.resolve()), "--capabilities"], capture_output=True,
                                               text=True, timeout=10,
                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        self._cache_supported = caps.returncode == 0 and json.loads(caps.stdout).get("prefix_cache") is True
+                        capabilities = json.loads(caps.stdout) if caps.returncode == 0 else {}
+                        self._cache_supported = eligible_cache and capabilities.get("prefix_cache") is True
+                        self._snapshot_supported = self._cache_supported and capabilities.get("prefix_snapshot") is True
+                        self._sampled_mtp_supported = capabilities.get("sampled_mtp") is True
                     except (OSError, ValueError, subprocess.TimeoutExpired):
                         pass  # older release binaries retain their RESET path
             command = [str(self.executable.resolve()), str(self.model.resolve()), *(["--cuda"] if self.cuda else []),
@@ -203,6 +237,19 @@ class Engine:
             if getattr(self, "mtp", None): command += ["--mtp", str(Path(self.mtp).resolve())]
             command.append("--interactive")
             self.native = NativeProcess(command)
+            pending = getattr(self, "_pending_snapshot", None)
+            if pending is not None:
+                started = time.perf_counter()
+                try:
+                    self.native.command("IMPORT_PREFIX " + str(pending[1]), True)
+                    self._cache_prefix = pending[2]
+                    self._log(f"  restored prefix after GPU image encoding in {time.perf_counter() - started:.2f} s")
+                except (OSError, RuntimeError, ValueError) as error:
+                    self._log(f"  prefix restore failed; using full prefill: {error}")
+                    self._stop_native()
+                    self.native = NativeProcess(command)
+                finally:
+                    self._discard_snapshot()
 
     def _start_vision(self):
         if self.vision is None:
@@ -234,7 +281,7 @@ class Engine:
         gpu = getattr(self, "vision_gpu", False)
         if gpu and missing:
             self._log("  releasing text model for GPU image encoding")
-            self._stop_native()
+            self._pause_for_vision()
         try:
             for key, payload in zip(keys, payloads):
                 cached = self._image_cache.get(key)
@@ -260,6 +307,9 @@ class Engine:
                     self._image_cache_bytes -= len(removed)
                 self._log(f"  encoded image {len(images)} in {time.perf_counter() - encoding_start:.2f} s")
             return images
+        except BaseException:
+            self._discard_snapshot()
+            raise
         finally:
             if gpu and missing:
                 self._stop_vision()
@@ -373,6 +423,7 @@ class Engine:
                 ids, images, prompt_count = self._prepare(messages, o, Path(path))
                 self._log(f"request: {prompt_count} prompt tokens, up to {o['max_tokens']} answer tokens"
                           + (f", {len(o['tools'])} tools" if o.get("tools") else "")
+                          + f", temperature {o['temperature']}"
                           + (", thinking" if o["enable_thinking"] else "") + (", streaming" if o.get("stream") else ""))
                 self._start_native()
                 self.native.cancelled = cancelled
@@ -453,11 +504,15 @@ class Engine:
                     generation_start = last_progress = time.perf_counter()
                     generated, raw, prior_reason, prior_content = [], "", "", ""
                     finish = "length"
-                    # Greedy requests with an MTP head take tokens in chunks from
+                    # Requests with an MTP head take tokens in chunks from
                     # GENERATE (speculative); a chunk may run past a stop token,
                     # which costs only time: the next request resets or restores
                     # its immutable prefix before processing a new suffix.
-                    speculative = bool(getattr(self, "mtp", None)) and o["temperature"] == 0
+                    sampled_mtp = (o["temperature"] > 0 and getattr(self, "_sampled_mtp_supported", False)
+                                   and os.environ.get("LAMINA_SAMPLED_MTP", "1") != "0")
+                    speculative = bool(getattr(self, "mtp", None)) and (o["temperature"] == 0 or sampled_mtp)
+                    if speculative and sampled_mtp:
+                        self._log("  decoding with sampled MTP")
                     queued = []
                     for index in range(o["max_tokens"]):
                         if next_id in STOP_IDS: finish = "stop"; break
@@ -484,7 +539,9 @@ class Engine:
                                       f"{(len(generated) - 1) / (last_progress - generation_start):.1f} tokens/s")
                         if stopped or index + 1 == o["max_tokens"]: break
                         if speculative:
-                            if not queued: queued = self.native.generate(min(8, o["max_tokens"] - index - 1), next_id)
+                            if not queued:
+                                generate = self.native.generate_sampled if sampled_mtp else self.native.generate
+                                queued = generate(min(8, o["max_tokens"] - index - 1), next_id)
                             next_id = queued.pop(0)
                         else: next_id = self.native.command(str(next_id))
                     reason, content = split_reasoning(raw, o["enable_thinking"])

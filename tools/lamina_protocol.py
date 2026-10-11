@@ -108,7 +108,14 @@ class NativeProcess:
 
     def generate(self, count, token):
         """GENERATE: feed the last returned token, return the next count greedy tokens."""
-        self.process.stdin.write(f"GENERATE {int(count)} {int(token)}\n")
+        return self._generate("GENERATE", count, token)
+
+    def generate_sampled(self, count, token):
+        """Exact sampled MTP, using the native sampler configured by SAMPLE."""
+        return self._generate("GENERATE_SAMPLED", count, token)
+
+    def _generate(self, command, count, token):
+        self.process.stdin.write(f"{command} {int(count)} {int(token)}\n")
         self.process.stdin.flush()
         tokens = [int(word) for word in self.read().split()]
         if len(tokens) != count or not all(0 <= t < 248320 for t in tokens):

@@ -1,0 +1,506 @@
+{
+  "hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM",
+  "model": "qwen3.6",
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "context": 131072,
+  "kv_type": "f16",
+  "compute_mode": "fast",
+  "runs": [
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 0,
+      "answer": "Framing three characters in a **Medium-Wide Shot (MWS)**, often called a **Medium Long Shot (MLS)** or **Cowboy Shot**, is a delicate balancing act. This shot typically frames subjects from the knees or mid-thighs up to just above the head.\n\nThe goal is to show **body language and interaction** while keeping all three characters clearly visible and distinct, without one dominating the frame or being cut off awkwardly.\n\nHere is concrete camera and composition advice:\n\n### 1. The Core Challenge: The \"Triangle Problem\"\nWith two characters, you can easily use a diagonal or side",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 3.2556803000043146,
+        "total_seconds": 8.32190680000349,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 3.256575100007467,
+      "later_tokens_per_second": 25.069266679891882
+    },
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    Args:\n        points: A list of 3D points, where each point is a tuple or list of three\n                numbers (x, y, z).\n\n    Returns:\n        A dictionary with keys 'min' and 'max', each mapping to a tuple of three\n        numbers representing the minimum and maximum coordinates of the bounding box.\n        If the input list is empty, returns None.\n\n    Raises:\n        ValueError: If",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.8431197000027169,
+        "total_seconds": 5.749621200026013,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.8436451999878045,
+      "later_tokens_per_second": 25.885109735347463
+    },
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 2,
+      "answer": "Here is the step-by-step derivation of the sum of integers from 1 to 100 using two distinct methods, followed by an explanation of why they yield the same result.\n\n### Method 1: The Pairing Method (Gauss's Method)\n\nThis method relies on the symmetry of the arithmetic sequence. It was famously attributed to Carl Friedrich Gauss when he was a child.\n\n1.  **Define the sum:**\n    Let $S$ be the sum of integers from 1 to 100.\n    $$S = 1 + 2 + 3 + \\dots + 98",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.707306799973594,
+        "total_seconds": 5.522497499972815,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.707824699988123,
+      "later_tokens_per_second": 26.376018176631508
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 0,
+      "answer": "Framing three characters in a medium-wide shot (often called a \"Medium Long Shot\" or \"MLS\") is a classic cinematic technique used to establish relationships, hierarchy, and dynamics between characters while keeping their body language and some environmental context visible.\n\nHere is concrete advice on camera placement, composition, and framing to make this shot effective.\n\n### 1. Define the Shot Scale First\nA **Medium-Wide Shot** typically frames characters from the **knees or mid-thighs up**.\n- **Why it works for 3 people:** It\u2019s wide enough to fit three adults comfortably without crowding, but close",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.6069253999739885,
+        "total_seconds": 5.1909654999908525,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6074605000030715,
+      "later_tokens_per_second": 27.705969504233465
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> tuple:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is represented as a tuple of two tuples:\n    (min_corner, max_corner), where each corner is a tuple of three floats\n    (x_min, y_min, z_min) and (x_max, y_max, z_max).\n    \n    Args:\n        points: A list of 3D points, where each point is a tuple or list of three numbers (x, y, z).\n        \n    Returns",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.6094005999912042,
+        "total_seconds": 5.171279899979709,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6099252999993041,
+      "later_tokens_per_second": 27.840850213162383
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 2,
+      "answer": "Here is the step-by-step derivation to find the sum of integers from 1 through 100 using two different methods, followed by an explanation of why they yield the same result.\n\n### Method 1: The Pairing Method (Gauss's Method)\n\nThis method relies on the symmetry of the arithmetic sequence. It was famously attributed to Carl Friedrich Gauss when he was a child.\n\n**Step 1: Set up the sum**\nLet $S$ be the sum of integers from 1 to 100:\n$$ S = 1 + 2 + 3 + \\dots + 9",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6199631000054069,
+        "total_seconds": 5.2181151999975555,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.620466899999883,
+      "later_tokens_per_second": 27.620857235654682
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 0,
+      "answer": "Framing three characters in a **Medium-Wide Shot** (often called a **Medium Long Shot** or **MLS**) is a classic technique used in film and photography to establish relationships, hierarchy, and group dynamics while retaining enough detail to read facial expressions and body language.\n\nHere is concrete advice on camera placement, composition, and framing techniques.\n\n### 1. Define the Shot Scale\n*   **What it looks like:** The frame typically cuts off at the **knees** or **mid-thighs**. You see the characters\u2019 full torsos, heads, and arms.\n*   **Why it works",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5760067999945022,
+        "total_seconds": 5.1395793999836314,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5764987999864388,
+      "later_tokens_per_second": 27.830367554763907
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is defined by two corners:\n    - min_corner: (min_x, min_y, min_z)\n    - max_corner: (max_x, max_y, max_z)\n    \n    Args:\n        points: A list of 3D points, where each point is a tuple or list of \n                three numbers (x, y, z).\n    \n    Returns:\n        A dictionary with keys 'min'",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5933595999958925,
+        "total_seconds": 5.071411399985664,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5939586999884341,
+      "later_tokens_per_second": 28.361957806671047
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 2,
+      "answer": "Here is the derivation of the sum of integers from 1 through 100 using two distinct methods, followed by an explanation of why these methods yield the same result.\n\n### Method 1: The Arithmetic Series Formula (Gaussian Method)\n\nThis method relies on the formula for the sum of an arithmetic progression. The sequence of integers from 1 to 100 is an arithmetic sequence where the first term is $1$, the last term is $100$, and the common difference is $1$.\n\nLet $S$ be the sum:\n$$ S = 1 + 2 + 3 +",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6307624000182841,
+        "total_seconds": 5.270577000017511,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6312654000066686,
+      "later_tokens_per_second": 27.373045860889967
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 0,
+      "answer": "Framing three characters in a medium-wide shot (also known as a Medium Long Shot or MLS) is a classic cinematic challenge. The goal is to maintain individual identity while establishing their relationship to one another and the scene.\n\nHere is concrete advice on camera placement, composition, and technical execution.\n\n### 1. Define the Shot Scale\nA **Medium-Wide Shot** typically frames characters from the **knees or mid-thigh up**.\n*   **Why this matters:** You see enough body language (posture, hand gestures) to convey emotion and power dynamics, but you also retain enough environmental context to ground the",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5931485999899451,
+        "total_seconds": 5.089131099986844,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5936255999840796,
+      "later_tokens_per_second": 28.24869124595098
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is represented as a dictionary with keys:\n    - 'min': the minimum coordinates (x, y, z)\n    - 'max': the maximum coordinates (x, y, z)\n    \n    Args:\n        points: A list of 3D points, where each point is a tuple/list of three\n                numbers (x, y, z).\n    \n    Returns:\n        A dictionary with 'min'",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5832752000133041,
+        "total_seconds": 4.998167000012472,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5837600999802817,
+      "later_tokens_per_second": 28.76872311525857
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 2,
+      "answer": "To find the sum of the integers from 1 through 100, we will employ two distinct mathematical methods: the **Pairing Method** (historically attributed to Carl Friedrich Gauss) and the **Arithmetic Series Formula**.\n\n### Method 1: The Pairing Method (Gauss's Approach)\n\nThis method relies on the symmetry of the sequence. We write the sum forward and backward to reveal a pattern.\n\nLet $S$ be the sum of integers from 1 to 100:\n$$ S = 1 + 2 + 3 + \\dots + 98 + 99",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6302871000079904,
+        "total_seconds": 5.203200999996625,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6307563000009395,
+      "later_tokens_per_second": 27.773349349985768
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 0,
+      "answer": "Framing three characters in a **Medium-Wide Shot** (also known as a **Medium Long Shot** or **MLS**) is a delicate balancing act. You want to capture enough of the environment to establish context, but keep the characters large enough that their body language and facial expressions remain readable.\n\nHere is concrete advice on camera placement, composition, and technical execution.\n\n### 1. Define the Shot Parameters\n*   **Frame Height:** Typically from the **knees or mid-thigh up** to the top of the head.\n*   **Field of View:** Use a **35mm to 5",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 3.1860837999847718,
+        "total_seconds": 8.941148099984275,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 3.1866958000173327,
+      "later_tokens_per_second": 22.068157138465455,
+      "native_stats": "speculation steps=65 accepted=54 rate=0.831 backoffs=0 draft_ms=10.174 verify_ms=73.200"
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    The bounding box is represented as a dictionary with two keys:\n    - 'min': a tuple (x_min, y_min, z_min) representing the minimum coordinates\n    - 'max': a tuple (x_max, y_max, z_max) representing the maximum coordinates\n\n    Args:\n        points: A list of 3D points, where each point is a tuple or list of three\n                numeric values (x, y, z).",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.8344411999860313,
+        "total_seconds": 6.3935044999816455,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.8349265999859199,
+      "later_tokens_per_second": 22.846306974496237,
+      "native_stats": "speculation steps=131 accepted=110 rate=0.840 backoffs=0 draft_ms=9.956 verify_ms=72.132"
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 2,
+      "answer": "Here is the solution to find the sum of the integers from 1 through 100, followed by an explanation of why the methods yield the same result.\n\n### Method 1: The Arithmetic Series Formula\n\nThe sum of an arithmetic sequence can be calculated using the standard formula:\n\n$$ S_n = \\frac{n}{2}(a_1 + a_n) $$\n\nWhere:\n*   $n$ is the number of terms.\n*   $a_1$ is the first term.\n*   $a_n$ is the last term.\n\n**Step-by-step calculation:**\n1. ",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.7168595000111964,
+        "total_seconds": 5.989236299996264,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.7173446999804582,
+      "later_tokens_per_second": 24.088660991103325,
+      "native_stats": "speculation steps=194 accepted=170 rate=0.876 backoffs=0 draft_ms=9.928 verify_ms=71.639"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 0,
+      "answer": "Framing three characters in a medium-wide shot (often called a \"Cowboy Shot\" or Medium Full Shot, typically capturing from the knees or thighs up) is a classic technique used in dialogue scenes to establish group dynamics while retaining enough detail to see body language and facial expressions.\n\nHere is concrete advice on camera placement, composition, and technical execution:\n\n### 1. Camera Placement & Height\n*   **Eye-Level for Equality:** Place the camera lens at the average eye level of the characters. If one character is significantly taller, raise the camera slightly or tilt it up just enough to keep all faces clearly visible without dist",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.6044751000008546,
+        "total_seconds": 6.09764140000334,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6049478999921121,
+      "later_tokens_per_second": 23.120346336250293,
+      "native_stats": "speculation steps=262 accepted=219 rate=0.836 backoffs=0 draft_ms=9.818 verify_ms=69.852"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> tuple:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is defined by two corner points:\n    - min_corner: the minimum x, y, z coordinates across all points\n    - max_corner: the maximum x, y, z coordinates across all points\n    \n    Args:\n        points: A list of 3D points, where each point is a tuple or list\n                of three numbers (x, y, z).\n    \n    Returns:\n        A tuple (min_corner",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.6415470999781974,
+        "total_seconds": 5.657709399994928,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6420272999966983,
+      "later_tokens_per_second": 25.3191226201316,
+      "native_stats": "speculation steps=328 accepted=278 rate=0.848 backoffs=0 draft_ms=9.773 verify_ms=68.826"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 2,
+      "answer": "Here is the step-by-step deduction to find the sum of the integers from 1 through 100 using two different methods, followed by an explanation of why they yield the same result.\n\n### Method 1: The Gauss Pairing Method (Arithmetic Progression)\n\nThis method relies on the symmetry of the sequence. It is famously attributed to Carl Friedrich Gauss as a child.\n\n1.  **Define the sum:**\n    Let $S$ be the sum of integers from 1 to 100.\n    $$S = 1 + 2 + 3 + \\dots + 98",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6481089000008069,
+        "total_seconds": 6.227647799998522,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6485891999909654,
+      "later_tokens_per_second": 22.76246615581924,
+      "native_stats": "speculation steps=393 accepted=337 rate=0.858 backoffs=0 draft_ms=9.830 verify_ms=69.511"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 0,
+      "answer": "Framing three characters in a **medium-wide shot** (also known as a Medium Long Shot or MWS) is a delicate balancing act. This shot typically captures characters from the knees or mid-thighs up to above the head. It\u2019s wide enough to show body language and spatial relationships, but tight enough to retain some emotional connection.\n\nHere is concrete advice on camera placement, composition, and technical execution to make this shot work effectively.\n\n### 1. The Core Challenge: The \"Triangle\" Problem\nThe biggest risk in a three-character shot is creating a **flat, linear arrangement** (e.g., all",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.6995793000096455,
+        "total_seconds": 6.495522000011988,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.7000868000031915,
+      "later_tokens_per_second": 21.91251839401835,
+      "native_stats": "speculation steps=461 accepted=386 rate=0.837 backoffs=0 draft_ms=9.851 verify_ms=69.406"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is defined by two corners:\n    - min_corner: the point with the minimum x, y, and z coordinates.\n    - max_corner: the point with the maximum x, y, and z coordinates.\n    \n    Parameters:\n        points (list): A list of 3D points, where each point is a tuple or list\n                       of three numbers (x, y, z).\n    \n    Returns:\n",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.6309712000074796,
+        "total_seconds": 5.817482600017684,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6314448000048287,
+      "later_tokens_per_second": 24.487448774957226,
+      "native_stats": "speculation steps=526 accepted=442 rate=0.840 backoffs=0 draft_ms=9.819 verify_ms=68.979"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 2,
+      "answer": "Here is the step-by-step derivation to find the sum of integers from 1 through 100 using two distinct methods, followed by an explanation of why these methods yield the same result.\n\n### Method 1: The Pairing Method (Gaussian Approach)\n\nThis method relies on the symmetry of the arithmetic sequence. It was famously attributed to Carl Friedrich Gauss when he was a child.\n\n1.  Let $S$ be the sum of the integers from 1 to 100:\n    $$ S = 1 + 2 + 3 + \\dots + 98 + 99 +",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6354821999848355,
+        "total_seconds": 5.540586199989775,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6359567000181414,
+      "later_tokens_per_second": 25.89231861765066,
+      "native_stats": "speculation steps=590 accepted=501 rate=0.849 backoffs=0 draft_ms=9.754 verify_ms=68.488"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 0,
+      "answer": "Framing three characters in a medium-wide shot (often called a \"Medium Long Shot\" or MLS) is a classic cinematic technique used to establish relationships, power dynamics, and group dynamics while keeping the audience engaged with facial expressions and body language.\n\nHere is concrete advice on camera placement, composition, and framing techniques:\n\n### 1. Define the Shot Scale\nA **Medium-Wide Shot** typically frames characters from the **knees or mid-thigh up**.\n- **Why this matters:** You can see gestures, posture, and interaction, but you still have enough space to include the environment and context.\n-",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.6144462999945972,
+        "total_seconds": 5.821728599985363,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6149084999924526,
+      "later_tokens_per_second": 24.3898640257341,
+      "native_stats": "speculation steps=658 accepted=553 rate=0.840 backoffs=0 draft_ms=9.698 verify_ms=67.901"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 1,
+      "answer": "```python\ndef compute_bounding_box(points: list) -> dict:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n    \n    The bounding box is represented by two 3D points:\n    - 'min': the minimum x, y, z coordinates across all points\n    - 'max': the maximum x, y, z coordinates across all points\n    \n    Args:\n        points: A list of 3D points, where each point is a tuple/list of \n                three numbers (x, y, z).\n    \n    Returns:\n        A dictionary with keys",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.6056047000165563,
+        "total_seconds": 5.386335999995936,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6062487999734003,
+      "later_tokens_per_second": 26.565980345926445,
+      "native_stats": "speculation steps=724 accepted=610 rate=0.843 backoffs=0 draft_ms=9.635 verify_ms=67.238"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 2,
+      "answer": "To find the sum of the integers from 1 through 100, we can use two distinct mathematical approaches: **Gauss's Pairing Method** (an arithmetic progression technique) and the **General Summation Formula** (derived from calculus or algebraic induction).\n\nHere is the step-by-step deduction for both methods, followed by an explanation of why they yield the same result.\n\n---\n\n### Method 1: Gauss's Pairing Method\n\nThis method relies on the symmetry of the sequence. It was famously attributed to Carl Friedrich Gauss as a child.\n\n1.  **Define the sum**:\n    Let",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6257237000099849,
+        "total_seconds": 5.419245700002648,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6261865000124089,
+      "later_tokens_per_second": 26.4950073913301,
+      "native_stats": "speculation steps=789 accepted=669 rate=0.848 backoffs=0 draft_ms=9.593 verify_ms=66.836"
+    }
+  ],
+  "passed": true,
+  "peak_total_gpu_mib_sampled": 6775
+}

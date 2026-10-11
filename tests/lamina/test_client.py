@@ -23,6 +23,79 @@ class FakeEngine:
 
 
 class ClientTest(unittest.TestCase):
+    def test_sampled_mtp_is_capability_gated_and_stops_queued_tokens(self):
+        class Native:
+            def __init__(self): self.sampled_calls = []; self.single = []
+            def command(self, value, acknowledgement=False):
+                if acknowledgement: return None
+                self.single.append(value)
+                return 5 if value.startswith("PREFILL") else 248046
+            def generate_sampled(self, count, token):
+                self.sampled_calls.append((count, token))
+                return [248046] + [5] * (count - 1)
+        with tempfile.TemporaryDirectory() as directory:
+            for supported in (False, True):
+                engine = self.engine(directory); native = Native(); engine.native = native
+                engine.mtp = Path(directory) / "mtp.gguf"
+                engine._sampled_mtp_supported = supported
+                answer = engine.completion([{"role": "user", "content": "Hi"}], 4, temperature=.6)
+                self.assertEqual(answer, ("Hello", 2, 1, "stop"))
+                self.assertEqual(native.sampled_calls, [(3, 5)] if supported else [])
+                self.assertEqual(native.single, ["PREFILL 1 2"] if supported else ["PREFILL 1 2", "5"])
+
+    def test_snapshot_handoff_restores_signature_and_cleans_temporary_file(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine._cache_supported = engine._snapshot_supported = True
+            engine._cache_prefix = [1, "image-hash", 2]
+            old = Mock(); engine.native = old
+            def export(command, acknowledgement):
+                Path(command.removeprefix("EXPORT_PREFIX ")).write_bytes(b"snapshot")
+            old.command.side_effect = export
+            engine._pause_for_vision()
+            pending = engine._pending_snapshot
+            self.assertTrue(pending[1].is_file())
+            old.close.assert_called_once()
+            self.assertEqual(engine._cache_prefix, [])
+            new = Mock()
+            with patch("tools.lamina_chat.NativeProcess", return_value=new):
+                engine._start_native()
+            new.command.assert_called_once_with("IMPORT_PREFIX " + str(pending[1]), True)
+            self.assertEqual(engine._cache_prefix, [1, "image-hash", 2])
+            self.assertIsNone(engine._pending_snapshot)
+            self.assertFalse(pending[1].exists())
+
+    def test_snapshot_restore_failure_starts_clean_engine(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine._cache_supported = True
+            temporary = tempfile.TemporaryDirectory(dir=directory)
+            snapshot = Path(temporary.name) / "state.bin"; snapshot.write_bytes(b"bad")
+            engine._pending_snapshot = (temporary, snapshot, [1, 2])
+            failed, clean = Mock(), Mock()
+            failed.command.side_effect = RuntimeError("invalid snapshot")
+            with patch("tools.lamina_chat.NativeProcess", side_effect=[failed, clean]) as start:
+                engine._start_native()
+            self.assertEqual(start.call_count, 2)
+            failed.close.assert_called_once()
+            self.assertIs(engine.native, clean)
+            self.assertEqual(engine._cache_prefix, [])
+            self.assertFalse(snapshot.exists())
+
+    def test_snapshot_export_failure_falls_back_and_removes_file(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.engine(directory)
+            engine._snapshot_supported = True; engine._cache_prefix = [1]
+            native = Mock(); engine.native = native
+            native.command.side_effect = RuntimeError("export failed")
+            engine._pause_for_vision()
+            self.assertIsNone(engine.native)
+            self.assertIsNone(engine._pending_snapshot)
+            self.assertEqual(list((Path(directory) / "tmp").iterdir()), [])
+
     def engine(self, directory, tokens=(1, 2)):
         engine = object.__new__(Engine)
         engine.tokenizer = type("Tokenizer", (), {

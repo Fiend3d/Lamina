@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <array>
 #include <memory>
+#include <iosfwd>
 #include <utility>
 #include <vector>
 
@@ -156,6 +157,8 @@ public:
     void set_context(int max_context);
     void reset();
     void cache_prefix();
+    void export_prefix(std::ostream& out, int position, const strata::GgufFile& file);
+    void import_prefix(std::istream& in, int position, const strata::GgufFile& file);
     void restore_prefix();
     void hidden_upload(const std::vector<float>& x);
     std::vector<float> hidden_download();
@@ -193,6 +196,8 @@ public:
     // an entry is -1 when that column's logits are not finite.
     std::array<int, 2> matvec_argmax2(const strata::TensorInfo& tensor, const uint8_t* data,
                                       const std::vector<float>& x);
+    std::vector<float> matvec_logits2(const strata::TensorInfo& tensor, const uint8_t* data,
+                                    const std::vector<float>& x);
     void delta_net_into_mix(int layer, const GdnWeights& w);
     void moe_into_mix(const strata::TensorInfo& router, const uint8_t* router_data,
                       const strata::TensorInfo& shared_gate, const uint8_t* shared_gate_data,

@@ -1,5 +1,19 @@
 # Qwen3.6 port status
 
+Source MTP supports nonzero-temperature sampling through `GENERATE_SAMPLED`.
+The server probes `sampled_mtp`, retaining ordinary sampling on older engines.
+Point-mass verification and optional full-proposal rejection correction use the same temperature,
+top-k and top-p filters as ordinary sampling. Main-model pair rollback and
+position handling are reused; no layer formulas change. Greedy generation is
+separate. `LAMINA_SAMPLED_MTP=0` disables the sampled path. Sampler distribution
+checks and the native `lamina-sampled-mtp-check` cover correctness. Default
+point-mass proposals preserve ordinary RNG draws; optional full proposals use
+extra draws. Mode/placement rounding can still affect exact token sequences.
+
+See [sampled MTP validation](../bench/results/2026-10-11-sampled-mtp/README.md)
+and [vision snapshot validation](../bench/results/2026-10-11-vision-snapshot/README.md)
+for measurements and remaining limits.
+
 Source launchers support saved `--vision-device cpu|gpu`. GPU mode selects the
 separate CUDA encoder in `build-vision-gpu/bin/strata-vision.exe`, built with
 `python -m tools.build_windows --vision-gpu --vision-only --cuda-arch 89` on
@@ -11,7 +25,13 @@ Source now caches image embeddings in a bounded 256 MiB per-engine RAM LRU,
 keyed by image bytes. Repeated images keep the text engine resident. CUDA
 device-KV conversation checkpoints include image identity and order, and retain
 the native image mRoPE state; follow-ups prefill only appended content. New GPU
-images or evicted embeddings still require a model reload and full prefill.
+images or evicted embeddings still require a model reload. Source engines with
+`prefix_snapshot` export/import the device-KV checkpoint through a private
+temporary file, retaining attention history, recurrent state, image positions
+and expert counts. This avoids replaying an unchanged history during vision
+handoff. Older binaries, host KV, changed prefixes and snapshot failures retain
+full prefill. `LAMINA_PREFIX_SNAPSHOT=0` disables snapshot handoffs. Files are
+cleaned after restore/failure/close; server restarts do not restore sessions.
 HTTP URLs are fetched again; server restarts clear both caches.
 See [image cache validation](../bench/results/2026-10-10-image-cache/README.md)
 for cached/full-prefill OCR comparison and 102K image-context reuse.

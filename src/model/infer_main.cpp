@@ -50,7 +50,7 @@ void image(lamina::model::Inference& model, const std::string& path, int context
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--capabilities") {
-        std::puts("{\"protocol\":2,\"prefix_cache\":true}");
+        std::puts("{\"protocol\":2,\"prefix_cache\":true,\"prefix_snapshot\":true,\"sampled_mtp\":true}");
         return 0;
     }
     if (argc < 3) {
@@ -166,14 +166,18 @@ int main(int argc, char** argv) {
                 if (line == "RESET") { model.reset(); last_hidden.clear(); std::puts("."); }
                 else if (line == "CACHE_PREFIX") { model.cache_prefix(); std::puts("."); }
                 else if (line == "RESTORE_PREFIX") { model.restore_prefix(); last_hidden.clear(); std::puts("."); }
-                else if (line.rfind("GENERATE ", 0) == 0) {
+                else if (line.rfind("EXPORT_PREFIX ", 0) == 0) { model.export_prefix(line.substr(14)); last_hidden.clear(); std::puts("."); }
+                else if (line.rfind("IMPORT_PREFIX ", 0) == 0) { model.import_prefix(line.substr(14)); last_hidden.clear(); std::puts("."); }
+                else if (line.rfind("GENERATE ", 0) == 0 || line.rfind("GENERATE_SAMPLED ", 0) == 0) {
                     // GENERATE N TOKEN: feed TOKEN (the last returned token) and
                     // return the next N greedy tokens on one line. With --mtp,
                     // tokens are drafted and verified two at a time.
-                    std::istringstream args(line.substr(9)); int count, token; std::string extra;
+                    const bool sampled = line.rfind("GENERATE_SAMPLED ", 0) == 0;
+                    std::istringstream args(line.substr(sampled ? 17 : 9)); int count, token; std::string extra;
                     if (!(args >> count >> token) || args >> extra || count < 1) throw std::invalid_argument("invalid GENERATE command");
-                    if (!sampler.greedy() || last_hidden.empty()) throw std::invalid_argument("GENERATE requires greedy sampling after a returned token");
-                    const auto tokens = model.generate_greedy(token, last_hidden, count);
+                    if (sampler.greedy() == sampled || last_hidden.empty()) throw std::invalid_argument("GENERATE sampling mode mismatch or missing hidden state");
+                    const auto tokens = sampled ? model.generate_sampled(token, last_hidden, count, sampler)
+                                                : model.generate_greedy(token, last_hidden, count);
                     for (size_t i = 0; i < tokens.size(); ++i) std::printf(i ? " %d" : "%d", tokens[i]);
                     std::puts("");
                     // Opt-in: one line per request piles up in the client's error text.

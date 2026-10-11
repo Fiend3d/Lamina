@@ -1,0 +1,507 @@
+{
+  "hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM",
+  "model": "ornith",
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "context": 131072,
+  "kv_type": "f16",
+  "compute_mode": "fast",
+  "proposal": "greedy",
+  "runs": [
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a full shot or medium long shot) typically captures subjects from the knees or thighs up, giving you room to include three people while still showing meaningful body language and spatial relationships.\n\n## Basic Positioning Options\n\n**The Triangle**\nPlace your three subjects in a triangular arrangement rather than a flat line. This creates visual depth and interest:\n- One character slightly forward or centered (the focal point)\n- Two characters flanking, positioned slightly back or to the sides\n\n**The Line with Depth**\nIf you want a more formal",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 2.95494699999108,
+        "total_seconds": 7.900142700003926,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 2.955696400022134,
+      "later_tokens_per_second": 25.68266962572997
+    },
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\nfrom typing import List, Tuple, Optional\n\ndef compute_bounding_box(points: List[Tuple[float, float, float]]) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    The bounding box is represented as a pair of corner points:\n    (min_corner, max_corner), where:\n      - min_corner = (",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.8677267000020947,
+        "total_seconds": 5.953424800012726,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.8682493999949656,
+      "later_tokens_per_second": 24.9729343534076
+    },
+    {
+      "speculative": false,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 2,
+      "answer": "# Finding the Sum of Integers from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nThe legendary shortcut attributed to young Carl Friedrich Gauss. Write the sum forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each column sums to $101$:\n\n$$2S = \\underbrace",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6729927000124007,
+        "total_seconds": 5.78440760000376,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6734836999967229,
+      "later_tokens_per_second": 24.84726561915637
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a **medium full shot** or **cowboy shot**) typically frames subjects from the knees or mid-thigh up. When you have three characters, you're managing both technical framing and narrative relationships simultaneously.\n\n## Establishing the Triangle\n\nThe most reliable approach is to treat the three characters as a **visual triangle**. This creates natural depth and interest rather than a flat, even lineup.\n\n- **Assign visual weight:** Decide which character is the focal point of the scene. Put them slightly forward or centered, with the other two flanking",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5808346999983769,
+        "total_seconds": 5.192159800004447,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5813366000074893,
+      "later_tokens_per_second": 27.542068394916402
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef compute_bounding_box(points):\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    The bounding box is represented as a tuple of two points:\n    (min_corner, max_corner), where:\n      - min_corner = (min_x, min_y, min_z)\n      - max_corner = (max_x, max_y, max_z)\n\n    Args:\n        points: A list of 3",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5996693000197411,
+        "total_seconds": 5.2294449000037275,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6001328999991529,
+      "later_tokens_per_second": 27.43227452023379
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nThe famous approach attributed to Carl Friedrich Gauss. Write the sum forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each pair sums to the same value:\n\n$$2S = 101 + 10",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.5939353999856394,
+        "total_seconds": 5.510376399994129,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5944943999929819,
+      "later_tokens_per_second": 25.832644089760894
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a **medium long shot** or **three-quarter shot**) typically captures characters from roughly the knees or thighs up. When you have three subjects, the goal is to keep all three legible while establishing their relationships.\n\n## Camera Placement\n\n**Position yourself at eye level** with your subjects for a natural, neutral perspective. Place the camera far enough back that all three figures fit comfortably without cropping feet or heads. A focal length around **35mm to 50mm** (on full frame) works well\u2014it avoids the distortion of",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5798463999817614,
+        "total_seconds": 5.160138799983542,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5803254999918863,
+      "later_tokens_per_second": 27.72857895772674
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef compute_bounding_box(points):\n    \"\"\"\n    Compute the axis-aligned bounding box of a list of 3D points.\n\n    The bounding box is represented as a tuple of two points:\n    (min_corner, max_corner), where:\n      - min_corner = (x_min, y_min, z_min)\n      - max_corner = (x_max, y_max, z_max)\n\n    Args:\n        points: A list of",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5887494999915361,
+        "total_seconds": 5.221972400002414,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5892468999954872,
+      "later_tokens_per_second": 27.411830440863685
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Pairing (Gauss's Method)\n\nLet $S = 1 + 2 + 3 + \\cdots + 99 + 100$.\n\nWrite the sum twice, once forward and once backward:\n\n$$\n\\begin{aligned}\nS &= 1 + 2 + 3 + \\cdots + 99 + 100 \\\\\nS &= 100 + 99 + 98 + \\cdots + 2 + 1\n\\end{aligned",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.5760696000070311,
+        "total_seconds": 5.335532400000375,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5765178999863565,
+      "later_tokens_per_second": 26.684633479341677
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\n## Understanding the Shot\n\nA medium-wide shot (also called a full shot or American shot) typically captures characters from the knees or thighs up to the top of the frame. This framing is ideal for three characters because it gives you enough environmental context while keeping faces readable for emotional beats.\n\n## Camera Placement\n\n**Position your camera at eye level** for natural, neutral storytelling. Tilt it slightly for specific effects:\n- **Slight low angle** \u2192 conveys power or authority among the group\n- **Slight high angle** \u2192 creates vulnerability or diminishes the",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5952446000010241,
+        "total_seconds": 5.400464000005741,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.59572610000032,
+      "later_tokens_per_second": 26.430607075873798
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef bounding_box(points):\n    \"\"\"\n    Compute the axis-aligned bounding box of a list of 3D points.\n\n    Args:\n        points: A list of 3D points, where each point is a tuple/list of\n                three numbers (x, y, z).\n\n    Returns:\n        A tuple (min_corner, max_corner) where:\n            - min_corner is the point with the smallest x, y, and z values",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5844961000257172,
+        "total_seconds": 5.182011400000192,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5850078999937978,
+      "later_tokens_per_second": 27.62500521492004
+    },
+    {
+      "speculative": false,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nLet $S$ be the sum. Write it forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each pair sums to $101$:\n\n$$2S = \\underbrace{(1+100",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6054634999891277,
+        "total_seconds": 5.350012599985348,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6059544000017922,
+      "later_tokens_per_second": 26.76863648281421
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a **medium full shot** or **cowboy shot**) typically frames subjects from the knees or mid-thigh up. This is ideal for three characters because it gives you enough environmental context while keeping faces and body language readable.\n\n## Camera Placement\n\n**Position yourself at eye level** with your subjects for a natural, neutral perspective. Place the camera roughly **8\u201312 feet back** from your actors, depending on your lens choice. This distance lets you fit all three people comfortably without distortion.\n\n**Use a moderate focal length**",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 3.1114949000184424,
+        "total_seconds": 8.402998400008073,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 3.112548600009177,
+      "later_tokens_per_second": 24.0017397670546,
+      "native_stats": "speculation steps=70 accepted=52 rate=0.743 backoffs=0 draft_ms=4.020 verify_ms=69.127"
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\nfrom typing import List, Tuple, Optional\n\ndef compute_bounding_box(points: List[Tuple[float, float, float]]) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    The bounding box is represented as a pair of corner points:\n    (min_corner, max_corner), where:\n      - min_corner = (",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.8443776000058278,
+        "total_seconds": 5.52998170000501,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.8448499999940395,
+      "later_tokens_per_second": 27.105429727552245,
+      "native_stats": "speculation steps=134 accepted=110 rate=0.821 backoffs=0 draft_ms=3.800 verify_ms=67.713"
+    },
+    {
+      "speculative": true,
+      "warmup": true,
+      "iteration": 0,
+      "prompt": 2,
+      "answer": "# Finding the Sum of Integers from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nThe legendary shortcut attributed to young Carl Friedrich Gauss. Write the sum forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each column sums to $101$:\n\n$$2S = \\underbrace",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.7057430999993812,
+        "total_seconds": 5.699589800002286,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.7062424999894574,
+      "later_tokens_per_second": 25.43229851036405,
+      "native_stats": "speculation steps=201 accepted=167 rate=0.831 backoffs=0 draft_ms=4.041 verify_ms=67.807"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a **medium full shot** or **cowboy shot**) typically frames subjects from the knees or mid-thigh up. When you have three characters, you're managing both technical framing and narrative relationships simultaneously.\n\n## Establishing the Triangle\n\nThe most reliable approach is to treat the three characters as a **visual triangle**. This creates natural depth and interest rather than a flat, even lineup.\n\n- **Assign visual weight:** Decide which character is the focal point of the scene. Put them slightly forward or centered, with the other two flanking",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5896601999993436,
+        "total_seconds": 5.4152869999816176,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5901272000046447,
+      "later_tokens_per_second": 26.31884837186102,
+      "native_stats": "speculation steps=273 accepted=216 rate=0.791 backoffs=0 draft_ms=3.906 verify_ms=65.752"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef compute_bounding_box(points):\n    \"\"\"\n    Compute the bounding box of a list of 3D points.\n\n    The bounding box is represented as a tuple of two points:\n    (min_corner, max_corner), where:\n      - min_corner = (min_x, min_y, min_z)\n      - max_corner = (max_x, max_y, max_z)\n\n    Args:\n        points: A list of 3",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5828074000019114,
+        "total_seconds": 4.841483500000322,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5832747000094969,
+      "later_tokens_per_second": 29.82277055426886,
+      "native_stats": "speculation steps=336 accepted=277 rate=0.824 backoffs=0 draft_ms=3.873 verify_ms=65.024"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 1,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nThe famous approach attributed to Carl Friedrich Gauss. Write the sum forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each pair sums to the same value:\n\n$$2S = 101 + 10",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.5945798000029754,
+        "total_seconds": 5.2097122999839485,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5950873000256252,
+      "later_tokens_per_second": 27.519433378783365,
+      "native_stats": "speculation steps=402 accepted=334 rate=0.831 backoffs=0 draft_ms=3.861 verify_ms=64.773"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\nA medium-wide shot (also called a **medium long shot** or **three-quarter shot**) typically captures characters from roughly the knees or thighs up. When you have three subjects, the goal is to keep all three legible while establishing their relationships.\n\n## Camera Placement\n\n**Position yourself at eye level** with your subjects for a natural, neutral perspective. Place the camera far enough back that all three figures fit comfortably without cropping feet or heads. A focal length around **35mm to 50mm** (on full frame) works well\u2014it avoids the distortion of",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.5654205000028014,
+        "total_seconds": 5.519878299994161,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5659038000158034,
+      "later_tokens_per_second": 25.634390096639464,
+      "native_stats": "speculation steps=475 accepted=381 rate=0.802 backoffs=0 draft_ms=3.808 verify_ms=64.115"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef compute_bounding_box(points):\n    \"\"\"\n    Compute the axis-aligned bounding box of a list of 3D points.\n\n    The bounding box is represented as a tuple of two points:\n    (min_corner, max_corner), where:\n      - min_corner = (x_min, y_min, z_min)\n      - max_corner = (x_max, y_max, z_max)\n\n    Args:\n        points: A list of",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.640007300011348,
+        "total_seconds": 5.0234331999963615,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6404590999882203,
+      "later_tokens_per_second": 28.97412788334736,
+      "native_stats": "speculation steps=539 accepted=440 rate=0.816 backoffs=0 draft_ms=3.788 verify_ms=63.851"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 2,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Pairing (Gauss's Method)\n\nLet $S = 1 + 2 + 3 + \\cdots + 99 + 100$.\n\nWrite the sum twice, once forward and once backward:\n\n$$\n\\begin{aligned}\nS &= 1 + 2 + 3 + \\cdots + 99 + 100 \\\\\nS &= 100 + 99 + 98 + \\cdots + 2 + 1\n\\end{aligned",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.5964230000099633,
+        "total_seconds": 4.984590900014155,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.5969163000117987,
+      "later_tokens_per_second": 28.94287603807527,
+      "native_stats": "speculation steps=603 accepted=501 rate=0.831 backoffs=0 draft_ms=3.786 verify_ms=63.798"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 0,
+      "answer": "# Framing Three Characters in a Medium-Wide Shot\n\n## Understanding the Shot\n\nA medium-wide shot (also called a full shot or American shot) typically captures characters from the knees or thighs up to the top of the frame. This framing is ideal for three characters because it gives you enough environmental context while keeping faces readable for emotional beats.\n\n## Camera Placement\n\n**Position your camera at eye level** for natural, neutral storytelling. Tilt it slightly for specific effects:\n- **Slight low angle** \u2192 conveys power or authority among the group\n- **Slight high angle** \u2192 creates vulnerability or diminishes the",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 128,
+        "total_tokens": 160
+      },
+      "timings": {
+        "first_token_seconds": 0.6165001000044867,
+        "total_seconds": 5.276165599992964,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6169648999930359,
+      "later_tokens_per_second": 27.256246315995377,
+      "native_stats": "speculation steps=673 accepted=552 rate=0.820 backoffs=0 draft_ms=3.754 verify_ms=63.365"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 1,
+      "answer": "# Bounding Box of 3D Points\n\nHere's a Python function that computes the bounding box of a list of 3D points:\n\n```python\ndef bounding_box(points):\n    \"\"\"\n    Compute the axis-aligned bounding box of a list of 3D points.\n\n    Args:\n        points: A list of 3D points, where each point is a tuple/list of\n                three numbers (x, y, z).\n\n    Returns:\n        A tuple (min_corner, max_corner) where:\n            - min_corner is the point with the smallest x, y, and z values",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 35,
+        "completion_tokens": 128,
+        "total_tokens": 163
+      },
+      "timings": {
+        "first_token_seconds": 0.5975448999961372,
+        "total_seconds": 5.078599300002679,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.598022399994079,
+      "later_tokens_per_second": 28.34271276274207,
+      "native_stats": "speculation steps=739 accepted=607 rate=0.821 backoffs=0 draft_ms=3.741 verify_ms=63.126"
+    },
+    {
+      "speculative": true,
+      "warmup": false,
+      "iteration": 3,
+      "prompt": 2,
+      "answer": "# Finding the Sum from 1 to 100\n\n## Method 1: Gauss's Pairing Trick\n\nLet $S$ be the sum. Write it forward and backward:\n\n$$S = 1 + 2 + 3 + \\cdots + 98 + 99 + 100$$\n$$S = 100 + 99 + 98 + \\cdots + 3 + 2 + 1$$\n\nAdding these column by column, each pair sums to $101$:\n\n$$2S = \\underbrace{(1+100",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 36,
+        "completion_tokens": 128,
+        "total_tokens": 164
+      },
+      "timings": {
+        "first_token_seconds": 0.6187637000111863,
+        "total_seconds": 5.122493300004862,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.6193183999857865,
+      "later_tokens_per_second": 28.200035061247288,
+      "native_stats": "speculation steps=804 accepted=664 rate=0.826 backoffs=0 draft_ms=3.740 verify_ms=63.064"
+    }
+  ],
+  "passed": true,
+  "peak_total_gpu_mib_sampled": 6870
+}

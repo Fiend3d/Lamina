@@ -1,0 +1,200 @@
+{
+  "hardware": "RTX 4060 8 GB / Ryzen 7 1700X / 64 GB RAM",
+  "model": "ornith",
+  "settings": {
+    "max_context": 131072,
+    "kv_type": "f16",
+    "kv_cache": "device",
+    "compute_mode": "fast"
+  },
+  "requests": [
+    {
+      "label": "baseline-initial",
+      "answer": "ALPHA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1100,
+        "completion_tokens": 2,
+        "total_tokens": 1102
+      },
+      "timings": {
+        "first_token_seconds": 18.912676100007957,
+        "total_seconds": 19.55368109999108,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 18.913365999993403,
+      "later_tokens_per_second": 1.5606433220990121
+    },
+    {
+      "label": "baseline-new-image",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 2205,
+        "completion_tokens": 2,
+        "total_tokens": 2207
+      },
+      "timings": {
+        "first_token_seconds": 31.738748699979624,
+        "total_seconds": 32.440051799989305,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 31.73938189999899,
+      "later_tokens_per_second": 1.4262883484626685
+    },
+    {
+      "label": "baseline-repeat",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 2205,
+        "completion_tokens": 2,
+        "total_tokens": 2207
+      },
+      "timings": {
+        "first_token_seconds": 0.17872280001756735,
+        "total_seconds": 0.57952880000812,
+        "cached_prompt_tokens": 2198
+      },
+      "first_content_seconds": 0.179225600004429,
+      "later_tokens_per_second": 2.496015111895979
+    },
+    {
+      "label": "baseline-third-image",
+      "answer": "ALPHA\nBETA\nGAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 3310,
+        "completion_tokens": 9,
+        "total_tokens": 3319
+      },
+      "timings": {
+        "first_token_seconds": 40.44235170001048,
+        "total_seconds": 41.46620319999056,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 40.44286419998389,
+      "later_tokens_per_second": 13.556700306102933
+    },
+    {
+      "label": "snapshot-initial",
+      "answer": "ALPHA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 1100,
+        "completion_tokens": 2,
+        "total_tokens": 1102
+      },
+      "timings": {
+        "first_token_seconds": 18.568356700008735,
+        "total_seconds": 19.213005300000077,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 18.569269200001145,
+      "later_tokens_per_second": 1.5516334743721234
+    },
+    {
+      "label": "snapshot-new-image",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 2205,
+        "completion_tokens": 2,
+        "total_tokens": 2207
+      },
+      "timings": {
+        "first_token_seconds": 24.302357900014613,
+        "total_seconds": 24.98086220002733,
+        "cached_prompt_tokens": 1093
+      },
+      "first_content_seconds": 24.302840899996227,
+      "later_tokens_per_second": 1.474212847714139
+    },
+    {
+      "label": "snapshot-repeat",
+      "answer": "BETA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 2205,
+        "completion_tokens": 2,
+        "total_tokens": 2207
+      },
+      "timings": {
+        "first_token_seconds": 0.18581530000665225,
+        "total_seconds": 0.5167826999968383,
+        "cached_prompt_tokens": 2198
+      },
+      "first_content_seconds": 0.1862939999846276,
+      "later_tokens_per_second": 3.0232030835807477
+    },
+    {
+      "label": "snapshot-third-image",
+      "answer": "ALPHA\nBETA\nGAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 3310,
+        "completion_tokens": 9,
+        "total_tokens": 3319
+      },
+      "timings": {
+        "first_token_seconds": 24.102189900004305,
+        "total_seconds": 25.070731899992097,
+        "cached_prompt_tokens": 2198
+      },
+      "first_content_seconds": 24.102702300006058,
+      "later_tokens_per_second": 12.677430544737144
+    },
+    {
+      "label": "snapshot-third-full-prefill",
+      "answer": "ALPHA\nBETA\nGAMMA",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 3310,
+        "completion_tokens": 9,
+        "total_tokens": 3319
+      },
+      "timings": {
+        "first_token_seconds": 25.001430499978596,
+        "total_seconds": 26.088553999987198,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 25.00204510000185,
+      "later_tokens_per_second": 11.369697510272104
+    },
+    {
+      "label": "loop-audit-mtp",
+      "answer": "1. **Use the rule of thirds** \u2013 Imagine your frame divided into a 3x3 grid, and place your subject along those lines or at their intersections rather than dead-center for a more balanced, engaging composition.\n\n2. **Mind your horizon line** \u2013 Keep horizons level and decide whether to place them in the upper or lower third depending on whether you want to emphasize the sky or the foreground.\n\n3. **Create depth with foreground elements** \u2013 Include something in the foreground to add a sense of scale and dimension, drawing the viewer into the scene.\n\n4. **Watch your background** \u2013 Check for distracting elements like branches appearing to grow out of a person's head, and adjust your angle or position to keep the background clean.\n\n5. **Leave looking room** \u2013 If your subject is facing a direction, give them space to \"look into\" within the frame rather than crowding them against the edge.",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 190,
+        "total_tokens": 218
+      },
+      "timings": {
+        "first_token_seconds": 2.981878099992173,
+        "total_seconds": 10.260877799999435,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 2.982421799999429,
+      "later_tokens_per_second": 25.965761821215718
+    },
+    {
+      "label": "loop-audit-repeat-mtp",
+      "answer": "1. **Use the rule of thirds** \u2013 Imagine your frame divided into a 3x3 grid, and place your main subject along those lines or at their intersections rather than dead-center for a more balanced, engaging composition.\n\n2. **Mind your horizon line** \u2013 Keep horizons level and decide whether to place them along the upper or lower third of the frame depending on whether you want to emphasize the sky or the foreground.\n\n3. **Lead the eye with leading lines** \u2013 Use natural or architectural lines like roads, fences, or edges to guide the viewer's gaze toward your main subject.\n\n4. **Pay attention to background clutter** \u2013 Check what's behind your subject; a busy or distracting background can pull attention away, so adjust your angle or position to keep it clean.\n\n5. **Leave looking room** \u2013 If your subject is facing a direction, give them space to \"look into\" within the frame rather than crowding them against the edge they're facing.",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 28,
+        "completion_tokens": 202,
+        "total_tokens": 230
+      },
+      "timings": {
+        "first_token_seconds": 0.438885699986713,
+        "total_seconds": 8.582959799998207,
+        "cached_prompt_tokens": 0
+      },
+      "first_content_seconds": 0.43939769998542033,
+      "later_tokens_per_second": 24.68103143623001
+    }
+  ],
+  "peak_total_gpu_mib_sampled": 7080
+}

@@ -1,6 +1,8 @@
 #include "lamina/model/inference.hpp"
 #include "lamina/model/cuda_projection.hpp"
 #include "lamina/model/qwen36.hpp"
+#include "lamina/model/prefix_io.hpp"
+#include "lamina/model/sampling.hpp"
 #include "strata/artifact/dequant.hpp"
 
 #include <algorithm>
@@ -15,6 +17,8 @@
 #include <stdexcept>
 #include <thread>
 #include <tuple>
+#include <filesystem>
+#include <fstream>
 
 namespace lamina::model {
 namespace {
@@ -110,7 +114,9 @@ std::string layer_name(int layer, const char* suffix) {
 
 Inference::Inference(const std::string& path, int context, int layers, bool cuda,
                      const std::string& kv_cache, size_t vram_limit_mb, const std::string& kv_type, const std::string& compute_mode)
-    : file_(path), context_(context), layers_(layers) {
+    : file_(path), snapshot_identity_(std::filesystem::absolute(path).string() + "|" +
+          std::to_string(std::filesystem::last_write_time(path).time_since_epoch().count()) + "|" +
+          kv_cache + "|" + kv_type + "|" + compute_mode), context_(context), layers_(layers) {
     const unsigned available = std::thread::hardware_concurrency();
     cpu_workers_ = std::min(8u, available ? available : 1u);
 #ifdef _MSC_VER
@@ -217,6 +223,63 @@ void Inference::restore_prefix() {
     spec_backoff_ = 0;
 }
 
+void Inference::export_prefix(const std::string& path) {
+    using namespace prefix_io;
+    if (!cuda_ || layers_ != 40 || !device_chain_supported())
+        throw std::logic_error("prefix snapshot requires the full CUDA device chain");
+    restore_prefix(); // Export the immutable checkpoint, never the generated suffix.
+    std::ofstream out(std::filesystem::u8path(path), std::ios::binary | std::ios::trunc);
+    put(out, uint64_t(0x315350414e494d4cULL));
+    put(out, file_.file_size());
+    put_vector(out, std::vector<char>(snapshot_identity_.begin(), snapshot_identity_.end()));
+    put(out, context_); put(out, layers_); put(out, position_);
+    put(out, rope_position_); put(out, rope_positions_);
+    for (int layer = 0; layer < layers_; ++layer) {
+        put_vector(out, linear_[layer].conv); put_vector(out, linear_[layer].recurrent);
+        put_vector(out, attention_[layer].keys); put_vector(out, attention_[layer].values);
+    }
+    cuda_->export_prefix(out, position_, file_);
+    put(out, uint64_t(0x454e445052454649ULL));
+    out.flush();
+    if (!out) throw std::runtime_error("prefix snapshot flush failed");
+}
+
+void Inference::import_prefix(const std::string& path) {
+    using namespace prefix_io;
+    if (!cuda_ || layers_ != 40 || !device_chain_supported())
+        throw std::logic_error("prefix snapshot requires the full CUDA device chain");
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+    if (get<uint64_t>(in) != 0x315350414e494d4cULL || get<uint64_t>(in) != file_.file_size())
+        throw std::runtime_error("prefix snapshot model/version mismatch");
+    std::vector<char> identity; get_vector(in, identity, 32768);
+    if (std::string(identity.begin(), identity.end()) != snapshot_identity_ ||
+        get<int>(in) != context_ || get<int>(in) != layers_)
+        throw std::runtime_error("prefix snapshot settings mismatch");
+    const int position = get<int>(in), rope_position = get<int>(in);
+    const auto rope_positions = get<std::array<int, 3>>(in);
+    if (position <= 0 || position > context_ || rope_position < 0 ||
+        std::any_of(rope_positions.begin(), rope_positions.end(), [](int p) { return p < 0; }))
+        throw std::runtime_error("prefix snapshot invalid position");
+    reset();
+    for (int layer = 0; layer < layers_; ++layer) {
+        get_vector(in, linear_[layer].conv, CONV_DIM * 3);
+        get_vector(in, linear_[layer].recurrent, VALUE_HEADS * HEAD_DIM * HEAD_DIM);
+        get_vector(in, attention_[layer].keys, size_t(position) * 512);
+        get_vector(in, attention_[layer].values, size_t(position) * 512);
+        if (layer % 4 != 3 && (linear_[layer].conv.size() != CONV_DIM * 3 ||
+            linear_[layer].recurrent.size() != VALUE_HEADS * HEAD_DIM * HEAD_DIM))
+            throw std::runtime_error("prefix snapshot invalid CPU recurrence");
+        if (attention_[layer].keys.size() != attention_[layer].values.size())
+            throw std::runtime_error("prefix snapshot invalid CPU KV");
+    }
+    cuda_->set_context(context_);
+    cuda_->import_prefix(in, position, file_);
+    if (get<uint64_t>(in) != 0x454e445052454649ULL || in.peek() != std::char_traits<char>::eof())
+        throw std::runtime_error("prefix snapshot invalid trailer");
+    position_ = position; rope_position_ = rope_position; rope_positions_ = rope_positions;
+    cache_prefix();
+}
+
 namespace {
 constexpr int kMtpLayer = 40;  // the head's attention state follows the 40 main layers
 }
@@ -232,7 +295,7 @@ void Inference::load_mtp(const std::string& path) {
     mtp_position_ = 0;
 }
 
-int Inference::mtp_draft(int next_token, const std::vector<float>& hidden, int rope_position) {
+std::vector<float> Inference::mtp_hidden(int next_token, const std::vector<float>& hidden, int rope_position) {
     if (!mtp_file_) throw std::logic_error("no MTP head loaded");
     if (hidden.size() != HIDDEN || mtp_position_ >= context_) throw std::invalid_argument("invalid MTP draft input");
     const auto& f = *mtp_file_;
@@ -292,6 +355,11 @@ int Inference::mtp_draft(int next_token, const std::vector<float>& hidden, int r
     // Final norm and the main model's LM head.
     std::vector<float> out = cuda_->hidden_download();
     rms(out.data(), weights("mtp.output_norm.weight").data(), HIDDEN);
+    return out;
+}
+
+int Inference::mtp_draft(int next_token, const std::vector<float>& hidden, int rope_position) {
+    const auto out = mtp_hidden(next_token, hidden, rope_position);
     const auto& head = tensor("output.weight");
     // LAMINA_MTP_VOCAB=N drafts only from the first N token ids (the LM head is
     // most of a draft's cost); a token outside them is simply never drafted.
@@ -1106,6 +1174,74 @@ std::vector<int> Inference::generate_greedy(int token, std::vector<float>& hidde
             spec_backoff_ = 32;
             spec_stats_.backoffs++;
             spec_rate_ = kBreakEven + 0.1;
+        }
+        spec_stats_.draft_ms += std::chrono::duration<double, std::milli>(drafted - started).count();
+        spec_stats_.verify_ms += std::chrono::duration<double, std::milli>(Clock::now() - drafted).count();
+    }
+    return out;
+}
+
+std::vector<int> Inference::generate_sampled(int token, std::vector<float>& hidden, int count, Sampler& sampler) {
+    if (hidden.size() != HIDDEN || count < 0 || sampler.greedy())
+        throw std::invalid_argument("invalid sampled generation request");
+    std::vector<int> out;
+    const bool speculate = has_mtp() && pair_supported();
+    const auto& head = tensor("output.weight");
+    const auto output_norm = vec(tensor("output_norm.weight"));
+    using Clock = std::chrono::steady_clock;
+    while (int(out.size()) < count) {
+        const bool backing_off = spec_backoff_ > 0;
+        if (!speculate || backing_off || count - int(out.size()) < 2 || position_ + 2 > context_ || position_ < 1) {
+            if (backing_off && speculate) --spec_backoff_;
+            hidden = step_hidden(token);
+            token = sampler.sample(logits(hidden));
+            out.push_back(token);
+            continue;
+        }
+        const auto started = Clock::now();
+        // A point-mass (greedy) proposal is an exact special case: sampling
+        // the target directly and accepting only if it equals the draft has
+        // acceptance p[draft]; rejection already draws from the residual
+        // target conditioned on not-draft. It avoids full proposal sampling.
+        static const bool sample_proposal = [] {
+            const char* v = std::getenv("LAMINA_MTP_PROPOSAL");
+            return v && std::string(v) == "sampled";
+        }();
+        std::vector<double> proposal;
+        int draft;
+        if (sample_proposal) {
+            proposal = sampler.distribution(matvec(head, mtp_hidden(token, hidden, position_ - 1)));
+            draft = sampler.sample_distribution(proposal);
+        } else draft = mtp_draft(token, hidden, position_ - 1);
+        const auto drafted = Clock::now();
+        const auto both = step_pair_hidden(token, draft);
+        auto normalized = both;
+        for (int c = 0; c < 2; ++c) rms(normalized.data() + size_t(c) * HIDDEN, output_norm.data(), HIDDEN);
+        const auto values = cuda_->matvec_logits2(head, file_.tensor_data(head), normalized);
+        const size_t vocabulary = values.size() / 2;
+        const std::vector<float> first_logits(values.begin(), values.begin() + vocabulary);
+        std::pair<int, bool> verified;
+        if (sample_proposal) verified = sampler.verify_draft(sampler.distribution(first_logits), proposal, draft);
+        else {
+            const int next = sampler.sample(first_logits);
+            verified = {next, next == draft};
+        }
+        const auto [next, accepted] = verified;
+        commit_pair(accepted);
+        const int column = accepted ? 1 : 0;
+        hidden.assign(both.begin() + column * HIDDEN, both.begin() + (column + 1) * HIDDEN);
+        out.push_back(next);
+        if (accepted) out.push_back(sampler.sample(std::vector<float>(values.begin() + vocabulary, values.end())));
+        token = out.back();
+        ++spec_stats_.steps; ++spec_stats_.drafted;
+        spec_stats_.accepted += accepted;
+        // The rejection correction remains exact even while backing off to
+        // ordinary sampling. Full-proposal RNG means equal seeds need not
+        // produce the same sequence as non-speculative generation.
+        constexpr double break_even = 0.55;
+        spec_rate_ = .97 * spec_rate_ + .03 * (accepted ? 1.0 : 0.0);
+        if (spec_rate_ < break_even) {
+            spec_backoff_ = 32; ++spec_stats_.backoffs; spec_rate_ = break_even + .1;
         }
         spec_stats_.draft_ms += std::chrono::duration<double, std::milli>(drafted - started).count();
         spec_stats_.verify_ms += std::chrono::duration<double, std::milli>(Clock::now() - drafted).count();

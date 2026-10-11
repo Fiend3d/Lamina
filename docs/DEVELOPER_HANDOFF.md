@@ -1,5 +1,29 @@
 # Lamina developer handoff
 
+Source engines now advertise `sampled_mtp` and accept `GENERATE_SAMPLED` after
+nonzero-temperature SAMPLE. Default MTP proposals are greedy (point-mass): the
+main pair pass samples the filtered target and accepts only a matching draft.
+Non-matching target draws already follow the residual rejection distribution.
+`LAMINA_MTP_PROPOSAL=sampled` instead samples a full proposal, verifies min(1,p/q)
+and draws max(0,p-q) on rejection; it was slower on RTX 4060 and is not the default.
+Rejection restores first-column recurrent state. Acceptance commits
+both columns and draws the bonus token from the second main-model distribution.
+Temperature/top-k/top-p filters apply to both distributions. The greedy path
+remains separate. Point-mass proposals preserve ordinary sampling's RNG draws;
+full proposals use extra draws. CPU/GPU expert placement can perturb fast-mode
+rounding, so arbitrary short cold/warm requests need not be byte-identical.
+`LAMINA_SAMPLED_MTP=0` retains ordinary sampling; older
+engines are capability-gated. Low acceptance uses the existing speculation
+backoff. `lamina-sampling-check` checks rejection-corrected frequencies against
+known distributions. `lamina-sampled-mtp-check MODEL MTP` checks top-k=1 greedy
+parity, seeded replay, position accounting and a single-token tail. Performance
+comparison: `python -m tools.check_sampled_mtp --model qwen3.6 --runs 3 --output
+../Lamina-data/validation/sampled-mtp-qwen`.
+
+Recorded commands, correctness checks and performance limits:
+[sampled MTP](../bench/results/2026-10-11-sampled-mtp/README.md) and
+[vision snapshots](../bench/results/2026-10-11-vision-snapshot/README.md).
+
 Source launchers support saved `--vision-device cpu|gpu`. GPU mode selects the
 separate CUDA encoder in `build-vision-gpu/bin/strata-vision.exe`, built with
 `python -m tools.build_windows --vision-gpu --vision-only --cuda-arch 89` on
@@ -12,9 +36,25 @@ of image bytes. Cache hits avoid starting vision or stopping the text engine.
 CUDA device-KV checkpoints also cover image-containing prefixes: identity
 includes ordered image hashes, IMAGE commands are fed only for uncached prefix
 sections, and native checkpoints already preserve image mRoPE positions.
-New GPU image bytes still reload the native model and lose its checkpoint.
+Source engines now advertise `prefix_snapshot`: new GPU image bytes still reload
+the model, but a private temporary snapshot preserves device KV, convolution and
+recurrent state, image mRoPE positions, and expert counts across that handoff.
+`EXPORT_PREFIX` restores the immutable checkpoint before saving, excluding the
+generated suffix; `IMPORT_PREFIX` checks model path/mtime/size, settings, bounded
+payloads and trailer, rebuilds a checkpoint and never restores pointer addresses.
+Snapshot files live in sibling Lamina-data/tmp and are removed after restore,
+encoding failure, import failure or close. Failed/unsupported snapshots fall back
+to full prefill. `LAMINA_PREFIX_SNAPSHOT=0` disables handoff snapshots; the existing
+`LAMINA_PREFIX_CACHE=0` disables prefix reuse altogether. Old v0.2.0 binaries have
+no snapshot capability and retain the previous full-prefill handoff.
+`lamina-prefix-snapshot-check MODEL TEMP_PATH` checks reload hidden-state parity,
+synthetic image positions, F16/F32 KV, fast/F32 compute and invalid-file rejection.
+`python -m tools.check_vision_snapshot --model qwen3.6 --output
+../Lamina-data/validation/vision-snapshot-qwen` compares real GPU image handoffs
+against full prefill, including multiple image appends and MTP/single-token checks.
 HTTP URLs are fetched again to detect changed content; embeddings disappear
-on server restart. No native math or protocol changes are needed.
+on server restart. The snapshot commands extend the native protocol; layer math
+is unchanged.
 The [image cache record](../bench/results/2026-10-10-image-cache/README.md)
 checks OCR, cached/full-prefill answer equality and a 102K image conversation.
 Long text spans inside image-containing CUDA device-KV prefixes now use the
