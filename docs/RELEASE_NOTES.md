@@ -1,4 +1,4 @@
-# v0.3.0
+# v0.3.1
 
 Requests that do not set sampling now use each model's recommended settings
 instead of greedy decoding, and MTP speculation also speeds up those sampled
@@ -31,6 +31,12 @@ token-identical to the engine before the sampling changes. RTX 30/40/50 kernels 
 on RTX 3050 8 GB and RTX 4060 8 GB from source builds; see the README benchmark
 records for commands and conditions. SHA-256 checksum files accompany both
 packages.
+
+The v0.3.0 tag was never released: its release build stopped because the
+build script no longer copied the cuBLAS runtime. v0.3.1 has the same changes
+plus that fix. A locally built v0.3.1-equivalent package passed START-HERE.bat,
+streaming text, tool calls, thinking, sampled and greedy MTP, and CPU image
+input on the RTX 3050 with only Windows system directories in PATH.
 
 # v0.2.0
 

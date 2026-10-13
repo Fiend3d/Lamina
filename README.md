@@ -153,7 +153,7 @@ so it usually needs to read only the added messages and tool results.
 multi-token-prediction head) to guess the next token in advance. The model
 checks the guesses before accepting them. This can make generation faster;
 the gain varies by model, hardware and context length. It applies to greedy
-requests (temperature 0). v0.3.0 and source builds also support sampled MTP at
+requests (temperature 0). v0.3.1 and source builds also support sampled MTP at
 nonzero temperature, which the default sampling settings use: the main model
 samples its verified distribution and accepts the MTP guess when they match, after
 penalty/top-k/temperature/top-p filtering. Older v0.2.0 binaries support greedy
@@ -236,7 +236,7 @@ llama.cpp 28.2 with the same settings (see
 Engines built before `presence_penalty` support ignore the penalty, and the
 server log says so.
 
-v0.3.0 and source engines advertise `sampled_mtp`
+v0.3.1 and source engines advertise `sampled_mtp`
 to enable MTP for nonzero temperature; older engines fall back to ordinary
 sampling. Set `LAMINA_SAMPLED_MTP=0` before launching to compare ordinary
 sampling. Speculation can back off when acceptance is low; speed varies with
@@ -327,7 +327,7 @@ Previously encoded images are cached in server RAM (up to 256 MiB), so repeating
 them keeps the text model resident. With CUDA device KV, follow-up requests
 reuse the unchanged conversation, including images, and prefill only new content.
 Changed image bytes, image order or edited history invalidate prefix reuse.
-v0.3.0 and source builds with native `prefix_snapshot` support preserve a device-KV checkpoint
+v0.3.1 and source builds with native `prefix_snapshot` support preserve a device-KV checkpoint
 across GPU image encoding. They export attention history, recurrent/convolution
 state, image positions and expert counts to a private temporary file under
 `../Lamina-data/tmp`, reload the text model, and import the checkpoint. Only
