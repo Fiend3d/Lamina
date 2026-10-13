@@ -280,7 +280,8 @@ void CpuExperts::start(const MoeWeights& weights, const std::vector<Job>& jobs, 
     error_ = nullptr;
     started_ns_.store(now_ns(), std::memory_order_relaxed);
     first_claim_ns_.store(0, std::memory_order_relaxed);
-    stats_.experts += jobs.size();
+    wide_ = wide;
+    if (!wide) stats_.experts += jobs.size();
     finished_.store(0, std::memory_order_relaxed);
     count_.store(items_.size(), std::memory_order_relaxed);
     next_.store(0, std::memory_order_release);
@@ -298,9 +299,13 @@ void CpuExperts::wait() {
     const int64_t done = now_ns();  // observed completion; the last worker's own store could still be pending
     next_.store(kIdle, std::memory_order_release);
     const int64_t begin = started_ns_.load(std::memory_order_relaxed);
-    stats_.batch_ms += double(done - begin) * 1e-6;
-    stats_.first_claim_ms += double(first_claim_ns_.load(std::memory_order_relaxed) - begin) * 1e-6;
-    ++stats_.batches;
+    // Wide (prefill) batches are far larger; mixing them in overstated the
+    // decode batch time by about a fifth.
+    if (!wide_) {
+        stats_.batch_ms += double(done - begin) * 1e-6;
+        stats_.first_claim_ms += double(first_claim_ns_.load(std::memory_order_relaxed) - begin) * 1e-6;
+        ++stats_.batches;
+    }
     if (failed_.load(std::memory_order_acquire)) {
         std::exception_ptr error;
         { std::lock_guard lock(mutex_); error = error_; }

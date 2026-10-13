@@ -51,8 +51,9 @@ public:
     // complete, rethrowing the first worker error.
     void wait();
 
-    // Diagnostics: cumulative batch time from start() to the last finished
-    // item, time until the first item was claimed, and batch/expert counts.
+    // Diagnostics for decode (non-wide) batches only: cumulative batch time from
+    // start() to the last finished item, time until the first item was claimed,
+    // and batch/expert counts.
     struct Stats { double batch_ms = 0, first_claim_ms = 0; uint64_t batches = 0, experts = 0; };
     Stats stats() const { return stats_; }
 
@@ -76,7 +77,7 @@ private:
     void run(const Item& item);
     void finish_gate_up(int expert);
 
-    bool fast_ = false;
+    bool fast_ = false, wide_ = false;
     MoeWeights weights_;
     std::vector<std::vector<uint8_t>> input_q_, input_q_up_;  // per distinct input row
     std::vector<Item> items_;
