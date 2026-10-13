@@ -13,7 +13,7 @@ a writable folder, then double-click `START-HERE.bat`. Do not run inside the ZIP
 The model, tokenizer, optional MTP head and settings go into the sibling
 `Lamina-data` folder. The first launch asks for model, context length and MTP, downloads
 the selected model and assets, and starts the server. Later launches reuse them.
-The GPU driver is not bundled. The v0.2.0 portable package includes the local
+The GPU driver is not bundled. The v0.3.0 portable package includes the local
 API server, text, tools, reasoning, images and sampled video for Qwen3.6 and
 Ornith. Both CPU and GPU image encoders are included. Select GPU image encoding
 with `START-HERE.bat --vision-device gpu`; setup downloads the selected model's
@@ -25,7 +25,7 @@ can download the pinned engine automatically.
 
 Source checkouts also support downloading the pinned engine-only release on
 first setup. Its ZIP checksum and the manifest's per-file checksums are verified
-before installation into `../Lamina-data/engine/v0.2.0`. The version is pinned in
+before installation into `../Lamina-data/engine/v0.3.0`. The version is pinned in
 `tools/lamina_release.py`, rather than following whatever release is newest.
 An existing local developer build remains usable. Use `START-HERE.bat setup
 --build-source` to compile from source instead.

@@ -1,3 +1,37 @@
+# v0.3.0
+
+Requests that do not set sampling now use each model's recommended settings
+instead of greedy decoding, and MTP speculation also speeds up those sampled
+requests. The server implements `presence_penalty`, and setup offers an
+abliterated build of Qwen3.6 as a third model.
+
+- Omitted sampling fields come from the model card. Qwen3.6 uses temperature
+  1.0, top_p 0.95, top_k 20 and presence_penalty 1.5 with thinking, and 0.7 /
+  0.8 / 20 / 1.5 without it. Ornith uses 0.6 / 0.95 / 20 / 0 in both modes.
+  Fields a request sets always win, and `"temperature": 0` stays plain greedy.
+  Set `LAMINA_SAMPLING_DEFAULTS=greedy` to restore the old behavior.
+- `presence_penalty` (-2 to 2) penalizes every token that already appeared in
+  the current answer, in both ordinary and speculative sampling.
+- Sampled MTP: at nonzero temperature the engine verifies the MTP draft against
+  its filtered distribution, so output follows the requested sampling. On an
+  RTX 3050 8 GB / Ryzen 7 5700X, Qwen3.6 with the non-thinking defaults ran at
+  43.9 tokens/s with MTP against 37.2 without it, and llama.cpp b11474 ran at
+  28.2 with the same settings. Greedy decoding stays faster at 46.9 tokens/s.
+  Set `LAMINA_SAMPLED_MTP=0` to turn sampled speculation off.
+- GPU image encoding no longer discards the conversation: the engine saves its
+  device-KV checkpoint to a temporary file before the encoder takes the GPU and
+  restores it afterwards, so follow-up turns prefill only new content.
+- `START-HERE.bat --model abliterated` selects an abliterated (safety
+  guardrails removed) Qwen3.6-35B-A3B v4 Q4_K_M. Setup downloads it and
+  re-encodes its SSM tensors to F32 when needed. This build has not been
+  benchmarked.
+
+No model layer math changed. In the RTX 3050 checks, greedy output stayed
+token-identical to the engine before the sampling changes. RTX 30/40/50 kernels are compiled. Runtime checks ran
+on RTX 3050 8 GB and RTX 4060 8 GB from source builds; see the README benchmark
+records for commands and conditions. SHA-256 checksum files accompany both
+packages.
+
 # v0.2.0
 
 Run the local API server with GPU image input and sampled video from the portable

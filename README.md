@@ -63,7 +63,7 @@ The portable release includes text, tools, reasoning and image input for both
 models. With image input enabled, setup downloads the selected model's image projector
 (about 900 MB). Apps can send screenshots or photos through the API using
 OpenAI-compatible `image_url` content, including base64 data URLs. The default image
-encoder can use the CPU or GPU; both are included in v0.2.0 as described below.
+encoder can use the CPU or GPU; both are included since v0.2.0 as described below.
 On older CPUs, an image response can take a minute or more. Text-only requests
 do not start the image encoder.
 
@@ -153,9 +153,9 @@ so it usually needs to read only the added messages and tool results.
 multi-token-prediction head) to guess the next token in advance. The model
 checks the guesses before accepting them. This can make generation faster;
 the gain varies by model, hardware and context length. It applies to greedy
-requests (temperature 0). Source builds also support sampled MTP at nonzero
-temperature, which the default sampling settings use: the main model samples its
-verified distribution and accepts the MTP guess when they match, after
+requests (temperature 0). v0.3.0 and source builds also support sampled MTP at
+nonzero temperature, which the default sampling settings use: the main model
+samples its verified distribution and accepts the MTP guess when they match, after
 penalty/top-k/temperature/top-p filtering. Older v0.2.0 binaries support greedy
 MTP only. Setup prepares the model's prediction head,
 which uses some extra GPU memory. Saying yes is a reasonable starting choice; you
@@ -236,7 +236,7 @@ llama.cpp 28.2 with the same settings (see
 Engines built before `presence_penalty` support ignore the penalty, and the
 server log says so.
 
-Source engines advertise `sampled_mtp`
+v0.3.0 and source engines advertise `sampled_mtp`
 to enable MTP for nonzero temperature; older engines fall back to ordinary
 sampling. Set `LAMINA_SAMPLED_MTP=0` before launching to compare ordinary
 sampling. Speculation can back off when acceptance is low; speed varies with
@@ -312,13 +312,13 @@ encoder instead of the CPU:
 .\START-HERE.bat --vision-device gpu
 ```
 
-This saves the device choice. The v0.2.0 portable package uses its bundled GPU
+This saves the device choice. The portable package (v0.2.0 or newer) uses its bundled GPU
 encoder and needs no compiler. In a source checkout, a missing GPU encoder is
 built on first use (requires Visual Studio C++ tools and the pinned CUDA toolkit).
 The separate `build-vision-gpu` directory preserves the CPU encoder.
 For an explicit build: `python -m tools.build_windows --vision-gpu --vision-only
 --cuda-arch 89` on RTX 4060; use the architecture detected for your own GPU.
-The v0.2.0 portable release includes both CPU and GPU encoders and the video decoder.
+Portable releases since v0.2.0 include both CPU and GPU encoders and the video decoder.
 
 GPU mode gives the encoder and language model separate turns on the GPU. For
 new images/video frames, it unloads the native text model, encodes the missing
@@ -327,7 +327,7 @@ Previously encoded images are cached in server RAM (up to 256 MiB), so repeating
 them keeps the text model resident. With CUDA device KV, follow-up requests
 reuse the unchanged conversation, including images, and prefill only new content.
 Changed image bytes, image order or edited history invalidate prefix reuse.
-Source builds with native `prefix_snapshot` support preserve a device-KV checkpoint
+v0.3.0 and source builds with native `prefix_snapshot` support preserve a device-KV checkpoint
 across GPU image encoding. They export attention history, recurrent/convolution
 state, image positions and expert counts to a private temporary file under
 `../Lamina-data/tmp`, reload the text model, and import the checkpoint. Only
