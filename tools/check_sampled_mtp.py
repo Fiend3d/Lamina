@@ -19,6 +19,8 @@ def main():
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--proposal", choices=["greedy", "sampled"], default="greedy")
+    parser.add_argument("--presence-penalty", type=float, default=0,
+                        help="sent with every request; the server default for Qwen3.6 would be 1.5")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(); args.output.mkdir(parents=True, exist_ok=True)
     config = load_config(); config["model"] = args.model; paths = model_paths(config)
@@ -28,7 +30,8 @@ def main():
         "Find the sum of the integers from 1 through 100 using two different methods and explain why they agree."]
     report = {"hardware": describe_hardware(), "model": args.model,
               "temperature": args.temperature, "top_p": .95, "top_k": 20,
-              "context": 131072, "kv_type": "f16", "compute_mode": "fast", "proposal": args.proposal, "runs": []}
+              "context": 131072, "kv_type": "f16", "compute_mode": "fast", "proposal": args.proposal,
+              "presence_penalty": args.presence_penalty, "runs": []}
     os.environ["LAMINA_SPEC_STATS"] = "1"
     os.environ["LAMINA_MTP_PROPOSAL"] = args.proposal
     peak, stop = [0], threading.Event()
@@ -49,7 +52,8 @@ def main():
                 for index, prompt in enumerate(prompts):
                     answer = ""; first = last = None; started = time.perf_counter(); final = None
                     for event in engine.events([{"role": "user", "content": prompt}], max_tokens=args.max_tokens,
-                            temperature=args.temperature, top_p=.95, top_k=20, seed=42 + iteration):
+                            temperature=args.temperature, top_p=.95, top_k=20, seed=42 + iteration,
+                            presence_penalty=args.presence_penalty):
                         content = event.get("delta", {}).get("content", "")
                         if content:
                             last = time.perf_counter()

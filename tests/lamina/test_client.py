@@ -126,7 +126,7 @@ class ClientTest(unittest.TestCase):
                     self.assertEqual(engine.completion([{"role": "user", "content": "Hi"}], 2), ("Hello", 2, 1, "stop"))
                 self.assertEqual(start.call_count, 1)
                 self.assertIn("--cuda", start.call_args.args[0])
-            self.assertEqual(native.commands, ["RESET", "SAMPLE 0 1 20 0", "PREFILL 1 2", "5"] * 2)
+            self.assertEqual(native.commands, ["RESET", "SAMPLE 0.7 0.8 20 0", "PREFILL 1 2", "5"] * 2)
 
     def test_text_startup_does_not_start_gpu_encoder(self):
         from unittest.mock import Mock
@@ -313,7 +313,7 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(prompts, ["PROMPT 32 " + " ".join([str(t)] * 256) for t in (1, 2)])
             self.assertLess(native.commands.index(prompts[0]), native.commands.index("IMAGE " + str(Path(directory) / "a.sve")))
             self.assertLess(native.commands.index(prompts[1]), native.commands.index("CACHE_PREFIX"))
-            self.assertLess(native.commands.index("CACHE_PREFIX"), native.commands.index("SAMPLE 0.7 1 20 42"))
+            self.assertLess(native.commands.index("CACHE_PREFIX"), native.commands.index("SAMPLE 0.7 0.8 20 42"))
 
     def test_fp16_mode_reaches_native_process(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -344,7 +344,7 @@ class ClientTest(unittest.TestCase):
             engine=self.engine(directory,tokens=tuple(range(64)))
             native=Native();engine.native=native
             self.assertEqual(engine.completion([{"role":"user","content":"Hi"}],1)[0],"Hello")
-            self.assertEqual(native.commands,["RESET","SAMPLE 0 1 20 0","PROMPT 32 "+" ".join(map(str,range(64)))])
+            self.assertEqual(native.commands,["RESET","SAMPLE 0.7 0.8 20 0","PROMPT 32 "+" ".join(map(str,range(64)))])
 
     def test_prefix_restored_and_changed_prefix_invalidated(self):
         class Native:
@@ -369,7 +369,7 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(native.commands.count("RESTORE_PREFIX"), 1)
             self.assertEqual(native.commands.count("PREFILL 300"), 2)
             self.assertLess(native.commands.index("CACHE_PREFIX"),
-                            native.commands.index("SAMPLE 0 1 20 0"),
+                            native.commands.index("SAMPLE 0.7 0.8 20 0"),
                             "ignored long-prefix token must precede request RNG configuration")
             prefix[0] = 999
             list(engine.events([{"role": "user", "content": "Changed"}], 1))
@@ -443,6 +443,54 @@ class ClientTest(unittest.TestCase):
         for options in ({"top_p": 0}, {"temperature": float("nan")}, {"seed": -1}, {"max_tokens": True}, {"stop": [""]}, {"stream": "yes"}):
             with self.assertRaises(ValueError): validate_options(options, 131072)
         self.assertEqual(validate_options({"max_tokens": 100000}, 131072)["max_tokens"], 100000)
+
+    def test_recommended_sampling_defaults(self):
+        import os
+        from tools.lamina_chat import recommended_sampling, GREEDY
+        def pick(o): return tuple(o[k] for k in ("temperature", "top_p", "top_k", "presence_penalty"))
+        qwen = lambda thinking: recommended_sampling(Path("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"), thinking)
+        ornith = lambda thinking: recommended_sampling(Path("Ornith-1.5-35B-Q4_K_M.gguf"), thinking)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LAMINA_SAMPLING_DEFAULTS", None)
+            self.assertEqual(pick(validate_options({}, 4096, qwen)), (0.7, 0.8, 20, 1.5))
+            self.assertEqual(pick(validate_options({"enable_thinking": True}, 4096, qwen)), (1.0, 0.95, 20, 1.5))
+            self.assertEqual(pick(validate_options({"reasoning_effort": "high"}, 4096, qwen)), (1.0, 0.95, 20, 1.5))
+            self.assertEqual(pick(validate_options({"enable_thinking": True}, 4096, ornith)), (0.6, 0.95, 20, 0))
+            # Explicit fields win one by one; an explicit temperature 0 stays plain greedy.
+            self.assertEqual(pick(validate_options({"top_p": 0.9, "top_k": 40}, 4096, qwen)), (0.7, 0.9, 40, 1.5))
+            self.assertEqual(pick(validate_options({"temperature": 0}, 4096, qwen))[::3], (0, 0))
+            self.assertEqual(validate_options({"temperature": 0, "presence_penalty": 1}, 4096, qwen)["presence_penalty"], 1)
+            # Without a defaults function (direct callers, older tests) omitted fields are greedy.
+            self.assertEqual(pick(validate_options({}, 4096)), pick(GREEDY))
+            for bad in (2.5, -3, True, float("nan"), "1"):
+                with self.assertRaises(ValueError): validate_options({"presence_penalty": bad}, 4096, qwen)
+            os.environ["LAMINA_SAMPLING_DEFAULTS"] = "greedy"
+            self.assertEqual(pick(validate_options({"enable_thinking": True}, 4096, qwen)), pick(GREEDY))
+            os.environ["LAMINA_SAMPLING_DEFAULTS"] = "hot"
+            with self.assertRaises(ValueError): validate_options({}, 4096, qwen)
+            os.environ.pop("LAMINA_SAMPLING_DEFAULTS")
+
+    def test_presence_penalty_reaches_supporting_engine_only(self):
+        class Native:
+            def __init__(self): self.commands = []; self.generated = []
+            def command(self, value, acknowledgement=False):
+                self.commands.append(value)
+                if acknowledgement: return None
+                return 5 if value.startswith("PREFILL") else 248046
+            def generate(self, count, token): self.generated.append((count, token)); return [248046] * count
+        with tempfile.TemporaryDirectory() as directory:
+            for supported, expected in ((True, "SAMPLE 0.7 0.8 20 0 1.5"), (False, "SAMPLE 0.7 0.8 20 0")):
+                engine = self.engine(directory); native = Native(); engine.native = native
+                engine._presence_supported = supported
+                engine.completion([{"role": "user", "content": "Hi"}], 2)
+                self.assertIn(expected, native.commands)
+            # A penalized greedy request cannot use GPU-selected greedy speculation.
+            engine = self.engine(directory); native = Native(); engine.native = native
+            engine._presence_supported = True; engine.mtp = Path(directory) / "mtp.gguf"
+            engine.completion([{"role": "user", "content": "Hi"}], 4, temperature=0, presence_penalty=1)
+            self.assertIn("SAMPLE 0 0.8 20 0 1", native.commands)
+            self.assertEqual(native.generated, [])
+            self.assertIn("5", native.commands)
 
     def test_reasoning_and_stop_prefixes(self):
         self.assertEqual(split_reasoning("analysis</think>\n\nanswer", True), ("analysis", "answer"))

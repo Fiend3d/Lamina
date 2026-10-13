@@ -44,7 +44,36 @@ int main(int argc, char** argv) {
         const int before = model.position();
         model.generate_sampled(repeated.back(), hidden, 1, sampler);
         if (model.position() != before + 1) throw std::runtime_error("single-token sampled tail advanced twice");
-        std::printf("sampled MTP: top-k=1 greedy parity, seeded replay and positions passed; steps=%llu accepted=%llu\n",
+        // Presence penalty: with top-k=1 a pass is deterministic, so speculative
+        // generation must equal single steps with the same penalty history. The
+        // bonus token of an accepted pass must already see the first token. A
+        // positive penalty changes nothing unless greedy output repeats a token,
+        // so a negative one (favoring repeats) also runs; one of them must bite.
+        bool changed = false;
+        for (const double presence : {2.0, -2.0}) {
+            model.restore_prefix(); hidden = model.step_hidden(50);
+            sampler.configure(.6, .95, 1, 42, presence);
+            token = sampler.sample(model.logits(hidden)); sampler.accept(token);
+            const auto penalized = model.generate_sampled(token, hidden, 24, sampler);
+            model.restore_prefix(); hidden = model.step_hidden(50);
+            sampler.configure(.6, .95, 1, 42, presence);
+            token = sampler.sample(model.logits(hidden)); sampler.accept(token);
+            std::vector<int> serial;
+            for (int i = 0; i < 24; ++i) {
+                const auto one = model.generate_sampled(token, hidden, 1, sampler);
+                serial.push_back(one.at(0)); token = one.at(0);
+            }
+            if (penalized != serial) {
+                size_t at = 0; while (at < serial.size() && serial[at] == penalized[at]) ++at;
+                std::fprintf(stderr, "presence %.1f: speculative and serial tokens differ at %zu\n", presence, at);
+                throw std::runtime_error("presence-penalized sampled MTP differs from single steps");
+            }
+            std::printf("presence %.1f: speculative equals serial, %s unpenalized greedy\n",
+                        presence, penalized == expected ? "same as" : "differs from");
+            changed = changed || penalized != expected;
+        }
+        if (!changed) throw std::runtime_error("presence penalty changed no top-k=1 output");
+        std::printf("sampled MTP: top-k=1 greedy parity, seeded replay, penalty parity and positions passed; steps=%llu accepted=%llu\n",
             static_cast<unsigned long long>(model.spec_stats().steps),
             static_cast<unsigned long long>(model.spec_stats().accepted));
         return 0;

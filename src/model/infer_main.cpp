@@ -50,7 +50,7 @@ void image(lamina::model::Inference& model, const std::string& path, int context
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--capabilities") {
-        std::puts("{\"protocol\":2,\"prefix_cache\":true,\"prefix_snapshot\":true,\"sampled_mtp\":true}");
+        std::puts("{\"protocol\":2,\"prefix_cache\":true,\"prefix_snapshot\":true,\"sampled_mtp\":true,\"presence_penalty\":true}");
         return 0;
     }
     if (argc < 3) {
@@ -140,12 +140,15 @@ int main(int argc, char** argv) {
         // The hidden state behind the last returned token, for GENERATE.
         std::vector<float> last_hidden;
         // Greedy sampling selects the token on the GPU and skips downloading the
-        // logits; any other setting, or a non-finite logit, takes the full path.
+        // logits; any other setting, a presence penalty or a non-finite logit
+        // takes the full path. Every returned token joins the penalty history.
         const auto next_token = [&](std::vector<float> hidden) {
             last_hidden = hidden;
-            if (sampler.greedy())
-                if (const int token = model.greedy(hidden); token >= 0) return token;
-            return sampler.sample(model.logits(std::move(hidden)));
+            int token = -1;
+            if (sampler.device_greedy()) token = model.greedy(hidden);
+            if (token < 0) token = sampler.sample(model.logits(std::move(hidden)));
+            sampler.accept(token);
+            return token;
         };
         if (argc == first + 1 && std::string(argv[first]) == "--interactive") {
             std::string line;
@@ -176,6 +179,8 @@ int main(int argc, char** argv) {
                     std::istringstream args(line.substr(sampled ? 17 : 9)); int count, token; std::string extra;
                     if (!(args >> count >> token) || args >> extra || count < 1) throw std::invalid_argument("invalid GENERATE command");
                     if (sampler.greedy() == sampled || last_hidden.empty()) throw std::invalid_argument("GENERATE sampling mode mismatch or missing hidden state");
+                    // Greedy speculation selects tokens on the GPU, which cannot apply a penalty.
+                    if (!sampled && sampler.penalized()) throw std::invalid_argument("GENERATE does not support presence_penalty; step tokens instead");
                     const auto tokens = sampled ? model.generate_sampled(token, last_hidden, count, sampler)
                                                 : model.generate_greedy(token, last_hidden, count);
                     for (size_t i = 0; i < tokens.size(); ++i) std::printf(i ? " %d" : "%d", tokens[i]);
@@ -192,9 +197,16 @@ int main(int argc, char** argv) {
                     }
                 }
                 else if (line.rfind("SAMPLE ", 0) == 0) {
-                    std::istringstream args(line.substr(7)); double temperature, p; int k; uint64_t seed; std::string extra;
-                    if (!(args >> temperature >> p >> k >> seed) || args >> extra) throw std::invalid_argument("invalid SAMPLE command");
-                    sampler.configure(temperature, p, k, seed); std::puts(".");
+                    // SAMPLE TEMPERATURE TOP_P TOP_K SEED [PRESENCE_PENALTY]; also starts
+                    // a new penalty history, so it precedes each request's answer.
+                    std::istringstream args(line.substr(7)); double temperature, p, presence = 0; int k; uint64_t seed; std::string extra;
+                    if (!(args >> temperature >> p >> k >> seed)) throw std::invalid_argument("invalid SAMPLE command");
+                    if (args >> extra) {
+                        std::size_t used = 0;
+                        try { presence = std::stod(extra, &used); } catch (const std::exception&) { used = 0; }
+                        if (used != extra.size() || args >> extra) throw std::invalid_argument("invalid SAMPLE command");
+                    }
+                    sampler.configure(temperature, p, k, seed, presence); std::puts(".");
                 } else if (line.rfind("IMAGE ", 0) == 0) { image(model, line.substr(6), context); std::puts("."); }
                 else if (line.rfind("PROMPT ",0)==0) {
                     std::istringstream args(line.substr(7));std::string word;

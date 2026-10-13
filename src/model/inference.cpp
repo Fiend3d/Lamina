@@ -1195,10 +1195,15 @@ std::vector<int> Inference::generate_sampled(int token, std::vector<float>& hidd
             if (backing_off && speculate) --spec_backoff_;
             hidden = step_hidden(token);
             token = sampler.sample(logits(hidden));
+            sampler.accept(token);
             out.push_back(token);
             continue;
         }
         const auto started = Clock::now();
+        // A presence penalty keeps the pass exact: the first column is drawn
+        // with the history so far, and the bonus draw after accept(next), which
+        // matches the history single steps would have. The greedy draft itself
+        // ignores the penalty; that only lowers acceptance.
         // A point-mass (greedy) proposal is an exact special case: sampling
         // the target directly and accepting only if it equals the draft has
         // acceptance p[draft]; rejection already draws from the residual
@@ -1230,8 +1235,13 @@ std::vector<int> Inference::generate_sampled(int token, std::vector<float>& hidd
         commit_pair(accepted);
         const int column = accepted ? 1 : 0;
         hidden.assign(both.begin() + column * HIDDEN, both.begin() + (column + 1) * HIDDEN);
+        sampler.accept(next);
         out.push_back(next);
-        if (accepted) out.push_back(sampler.sample(std::vector<float>(values.begin() + vocabulary, values.end())));
+        if (accepted) {
+            const int bonus = sampler.sample(std::vector<float>(values.begin() + vocabulary, values.end()));
+            sampler.accept(bonus);
+            out.push_back(bonus);
+        }
         token = out.back();
         ++spec_stats_.steps; ++spec_stats_.drafted;
         spec_stats_.accepted += accepted;

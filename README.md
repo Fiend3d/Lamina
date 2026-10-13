@@ -152,11 +152,12 @@ so it usually needs to read only the added messages and tool results.
 **MTP speculative decoding** uses a small extra part of the model (its
 multi-token-prediction head) to guess the next token in advance. The model
 checks the guesses before accepting them. This can make generation faster;
-the gain varies by model, hardware and context length. It applies to requests
-with temperature 0, the default. Source builds also support sampled MTP at
-nonzero temperature: the main model samples its verified distribution and accepts
-the MTP guess when they match, after temperature/top-k/top-p filtering. Older v0.2.0
-binaries support greedy MTP only. Setup prepares the model's prediction head,
+the gain varies by model, hardware and context length. It applies to greedy
+requests (temperature 0). Source builds also support sampled MTP at nonzero
+temperature, which the default sampling settings use: the main model samples its
+verified distribution and accepts the MTP guess when they match, after
+penalty/top-k/temperature/top-p filtering. Older v0.2.0 binaries support greedy
+MTP only. Setup prepares the model's prediction head,
 which uses some extra GPU memory. Saying yes is a reasonable starting choice; you
 can turn it off with `--reconfigure`.
 
@@ -195,9 +196,47 @@ $body = @{ model = "Qwen3.6-35B-A3B-UD-Q4_K_M"; messages = @(@{ role = "user"; c
 (Invoke-RestMethod http://127.0.0.1:8000/v1/chat/completions -Method Post -ContentType "application/json" -Body $body).choices[0].message.content
 ```
 
-The server supports streaming, `temperature`, `top_p`, `top_k`, `seed`,
-`stop`, `max_tokens`, reasoning ("thinking") controls, function tools and JSON
-output. It handles one request at a time. Source engines advertise `sampled_mtp`
+The server supports streaming, `temperature`, `top_p`, `top_k`,
+`presence_penalty`, `seed`, `stop`, `max_tokens`, reasoning ("thinking")
+controls, function tools and JSON output. It handles one request at a time.
+
+### Sampling defaults
+
+This section explains which sampling settings the server uses when a request
+does not specify them. Each field the request omits is taken from the loaded
+model's card, depending on whether thinking is on:
+
+| Model | Mode | temperature | top_p | top_k | presence_penalty |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 (also the abliterated build) | thinking | 1.0 | 0.95 | 20 | 1.5 |
+| Qwen3.6 (also the abliterated build) | non-thinking | 0.7 | 0.80 | 20 | 1.5 |
+| Ornith | both | 0.6 | 0.95 | 20 | 0 |
+
+Fields the request does set always win. A request with `"temperature": 0`
+gets plain greedy decoding: it does not pick up the default presence penalty
+unless it sets one. Qwen's card recommends `temperature 0.6` and
+`presence_penalty 0` with thinking for precise coding work; send those values,
+or set them in your client, if you prefer them. The server window logs the
+settings of every request.
+
+`presence_penalty` lowers the score of every token that already appeared in
+the current answer by the given amount, once per token (range -2 to 2). The
+prompt does not count. To restore the earlier behavior, where omitted settings
+meant greedy decoding, set the environment variable before starting the server:
+
+```powershell
+$env:LAMINA_SAMPLING_DEFAULTS = "greedy"
+.\START-HERE.bat
+```
+
+Greedy decoding is faster: on an RTX 3050 8 GB with MTP, Qwen3.6 measured
+46.9 tokens/s greedy against 43.9 with the non-thinking defaults, and
+llama.cpp 28.2 with the same settings (see
+[the comparison](bench/results/2026-10-13-sampling-vs-llama/README.md)).
+Engines built before `presence_penalty` support ignore the penalty, and the
+server log says so.
+
+Source engines advertise `sampled_mtp`
 to enable MTP for nonzero temperature; older engines fall back to ordinary
 sampling. Set `LAMINA_SAMPLED_MTP=0` before launching to compare ordinary
 sampling. Speculation can back off when acceptance is low; speed varies with
@@ -249,15 +288,14 @@ big files off. The `id` stays `Qwen3.6-35B-A3B-UD-Q4_K_M` when the server runs
 Ornith, because that is the only model name the server reports and accepts;
 `name` is only the label pi shows.
 
-Pi supports sampling defaults in each model entry. For example, add
-`"samplingParams": {"temperature": 0.6, "top_p": 0.95, "top_k": 20}` beside
-`maxTokens`, then restart pi or `/reload`. This is a setting to experiment with,
-not a guarantee against repetition. Pi applies configured defaults and optional
-`samplingParamsByThinkingLevel` overrides; it does not automatically raise
-temperature when the model loops. Lamina defaults to temperature 0 when omitted.
-Temperature 0 uses greedy generation; source engines with `sampled_mtp` support
-also use the loaded MTP head for nonzero temperature. Tool retry loops require
-checking tool errors and correcting the task, not just changing sampling.
+Pi sends no sampling settings unless its model entry configures them, so the
+server's [sampling defaults](#sampling-defaults) apply, switching with pi's
+`/thinking` setting. To override them, add for example
+`"samplingParams": {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0}`
+beside `maxTokens`, then restart pi or `/reload`; pi also supports
+`samplingParamsByThinkingLevel`. Sampling settings are not a guarantee against
+repetition, and tool retry loops require checking tool errors and correcting the
+task, not just changing sampling.
 
 Then run `pi --model lamina/Qwen3.6-35B-A3B-UD-Q4_K_M` in your project folder
 and pick the model with `/model` if needed. With `"reasoning": true` and

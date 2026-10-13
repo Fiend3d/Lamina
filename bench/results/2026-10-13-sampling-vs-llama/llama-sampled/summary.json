@@ -1,0 +1,43 @@
+{
+  "command": [
+    "D:\\projects\\lamina\\Lamina-data\\llama-prebuilt-b11474\\llama-server.exe",
+    "-m",
+    "D:\\projects\\lamina\\Lamina-data\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "-c",
+    "32768",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-b",
+    "2048",
+    "-ub",
+    "2048",
+    "-fa",
+    "on",
+    "-ctk",
+    "f16",
+    "-ctv",
+    "f16",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8097",
+    "--fit-target",
+    "1024",
+    "--no-warmup",
+    "-lv",
+    "4",
+    "--load-mode",
+    "none"
+  ],
+  "startup_seconds": 11.303120999946259,
+  "prompt_medians": {
+    "prose": 26.684065933646423,
+    "code": 28.224080114160806,
+    "math": 28.353212085260953
+  },
+  "median_later_tokens_per_second": 28.224080114160806
+}

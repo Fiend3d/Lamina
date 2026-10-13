@@ -1,5 +1,16 @@
 # Lamina developer handoff
 
+Omitted request sampling fields now default to the model cards' values by
+thinking mode (`tools.lamina_chat.RECOMMENDED`; Qwen3.6 non-thinking 0.7/0.8/20
+with presence penalty 1.5), and the native sampler implements
+`presence_penalty` over the tokens generated since `SAMPLE`, including exact
+sampled MTP. Explicit temperature 0 stays plain greedy, and
+`LAMINA_SAMPLING_DEFAULTS=greedy` restores greedy defaults. On RTX 3050 8 GB
+with these settings, Lamina decodes 37.24 tokens/s (43.90 with MTP) against
+28.22 for llama.cpp b11474; greedy output is unchanged. `compare_lamina` and
+`compare_llama` accept the same sampling options. See
+[the sampling and llama.cpp record](../bench/results/2026-10-13-sampling-vs-llama/README.md).
+
 Source engines now advertise `sampled_mtp` and accept `GENERATE_SAMPLED` after
 nonzero-temperature SAMPLE. Default MTP proposals are greedy (point-mass): the
 main pair pass samples the filtered target and accepts only a matching draft.

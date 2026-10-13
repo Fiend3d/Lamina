@@ -26,18 +26,54 @@ IMAGE_ID = 248056
 IMAGE_CACHE_BYTES = 256 * 1024 * 1024
 
 
-def validate_options(options, context):
+GREEDY = {"temperature": 0, "top_p": 1, "top_k": 20, "presence_penalty": 0}
+# Sampling recommended by the model cards, by thinking mode. Qwen3.6-35B-A3B:
+# thinking for general tasks and instruct (non-thinking) mode. Ornith-1.5-35B-A3B
+# gives one setting for general tasks and no presence penalty.
+RECOMMENDED = {
+    "qwen3.6": {True: {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5},
+                False: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
+    "ornith": {True: {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0},
+               False: {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0}},
+}
+
+
+def recommended_sampling(model, thinking):
+    """Defaults for fields a request omits. LAMINA_SAMPLING_DEFAULTS=greedy restores temperature 0."""
+    setting = os.environ.get("LAMINA_SAMPLING_DEFAULTS", "recommended")
+    if setting not in ("recommended", "greedy"):
+        raise ValueError("LAMINA_SAMPLING_DEFAULTS must be recommended or greedy")
+    if setting == "greedy":
+        return GREEDY
+    return RECOMMENDED["ornith" if "ornith" in Path(model).name.lower() else "qwen3.6"][thinking]
+
+
+def validate_options(options, context, defaults=None):
+    """`defaults(thinking)` supplies omitted sampling fields; without it they are greedy."""
     o = dict(options)
     count = o.get("max_tokens", o.get("max_completion_tokens", 128))
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= context:
         raise ValueError(f"max_tokens must be 1..{context}")
     o["max_tokens"] = count
-    for key, default, low, high in (("temperature", 0, 0, 10), ("top_p", 1, 0, 1)):
-        v = o.get(key, default)
+    thinking = o.get("enable_thinking", False)
+    if "reasoning_effort" in o:
+        # The model only thinks or does not; the finer levels that clients such as pi send all mean "think".
+        if o["reasoning_effort"] not in ("none", "off", "minimal", "low", "medium", "high", "xhigh", "max"):
+            raise ValueError("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
+        thinking = o["reasoning_effort"] not in ("none", "off")
+    if not isinstance(thinking, bool):
+        raise ValueError("enable_thinking must be boolean")
+    o["enable_thinking"] = thinking
+    sampling = dict(defaults(thinking) if defaults else GREEDY)
+    # An explicit temperature 0 asks for plain greedy decoding; it does not pick up a default penalty.
+    if o.get("temperature", None) == 0 and not isinstance(o.get("temperature"), bool):
+        sampling["presence_penalty"] = 0
+    for key, low, high in (("temperature", 0, 10), ("top_p", 0, 1), ("presence_penalty", -2, 2)):
+        v = o.get(key, sampling[key])
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not low <= v <= high or (key == "top_p" and v == 0):
             raise ValueError(f"invalid {key}")
         o[key] = v
-    for key, default, high in (("top_k", 20, 248320), ("seed", 0, 2**64-1)):
+    for key, default, high in (("top_k", sampling["top_k"], 248320), ("seed", 0, 2**64-1)):
         v = o.get(key, default)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= high:
             raise ValueError(f"invalid {key}")
@@ -49,15 +85,6 @@ def validate_options(options, context):
     stream_options = o.get("stream_options", {})
     if not isinstance(stream_options, dict) or not isinstance(stream_options.get("include_usage", False), bool):
         raise ValueError("stream_options.include_usage must be boolean")
-    thinking = o.get("enable_thinking", False)
-    if "reasoning_effort" in o:
-        # The model only thinks or does not; the finer levels that clients such as pi send all mean "think".
-        if o["reasoning_effort"] not in ("none", "off", "minimal", "low", "medium", "high", "xhigh", "max"):
-            raise ValueError("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
-        thinking = o["reasoning_effort"] not in ("none", "off")
-    if not isinstance(thinking, bool):
-        raise ValueError("enable_thinking must be boolean")
-    o["enable_thinking"] = thinking
     stop = o.get("stop", [])
     stop = [stop] if isinstance(stop, str) else stop
     if not isinstance(stop, list) or len(stop) > 4 or any(not isinstance(v, str) or not v for v in stop):
@@ -220,17 +247,18 @@ class Engine:
             if getattr(self, "_cache_supported", None) is None:
                 self._cache_supported = False
                 eligible_cache = self.cuda and self.kv_cache == "device" and os.environ.get("LAMINA_PREFIX_CACHE", "1") != "0"
-                if eligible_cache or (self.cuda and getattr(self, "mtp", None)):
-                    try:
-                        caps = subprocess.run([str(self.executable.resolve()), "--capabilities"], capture_output=True,
-                                              text=True, timeout=10,
-                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        capabilities = json.loads(caps.stdout) if caps.returncode == 0 else {}
-                        self._cache_supported = eligible_cache and capabilities.get("prefix_cache") is True
-                        self._snapshot_supported = self._cache_supported and capabilities.get("prefix_snapshot") is True
-                        self._sampled_mtp_supported = capabilities.get("sampled_mtp") is True
-                    except (OSError, ValueError, subprocess.TimeoutExpired):
-                        pass  # older release binaries retain their RESET path
+                # Every engine is probed: the presence penalty applies to CPU and CUDA builds.
+                try:
+                    caps = subprocess.run([str(self.executable.resolve()), "--capabilities"], capture_output=True,
+                                          text=True, timeout=10,
+                                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    capabilities = json.loads(caps.stdout) if caps.returncode == 0 else {}
+                    self._cache_supported = eligible_cache and capabilities.get("prefix_cache") is True
+                    self._snapshot_supported = self._cache_supported and capabilities.get("prefix_snapshot") is True
+                    self._sampled_mtp_supported = bool(self.cuda and getattr(self, "mtp", None)) and capabilities.get("sampled_mtp") is True
+                    self._presence_supported = capabilities.get("presence_penalty") is True
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    pass  # older release binaries retain their RESET path
             command = [str(self.executable.resolve()), str(self.model.resolve()), *(["--cuda"] if self.cuda else []),
                        "--max-context", str(self.max_context), "--kv-cache", self.kv_cache, "--kv-type", self.kv_type, "--compute-mode", getattr(self, "compute_mode", "f32"),
                        "--vram-limit-mb", str(self.vram_limit_mb)]
@@ -316,7 +344,7 @@ class Engine:
                 self._log("  released GPU image encoder; VRAM available for text inference")
 
     def validate(self, messages, options):
-        o = validate_options(options, self.max_context)
+        o = validate_options(options, self.max_context, lambda thinking: recommended_sampling(self.model, thinking))
         if not isinstance(messages, list) or not messages or not all(isinstance(m, dict) for m in messages):
             raise ValueError("messages must end with a user or tool message")
         # OpenAI's "developer" role carries the same instruction payload as "system". The chat template
@@ -423,9 +451,14 @@ class Engine:
                 ids, images, prompt_count = self._prepare(messages, o, Path(path))
                 self._log(f"request: {prompt_count} prompt tokens, up to {o['max_tokens']} answer tokens"
                           + (f", {len(o['tools'])} tools" if o.get("tools") else "")
-                          + f", temperature {o['temperature']}"
+                          + (f", temperature {o['temperature']}, top_p {o['top_p']}, top_k {o['top_k']}"
+                             f", presence_penalty {o['presence_penalty']}" if o["temperature"] else ", greedy"
+                             + (f", presence_penalty {o['presence_penalty']}" if o["presence_penalty"] else ""))
                           + (", thinking" if o["enable_thinking"] else "") + (", streaming" if o.get("stream") else ""))
                 self._start_native()
+                if o["presence_penalty"] and not getattr(self, "_presence_supported", False):
+                    self._log("  presence_penalty ignored: this engine does not support it")
+                    o["presence_penalty"] = 0
                 self.native.cancelled = cancelled
                 try:
                     prefix = self._prepared_prefix if getattr(self, "_cache_supported", False) else []
@@ -482,7 +515,9 @@ class Engine:
                     # Long prefix PROMPT returns an ignored token. Configure
                     # sampling afterwards so cache misses cannot consume this
                     # request's seeded RNG before its first answer token.
-                    self.native.command(f"SAMPLE {o['temperature']} {o['top_p']} {o['top_k']} {o['seed']}", True)
+                    # SAMPLE also starts the engine's presence-penalty history for this answer.
+                    self.native.command(f"SAMPLE {o['temperature']} {o['top_p']} {o['top_k']} {o['seed']}"
+                                        + (f" {o['presence_penalty']}" if o["presence_penalty"] else ""), True)
                     if self.cuda and not images and len(ids)>self.prefill_chunk:
                         next_id=self.native.command(f"PROMPT {self.prefill_chunk} " + " ".join(map(str,ids)))
                     else:
@@ -510,7 +545,10 @@ class Engine:
                     # its immutable prefix before processing a new suffix.
                     sampled_mtp = (o["temperature"] > 0 and getattr(self, "_sampled_mtp_supported", False)
                                    and os.environ.get("LAMINA_SAMPLED_MTP", "1") != "0")
-                    speculative = bool(getattr(self, "mtp", None)) and (o["temperature"] == 0 or sampled_mtp)
+                    # Greedy speculation selects on the GPU without the penalty; penalized
+                    # greedy requests step token by token instead.
+                    greedy_mtp = o["temperature"] == 0 and not o["presence_penalty"]
+                    speculative = bool(getattr(self, "mtp", None)) and (greedy_mtp or sampled_mtp)
                     if speculative and sampled_mtp:
                         self._log("  decoding with sampled MTP")
                     queued = []

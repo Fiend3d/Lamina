@@ -34,10 +34,17 @@ def main():
     p.add_argument("--warmup-tokens", type=int, default=0, help="capture decode graphs before RESET and the measured requests")
     p.add_argument("--progress-file", type=Path, help="record long-prefill layer progress when LAMINA_PREFILL_PROGRESS=1")
     p.add_argument("--host-register", choices=("0", "1"), default="1", help="LAMINA_HOST_REGISTER for the engine")
-    p.add_argument("--mtp", type=Path, help="packed MTP head: generate with greedy speculation (GENERATE)")
+    p.add_argument("--mtp", type=Path, help="packed MTP head: generate with speculation (GENERATE / GENERATE_SAMPLED)")
+    # Sampling (default greedy), sent as SAMPLE before each request's prefill.
+    p.add_argument("--temperature", type=float, default=0)
+    p.add_argument("--top-p", type=float, default=1)
+    p.add_argument("--top-k", type=int, default=20)
+    p.add_argument("--presence-penalty", type=float, default=0)
+    p.add_argument("--seed", type=int, default=0, help="request seed; repeat r uses seed + r")
     a = p.parse_args()
     if a.tokens < 1 or a.repeats < 1 or not 0 <= a.warmup_tokens < a.context:
         p.error("invalid token, repetition or warmup count")
+    sampled = bool(a.temperature or a.presence_penalty)
     a.report_dir.mkdir(parents=True, exist_ok=True)
     os.environ["LAMINA_HOST_REGISTER"] = a.host_register
     os.environ.setdefault("LAMINA_SPEC_STATS", "1")  # the engine's per-request speculation line, kept in native-stderr.txt
@@ -91,6 +98,9 @@ def main():
             ids = tokenizer.encode(chat_prompt([{"role": "user", "content": text}]), add_special_tokens=False).ids
             for repeat in range(a.repeats):
                 native.command("RESET", True)
+                if sampled:
+                    native.command(f"SAMPLE {a.temperature} {a.top_p} {a.top_k} {a.seed + repeat}"
+                                   + (f" {a.presence_penalty}" if a.presence_penalty else ""), True)
                 peak[0] = pynvml.nvmlDeviceGetMemoryInfo(gpu).used
                 start = time.perf_counter()
                 operation = "PROMPT 2048 " if len(ids)>2048 else "PREFILL "
@@ -98,8 +108,12 @@ def main():
                 first = time.perf_counter()
                 tokens = [token]
                 finish = first
-                if a.mtp and (not a.prompt_file or a.fixed_tokens) and a.tokens > 1:
-                    tokens += native.generate(a.tokens-1, token)
+                # Greedy speculation selects on the GPU without a penalty; a penalized
+                # greedy run steps token by token, like the server.
+                speculate = a.mtp and (a.temperature > 0 or not a.presence_penalty)
+                if speculate and (not a.prompt_file or a.fixed_tokens) and a.tokens > 1:
+                    generate = native.generate_sampled if a.temperature > 0 else native.generate
+                    tokens += generate(a.tokens-1, token)
                     finish = time.perf_counter()
                 for _ in range(a.tokens-len(tokens)):
                     if a.prompt_file and not a.fixed_tokens and token in (248044,248046):
@@ -112,6 +126,8 @@ def main():
                           "prompt": name, "prompt_tokens": len(ids),
                           "tokenizer_sha256": hashlib.sha256(a.tokenizer.read_bytes()).hexdigest(),
                           "prompt_token_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+                          "sampling": {"temperature": a.temperature, "top_p": a.top_p, "top_k": a.top_k,
+                                       "presence_penalty": a.presence_penalty, "seed": a.seed + repeat} if sampled else "greedy",
                           "generated_tokens": len(tokens), "next_tokens": tokens,
                           "eos_positions": [i for i, t in enumerate(tokens) if t in (248044, 248046)],
                           "content": tokenizer.decode(tokens,skip_special_tokens=True),

@@ -39,6 +39,13 @@ def main():
     p.add_argument("--host-register", action="store_true", help="pin mmap weights via GGML_CUDA_REGISTER_HOST=1")
     p.add_argument("--revision", help="actual source revision of a downloaded release")
     p.add_argument("--load-mode", choices=("auto", "none"), help="model load policy on newer llama.cpp releases")
+    # Sampling (default greedy). min_p is pinned to 0 (llama.cpp defaults to 0.05) and the
+    # penalty window to the whole context (llama.cpp defaults to 64 tokens), matching Lamina.
+    p.add_argument("--temperature", type=float, default=0)
+    p.add_argument("--top-p", type=float, default=1)
+    p.add_argument("--top-k", type=int, default=20)
+    p.add_argument("--presence-penalty", type=float, default=0)
+    p.add_argument("--seed", type=int, default=0, help="request seed; repeat r uses seed + r")
     a = p.parse_args()
     a.report_dir.mkdir(parents=True, exist_ok=True)
     version = subprocess.check_output([str(a.server.resolve()), "--version"], stderr=subprocess.STDOUT, text=True).strip()
@@ -89,9 +96,12 @@ def main():
             ids = tokenizer.encode(chat_prompt([{"role": "user", "content": text}]), add_special_tokens=False).ids
             for repeat in range(a.repeats):
                 peak[0] = pynvml.nvmlDeviceGetMemoryInfo(gpu).used
-                body = {"prompt": ids, "n_predict": a.tokens, "temperature": 0, "seed": 0,
+                body = {"prompt": ids, "n_predict": a.tokens, "temperature": a.temperature, "seed": a.seed + repeat,
                         "stream": True, "cache_prompt": False, "ignore_eos": not bool(a.prompt_file),
                         "return_tokens": True}
+                if a.temperature or a.presence_penalty:
+                    body.update({"top_p": a.top_p, "top_k": a.top_k, "min_p": 0, "presence_penalty": a.presence_penalty,
+                                 "repeat_last_n": a.context})  # this server rejects -1
                 request = urllib.request.Request(url + "/completion", json.dumps(body).encode(), {"Content-Type": "application/json"})
                 start = time.perf_counter()
                 first = None

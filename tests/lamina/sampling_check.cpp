@@ -1,4 +1,5 @@
 #include "lamina/model/sampling.hpp"
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -42,6 +43,33 @@ int main() {
         if (filtered != std::vector<double>({0,1,0,0})) throw std::runtime_error("proposal top-p filter differs");
         if (a.verify_draft({1,0}, {0,1}, 1) != std::pair<int,bool>{0,false})
             throw std::runtime_error("disjoint support correction failed");
+        // Presence penalty: generated tokens lose a fixed amount once, and
+        // configure() starts a new history.
+        const std::vector<float> scores{0.0f, 2.0f, 1.5f};
+        a.configure(0, 1, 20, 0, 1.0);
+        if (a.sample(scores) != 1) throw std::runtime_error("penalty applied without history");
+        a.accept(1); a.accept(1);
+        if (a.sample(scores) != 2) throw std::runtime_error("greedy presence penalty");
+        if (a.device_greedy() || !a.penalized()) throw std::runtime_error("penalized greedy must take the logits path");
+        a.configure(0, 1, 20, 0, 1.0);
+        if (a.sample(scores) != 1) throw std::runtime_error("configure kept the penalty history");
+        a.configure(0, 1, 20, 0, -1.0); a.accept(2);
+        if (a.sample(scores) != 2) throw std::runtime_error("negative presence penalty");
+        a.configure(1, 1, 0, 7, 0.5); a.accept(2);
+        const auto penalized = a.distribution({0.0f, 1.0f, 1.0f});
+        const double z = std::exp(0.0) + std::exp(1.0) + std::exp(0.5);
+        const std::vector<double> exact{std::exp(0.0) / z, std::exp(1.0) / z, std::exp(0.5) / z};
+        for (size_t i = 0; i < exact.size(); ++i)
+            if (std::abs(penalized[i] - exact[i]) > 1e-12) throw std::runtime_error("penalized distribution differs");
+        std::vector<int> draws(3);
+        for (int i = 0; i < 100000; ++i) ++draws[size_t(a.sample({0.0f, 1.0f, 1.0f}))];
+        for (size_t i = 0; i < exact.size(); ++i)
+            if (std::abs(double(draws[i]) / 100000 - exact[i]) > .008) throw std::runtime_error("penalized sampling biased");
+        for (const double invalid : {2.5, -2.5, std::numeric_limits<double>::quiet_NaN()}) {
+            rejected = false;
+            try { a.configure(1, 1, 20, 0, invalid); } catch (const std::invalid_argument&) { rejected = true; }
+            if (!rejected) throw std::runtime_error("invalid presence penalty accepted");
+        }
         std::puts("sampling checks passed"); return 0;
     } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); return 1; }
 }

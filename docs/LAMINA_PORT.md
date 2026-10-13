@@ -1,5 +1,17 @@
 # Qwen3.6 port status
 
+Omitted request sampling fields now default to the model card's values
+(`tools.lamina_chat.RECOMMENDED`): Qwen3.6 thinking 1.0/0.95/20 with presence
+penalty 1.5, non-thinking 0.7/0.8/20/1.5, Ornith 0.6/0.95/20/0. An explicit
+temperature 0 stays plain greedy; `LAMINA_SAMPLING_DEFAULTS=greedy` restores
+greedy defaults. The native sampler implements `presence_penalty` (OpenAI/vLLM
+semantics over the tokens generated since `SAMPLE`; prompt excluded), advertised
+as the `presence_penalty` capability and sent as an optional fifth `SAMPLE`
+field. Sampled MTP records the first verified token before the bonus draw, so
+penalized speculation equals single steps; `lamina-sampled-mtp-check` checks
+that at presence ±2 with top-k=1. Penalized greedy requests step on the logits
+path, because GPU argmax and greedy `GENERATE` cannot apply the penalty.
+
 Source MTP supports nonzero-temperature sampling through `GENERATE_SAMPLED`.
 The server probes `sampled_mtp`, retaining ordinary sampling on older engines.
 Point-mass verification and optional full-proposal rejection correction use the same temperature,
