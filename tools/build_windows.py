@@ -75,9 +75,9 @@ def main():
     subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(script)], check=True, cwd=ROOT)
     if not args.cpu or args.vision_gpu:
         import shutil
-        for directory in (args.cuda_root / "bin", args.cuda_root / "bin/x64"):
+        for runtime in (args.cuda_root / "bin", args.cuda_root / "bin/x64"):
             for pattern in ("cudart64*.dll", "cublas*.dll"):
-                for dll in directory.glob(pattern):
+                for dll in runtime.glob(pattern):
                     directories = [] if args.vision_only else [args.build_dir]
                     if args.vision_gpu:
                         directories.append(vision_build / "bin")
